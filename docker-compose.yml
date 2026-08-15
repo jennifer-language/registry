@@ -1,0 +1,96 @@
+# Docker Compose for the jvc deck repository website.
+#
+#   docker compose up -d --build      # build the image and start the repository
+#   docker compose logs -f            # follow the server console
+#   docker compose exec jvc jennifer run bin/deckadmin list    # maintain the registry
+#   docker compose down               # stop
+#
+# The registry database is bind-mounted from ./data, so deckadmin edits survive
+# restarts and are readable on the host. A missing file opens as an empty
+# registry, so there is nothing to seed.
+#
+# The same directory holds registry.log, which both the server and deckadmin
+# append to. Read it on the host with `tail -f data/registry.log`; that is the
+# one view showing publishes and requests together. Nothing rotates it, so a
+# long-lived deployment should point logrotate at it.
+
+services:
+  jvc:
+    build:
+      context: .
+      args:
+        # Who the server runs as inside the container. ./data is bind-mounted
+        # below, so the host keeps its own ownership and the container's uid has
+        # to match it or every write is denied. Defaults suit a rootless setup;
+        # override for any other host user:
+        #
+        #     JVC_UID=$(id -u) JVC_GID=$(id -g) docker compose up -d --build
+        #
+        # Not named UID/GID because bash makes UID readonly and does not export
+        # it, so ${UID} here would silently resolve to nothing.
+        UID: ${JVC_UID:-1000}
+        GID: ${JVC_GID:-1000}
+    image: jvc-repository:latest
+    container_name: jvc-repository
+    ports:
+      - "8080:8080"
+    environment:
+      JVC_ADDR: ":8080"
+      JVC_DB: "/app/data/decks.json"
+
+      # The operational log. It goes to the container's stdout (so `docker
+      # compose logs` shows it) *and* to a file beside the database, which is
+      # the only place both this server and a `deckadmin` run through `docker
+      # compose exec` can write. That shared file is the point: the server never
+      # sees a publish, and deckadmin never sees a request, so neither log alone
+      # says what happened to this registry.
+      JVC_LOG: "/app/data/registry.log"
+
+      # debug adds nothing by itself here; the access log has its own switch
+      # below, because it is wanted at info far more often than the rest of debug.
+      JVC_LOG_LEVEL: "info"
+
+      # logfmt for the file, which something else will parse later. The console
+      # is always human-readable text regardless. Set "json" to ship it onward.
+      JVC_LOG_FORMAT: "logfmt"
+
+      # One line per request. Off by default: the healthcheck below polls every
+      # 30s forever, and in an idle deployment that is the entire log. Turn it on
+      # while debugging a client, or when something else rotates the file.
+      JVC_LOG_REQUESTS: "0"
+
+      # The token exchange, off unless BOTH of the next two are non-empty. They
+      # come from .env, which is gitignored; without it they substitute to empty
+      # and the registry stays read-only, which is the right default and needs no
+      # edit here. Register the OAuth app at github.com/settings/applications/new,
+      # enable its device flow, then `cp .env.example .env` and fill it in.
+      #
+      # No client secret: the device grant is a public-client flow and sends
+      # none. JVC_IDENTITY_SECRET exists only for providers that require one.
+      JVC_IDENTITY: "github"
+      JVC_IDENTITY_CLIENTID: "${JVC_IDENTITY_CLIENTID:-}"
+      JVC_TOKEN_KEY: "${JVC_TOKEN_KEY:-}"
+
+      # Which forge a publish reads repositories from: resolving a tag to a
+      # commit and reading deck.toml at it. Independent of identity above; the
+      # two only coincide on github.com.
+      JVC_FORGE: "github"
+
+      # Publishing from CI with no stored credential (specification 8.9). Set
+      # the audience to something specific to this registry - its hostname is a
+      # good choice - and a CI job can publish by presenting the identity token
+      # its runner mints, with no secret in the pipeline at all. Not confidential:
+      # it is advertised in the discovery document, because a job has to name it
+      # when minting the token. Unset leaves trusted publishing off.
+      JVC_TRUSTPUB_AUDIENCE: "${JVC_TRUSTPUB_AUDIENCE:-}"
+      JVC_TRUSTPUB_PROVIDER: "github-actions"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      # The interpreter image has no curl; the probe is a Jennifer program.
+      test: ["CMD", "jennifer", "run", "/app/bin/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

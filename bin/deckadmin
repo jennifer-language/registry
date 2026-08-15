@@ -1,0 +1,233 @@
+#!/usr/bin/env -S jennifer run
+# SPDX-License-Identifier: LGPL-3.0-only
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# pragma-jennifer-version: >=0.25.0
+#
+# deckadmin - maintain the jvc deck repository's flatdb store: insert, update,
+# remove, and list deck versions. A thin entry point over the `admin` module
+# (which holds the grammar, the logic, and its tests). The store path defaults
+# to data/decks.json, overridable with the JVC_DB environment variable. Run from
+# the repo root:
+#
+#     jennifer run bin/deckadmin add @acme/tool 1.3.0 <url> --ref v1.3.0 --commit <sha>
+#     jennifer run bin/deckadmin list
+#     jennifer run bin/deckadmin --help
+#
+# The command handlers below are one-line shims. They exist here, rather than in
+# `admin`, because `args.dispatch` calls them with only the parsed result, so
+# they need the store and the timestamp from this program's own scope - and a
+# module top level cannot hold mutable state. A `func` value keeps its home
+# context when the module calls it, so each shim still resolves `admin` and the
+# globals declared here.
+
+use os;
+use io;
+use time;
+use convert;
+import "flatdb.j" as flatdb;
+import "args.j" as args;
+import "../src/store.j" as store;
+import "../src/admin.j" as admin;
+import "../src/audit.j" as audit;
+
+def dbPath as string init "data/decks.json";
+if (not (os.getEnv("JVC_DB") == "")) {
+    $dbPath = os.getEnv("JVC_DB");
+}
+
+def db as flatdb.DB init store.open($dbPath);
+def now as string init convert.toString(time.unix(time.utc()));
+
+/**
+ * The `add` / `update` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onAdd(r as args.Result) {
+    return admin.cmdAdd($db, $r, $now);
+}
+
+/**
+ * The `remove` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onRemove(r as args.Result) {
+    return admin.cmdRemove($db, $r, $now);
+}
+
+/**
+ * The `list` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onList(r as args.Result) {
+    return admin.cmdList($db, $r, $now);
+}
+
+/**
+ * The `register-namespace` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onRegisterNamespace(r as args.Result) {
+    return admin.cmdRegisterNamespace($db, $r, $now);
+}
+
+/**
+ * The `namespaces` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onNamespaces(r as args.Result) {
+    return admin.cmdNamespaces($db, $r, $now);
+}
+
+/**
+ * The `mint-token` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onMintToken(r as args.Result) {
+    return admin.cmdMintToken($db, $r, $now);
+}
+
+/**
+ * The `tokens` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onTokens(r as args.Result) {
+    return admin.cmdTokens($db, $r, $now);
+}
+
+/**
+ * The `revoke-token` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onRevokeToken(r as args.Result) {
+    return admin.cmdRevokeToken($db, $r, $now);
+}
+
+/**
+ * The `yank` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onYank(r as args.Result) {
+    return admin.cmdSetYanked($db, $r, $now, true);
+}
+
+/**
+ * The `unyank` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onUnyank(r as args.Result) {
+    return admin.cmdSetYanked($db, $r, $now, false);
+}
+
+/**
+ * The `trust` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onTrust(r as args.Result) {
+    return admin.cmdTrust($db, $r, $now);
+}
+
+/**
+ * The `untrust` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onUntrust(r as args.Result) {
+    return admin.cmdUntrust($db, $r, $now);
+}
+
+/**
+ * The `publishers` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onPublishers(r as args.Result) {
+    return admin.cmdPublishers($db, $r, $now);
+}
+
+/**
+ * The `revoke` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onRevoke(r as args.Result) {
+    return admin.cmdRevoke($db, $r, $now);
+}
+
+# A parse failure (an unknown flag, a missing positional, a bad value) is a
+# catchable error rather than an exit, so it is reported like any other failure.
+def parsed as args.Result;
+try {
+    $parsed = admin.parse(os.ARGS);
+} catch (err) {
+    io.printf("%s\n", $err.message);
+    exit 1;
+}
+
+# -h / --help sets `done` with the generated usage; nothing to dispatch.
+if ($parsed.done) {
+    io.printf("%s\n", $parsed.helpText);
+    exit 0;
+}
+
+if ($parsed.command == "") {
+    io.printf("%s\n", args.usage(admin.parser()));
+    exit 1;
+}
+
+# The operational log. Opened after parsing, because the command line is half of
+# where it is configured, and before dispatch, so a command that fails still
+# records the attempt. An unwritable path is reported here and then stops
+# mattering: maintaining the registry is more important than logging that it was
+# maintained.
+def logCfg as admin.LogOptions init admin.logOptions($parsed, os.getEnv("JVC_LOG"),
+    os.getEnv("JVC_LOG_LEVEL"), os.getEnv("JVC_LOG_FORMAT"));
+def sink as audit.Sink init audit.open($logCfg.level, $logCfg.format, $logCfg.path,
+    $logCfg.console);
+if (not ($sink.fileError == "")) {
+    io.eprintf("warning: not logging to %s (%s)\n", $logCfg.path, $sink.fileError);
+}
+
+def result as admin.AdminResult init args.dispatch($parsed, {
+    "add": onAdd,
+    "update": onAdd,
+    "remove": onRemove,
+    "list": onList,
+    "register-namespace": onRegisterNamespace,
+    "namespaces": onNamespaces,
+    "mint-token": onMintToken,
+    "tokens": onTokens,
+    "revoke-token": onRevokeToken,
+    "yank": onYank,
+    "unyank": onUnyank,
+    "trust": onTrust,
+    "untrust": onUntrust,
+    "publishers": onPublishers,
+    "revoke": onRevoke
+});
+
+# The store is saved before the event is written. If the process dies between
+# the two, the log under-reports a change that happened, which is recoverable by
+# reading the store; the other order would claim a change that did not.
+if ($result.changed) {
+    store.save($result.db);
+}
+audit.write($sink, audit.attribute($result.event, $parsed.command));
+
+if (not $logCfg.quiet) {
+    io.printf("%s\n", $result.message);
+}
+
+if (not $result.ok) {
+    exit 1;
+}

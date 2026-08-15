@@ -1,0 +1,840 @@
+#!/usr/bin/env -S jennifer serve
+# SPDX-License-Identifier: LGPL-3.0-only
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# pragma-jennifer-version: >=0.25.0
+#
+# serve - the jvc deck repository website. A thin `webapi` app: each handler
+# reads the flatdb store fresh (so maintenance edits by deckadmin show up live)
+# and delegates to the `apiview` module for the response body and status (which
+# holds the logic and its tests). No user management - just the read paths the
+# CLI needs. The store path defaults to data/decks.json (override with JVC_DB)
+# and the listen address to :8080 (override with JVC_ADDR). Run from the repo
+# root:
+#
+#     jennifer serve bin/serve
+#
+# then e.g. `curl 'http://localhost:8080/resolve?name=@acme/tool&constraint=^1.2.0'`.
+
+use os;
+use io;
+use json;
+use fs;
+use convert;
+use strings;
+import "flatdb.j" as flatdb;
+import "web.j" as web;
+import "webapi.j" as webapi;
+import "../src/store.j" as store;
+import "../src/apiview.j" as view;
+import "../src/webview.j" as webview;
+import "../src/authview.j" as authview;
+import "../src/identity.j" as identity;
+import "../src/identity/github.j" as githubIdentity;
+import "../src/identity/gitlab.j" as gitlabIdentity;
+import "../src/identity/gitea.j" as giteaIdentity;
+import "../src/identity/oidc.j" as oidcIdentity;
+import "../src/token.j" as token;
+import "../src/audit.j" as audit;
+import "../src/forge.j" as forge;
+import "../src/forge/github.j" as githubForge;
+import "../src/forge/gitlab.j" as gitlabForge;
+import "../src/forge/gitea.j" as giteaForge;
+import "../src/publishview.j" as publishview;
+import "../src/trustpub.j" as trustpub;
+import "../src/citoken.j" as citoken;
+
+def dbPath as string init "data/decks.json";
+if (not (os.getEnv("JVC_DB") == "")) {
+    $dbPath = os.getEnv("JVC_DB");
+}
+
+def addr as string init ":8080";
+if (not (os.getEnv("JVC_ADDR") == "")) {
+    $addr = os.getEnv("JVC_ADDR");
+}
+
+# The operational log. The console half is always on for the server - a service
+# with no output is a service nobody can see - and the file half is the record
+# `deckadmin` also writes to, so one file holds both halves of what happened to
+# this registry. `data/` is the only directory the container is guaranteed to be
+# able to write.
+#
+# Everything below is read-only after this point: handlers run concurrently, and
+# a handler that wrote one of these would race with every other handler. Reading
+# them is safe, which is all a handler needs.
+# The file defaults to logfmt: it is read by something else later, whereas the
+# console is read by a person and is always text. `deckadmin` defaults the same
+# way, so one file holds one format no matter which binary wrote the line.
+def logFormat as string init "logfmt";
+if (not (os.getEnv("JVC_LOG_FORMAT") == "")) {
+    $logFormat = os.getEnv("JVC_LOG_FORMAT");
+}
+def logSink as audit.Sink init audit.open(os.getEnv("JVC_LOG_LEVEL"),
+    $logFormat, os.getEnv("JVC_LOG"), true);
+if (not ($logSink.fileError == "")) {
+    io.eprintf("warning: not logging to %s (%s)\n",
+        os.getEnv("JVC_LOG"), $logSink.fileError);
+}
+
+# Whether to record every request. Kept as its own switch rather than folded into
+# the level, because an access log is the one thing an operator wants at
+# `info` while still being far too noisy to be the default: one line per request
+# per health probe adds up in a container that is polled every few seconds.
+def logRequests as bool init false;
+if (os.getEnv("JVC_LOG_REQUESTS") == "1" or os.getEnv("JVC_LOG_REQUESTS") == "true") {
+    $logRequests = true;
+}
+
+# Where the static site lives. `web.serveDir` joins the whole request path onto
+# the root it is given, so a request for /reference/api.html resolves to
+# public/reference/api.html, which is exactly what grimoire builds. The two books
+# have two audiences: the manual is task-shaped, the reference is the API and the
+# specifications.
+def const PUBLIC_ROOT as string init "public";
+def const REFERENCE_ROOT as string init "public/reference";
+def const MANUAL_ROOT as string init "public/manual";
+def const MANUAL_CONFIG as string init "grimoire-manual.toml";
+
+# The token-exchange paths, advertised absolutely in the discovery document and
+# mounted under the versioned API. A client uses the advertised strings verbatim.
+def const AUTH_DEVICE_PATH as string init "/v1/auth/device";
+def const AUTH_TOKEN_PATH as string init "/v1/auth/token";
+def const AUTH_REFRESH_PATH as string init "/v1/auth/refresh";
+def const PUBLISH_PATH as string init "/v1/publish";
+
+# The API majors this registry serves, for the 4.5 refusal. One entry today; a
+# second mount would add its major here as well as to the route table.
+def const SERVED_APIS as list of int init [1];
+
+# How long the two credentials live. The bearer token is deliberately short:
+# hours, not months, or it becomes a long-lived secret in a dotfile. The refresh
+# token is what spares the user a browser round trip, and it rotates on use.
+def const TOKEN_TTL as int init 3600;
+def const REFRESH_TTL as int init 1209600;
+
+# The auth surface is configuration-gated. Without an OAuth application id there
+# is nothing to run the flow against, and without a signing key nothing could be
+# verified afterwards, so either being absent leaves the registry read-only: the
+# routes are not served and no `auth` object is advertised, which is exactly how
+# a client learns logins are unavailable.
+# selectProvider maps the configured provider name onto its vtable. This is the
+# one place a provider is named: every module downstream receives a struct of
+# `func` values and never learns which one it got, so adding a provider is a new
+# module under src/identity/ and one arm here.
+func selectProvider(name as string) {
+    match ($name) {
+        when "gitlab" {
+            return gitlabIdentity.provider();
+        }
+        when "gitea", "forgejo" {
+            return giteaIdentity.provider();
+        }
+        when "oidc" {
+            return oidcIdentity.provider();
+        }
+    }
+    return githubIdentity.provider();
+}
+
+def providerName as string init "github";
+if (not (os.getEnv("JVC_IDENTITY") == "")) {
+    $providerName = os.getEnv("JVC_IDENTITY");
+}
+
+def auth as authview.Config init authview.Config{
+    provider: selectProvider($providerName),
+    providerConfig: identity.Config{
+        name: $providerName,
+        baseUrl: os.getEnv("JVC_IDENTITY_BASEURL"),
+        clientId: os.getEnv("JVC_IDENTITY_CLIENTID"),
+        clientSecret: os.getEnv("JVC_IDENTITY_SECRET"),
+        scopes: os.getEnv("JVC_IDENTITY_SCOPES")
+    },
+    signingKey: convert.bytesFromString(os.getEnv("JVC_TOKEN_KEY"), "utf-8"),
+    tokenTtl: TOKEN_TTL,
+    refreshTtl: REFRESH_TTL
+};
+def authOn as bool init authview.enabled($auth);
+
+# selectForge maps the configured forge name onto its vtable, the same one-arm
+# pattern as selectProvider. Identity and forge are independent roles that only
+# coincide on github.com (specification 12.1), so they are configured separately.
+func selectForge(name as string) {
+    match ($name) {
+        when "gitlab" {
+            return gitlabForge.forge();
+        }
+        when "gitea", "forgejo" {
+            return giteaForge.forge();
+        }
+    }
+    return githubForge.forge();
+}
+
+def forgeName as string init "github";
+if (not (os.getEnv("JVC_FORGE") == "")) {
+    $forgeName = os.getEnv("JVC_FORGE");
+}
+
+def theForge as forge.Forge init selectForge($forgeName);
+def forgeConfig as forge.Config init forge.Config{
+    name: $forgeName,
+    baseUrl: os.getEnv("JVC_FORGE_BASEURL"),
+    apiToken: os.getEnv("JVC_FORGE_TOKEN"),
+    host: os.getEnv("JVC_FORGE_HOST")
+};
+
+# Trusted publishing (8.9). Gated on an audience being configured: without one
+# every check in `trustpub.check` would have nothing to compare against, and an
+# unconfigured audience is a refusal there rather than a wildcard. The audience
+# is not a secret - it is advertised in the discovery document, because a CI job
+# has to name it when minting its token - it is what stops a token minted for
+# another registry being replayed here.
+def tpAudience as string init os.getEnv("JVC_TRUSTPUB_AUDIENCE");
+def tpProvider as string init trustpub.GITHUB;
+if (not (os.getEnv("JVC_TRUSTPUB_PROVIDER") == "")) {
+    $tpProvider = os.getEnv("JVC_TRUSTPUB_PROVIDER");
+}
+def tpIssuer as string init trustpub.expectedIssuer($tpProvider,
+    os.getEnv("JVC_TRUSTPUB_ISSUER"));
+def tpOn as bool init not (strings.trim($tpAudience) == "") and not ($tpIssuer == "");
+
+# The issuer's key set, fetched once at boot and held for the process. Fetching
+# per request would put two round trips in front of every publish and make this
+# registry unavailable whenever the issuer is. A key rotation therefore needs a
+# restart, which is the documented cost of not having a cache with a clock.
+def tpKeys as string init "";
+if ($tpOn) {
+    try {
+        $tpKeys = trustpub.fetchJwks($tpIssuer);
+    } catch (err) {
+        io.printf("warning: could not fetch the key set for %s (%s); " +
+            "trusted publishing is off\n", $tpIssuer, $err.message);
+        $tpOn = false;
+    }
+}
+
+# Which flow to advertise. Asked of the provider once, at boot, because a
+# generic OIDC provider answers by fetching its discovery document and doing that
+# per request would put a network round trip in front of every client. A boot
+# without the provider reachable falls back to "device" rather than refusing to
+# start: the registry's read surface does not depend on it.
+def authFlow as string init "device";
+if ($authOn) {
+    try {
+        $authFlow = $auth.provider.flow($auth.providerConfig);
+    } catch (err) {
+        io.printf("warning: could not ask %s which flow it offers (%s); advertising device\n",
+            $providerName, $err.message);
+    }
+}
+
+# answer sends a Reply's status + JSON body. Note: a Reply is bound to a typed
+# local and its fields read directly - this build cannot pass a module struct
+# that holds a json.Value field as a function argument, so Reply never crosses
+# a call boundary as a whole.
+
+/**
+ * GET / - the landing page for a browser, the service index for an API client.
+ * The two are the same resource seen through different `Accept` headers, which
+ * is what lets the website live at the root without displacing the JSON index.
+ * @param ctx {web.Context} the request context
+ */
+func apiIndex(ctx as web.Context) {
+    if (webapi.wants($ctx) == "html") {
+        def db as flatdb.DB init store.open($dbPath);
+        def page as webview.Page init webview.home($db);
+        web.html($ctx, $page.status, $page.body);
+        return;
+    }
+    def reply as view.Reply init view.index();
+    webapi.sendJson($ctx, $reply.status, $reply.body);
+}
+
+/**
+ * GET /search?q= - deck search, as a page for a browser and as JSON for an API
+ * client. Both run the same `search.find`, so the two cannot disagree.
+ * @param ctx {web.Context} the request context
+ */
+func apiSearch(ctx as web.Context) {
+    def db as flatdb.DB init store.open($dbPath);
+    def query as string init web.query($ctx, "q");
+    if (webapi.wants($ctx) == "html") {
+        def page as webview.Page init webview.results($db, $query);
+        web.html($ctx, $page.status, $page.body);
+        return;
+    }
+    def reply as view.Reply init view.search($db, $query);
+    webapi.sendJson($ctx, $reply.status, $reply.body);
+}
+
+/**
+ * GET /deck/:scope/:deck - a deck's page. The scoped name is rebuilt from the
+ * two captures, so the `/` inside `@scope/deck` never has to survive routing.
+ * This is a separate path from the JSON `/decks/:name/:version`, which would
+ * otherwise match a two-segment deck page and answer "no such version".
+ * @param ctx {web.Context} the request context
+ */
+func siteDeck(ctx as web.Context) {
+    def db as flatdb.DB init store.open($dbPath);
+    def name as string init "@" + web.param($ctx, "scope") + "/" + web.param($ctx, "deck");
+    def page as webview.Page init webview.deck($db, $name);
+    web.html($ctx, $page.status, $page.body);
+}
+
+/**
+ * GET /reference/... - the API, CLI, and specification reference grimoire builds
+ * into public/reference. A deployment that has not built it gets an explanation
+ * rather than a bare 404.
+ * @param ctx {web.Context} the request context
+ */
+func siteReference(ctx as web.Context) {
+    if (not fs.isDir(REFERENCE_ROOT)) {
+        def page as webview.Page init webview.sectionMissing("Reference", REFERENCE_ROOT, "");
+        web.html($ctx, $page.status, $page.body);
+        return;
+    }
+    web.serveDir($ctx, PUBLIC_ROOT);
+}
+
+/**
+ * GET /manual/... - the user manual grimoire builds into public/manual. A
+ * deployment that has not built it gets an explanation rather than a bare 404.
+ * @param ctx {web.Context} the request context
+ */
+func siteManual(ctx as web.Context) {
+    if (not fs.isDir(MANUAL_ROOT)) {
+        def page as webview.Page init
+            webview.sectionMissing("Manual", MANUAL_ROOT, MANUAL_CONFIG);
+        web.html($ctx, $page.status, $page.body);
+        return;
+    }
+    web.serveDir($ctx, PUBLIC_ROOT);
+}
+
+/**
+ * GET /.well-known/jennifer-registry - the discovery document a client reads to
+ * verify it speaks this registry's API version before calling anything else.
+ * @param ctx {web.Context} the request context
+ */
+func apiDiscovery(ctx as web.Context) {
+    def base as json.Value init webapi.discovery($api, view.SERVICE_NAME, view.SPEC_VERSION);
+    def urls as map of string to string init {};
+    if ($tpOn) {
+        # A CI job cannot guess the audience, and the registry rejects every
+        # other value, so advertising it is what makes the check enforceable.
+        $urls["trustedPublishing.audience"] = $tpAudience;
+        $urls["trustedPublishing.providers"] = $tpProvider;
+        $urls["trustedPublishing.url"] = PUBLISH_PATH;
+    }
+    if ($authOn) {
+        $urls["provider"] = $providerName;
+        $urls["flow"] = $authFlow;
+        $urls["deviceUrl"] = AUTH_DEVICE_PATH;
+        $urls["tokenUrl"] = AUTH_TOKEN_PATH;
+        $urls["refreshUrl"] = AUTH_REFRESH_PATH;
+    }
+    def reply as view.Reply init view.discovery($base, $urls);
+    webapi.sendJson($ctx, $reply.status, $reply.body);
+}
+
+# answerAuth sends an AuthReply, persists the store when it was edited, and
+# records what happened. The three auth handlers differ only in which authview
+# function they call and which stage they name.
+#
+# The record is built from the reply rather than inside `authview`, which keeps
+# the module that mints credentials free of any knowledge of logging. It is also
+# what guarantees no token is written down: the only fields read here are the
+# account and the login, and the tokens in that same body are simply never
+# touched.
+func answerAuth(ctx as web.Context, stage as string, out as authview.AuthReply) {
+    if ($out.changed) {
+        store.save($out.db);
+    }
+    if ($out.status == 200 and json.has($out.body, "/accountId")) {
+        def who as string init convert.toString(json.asInt($out.body, "/accountId"));
+        audit.write($logSink, audit.tokenIssued($stage, $who,
+            json.asString($out.body, "/login")));
+    } elseif ($out.status == 200) {
+        audit.write($logSink, audit.loginStarted($providerName));
+    } else {
+        def why as string init "";
+        if (json.has($out.body, "/error")) {
+            $why = json.asString($out.body, "/error");
+        }
+        audit.write($logSink, audit.loginRefused($stage, $out.status, $why));
+    }
+    webapi.sendJson($ctx, $out.status, $out.body);
+}
+
+# requestText is the request body as text. `web.body` is binary-safe and hands
+# back bytes; these endpoints take small JSON objects.
+func requestText(ctx as web.Context) {
+    return convert.stringFromBytes(web.body($ctx), "utf-8");
+}
+
+/**
+ * POST /auth/device - begin a device authorization against GitHub, and return
+ * the code the user types.
+ * @param ctx {web.Context} the request context
+ */
+func apiAuthDevice(ctx as web.Context) {
+    def db as flatdb.DB init store.open($dbPath);
+    answerAuth($ctx, "device", authview.device($auth, $db));
+}
+
+/**
+ * POST /auth/token - exchange an approved device code for a registry token.
+ * @param ctx {web.Context} the request context
+ */
+func apiAuthToken(ctx as web.Context) {
+    def db as flatdb.DB init store.open($dbPath);
+    answerAuth($ctx, "issued", authview.token($auth, $db, requestText($ctx), token.now()));
+}
+
+/**
+ * POST /auth/refresh - exchange a refresh token for a new token pair.
+ * @param ctx {web.Context} the request context
+ */
+func apiAuthRefresh(ctx as web.Context) {
+    def db as flatdb.DB init store.open($dbPath);
+    answerAuth($ctx, "refreshed", authview.refresh($auth, $db, requestText($ctx), token.now()));
+}
+
+# sourceFrom assembles what publishview needs, which is where every network call
+# in a publish happens: resolve the tag to a commit, read `deck.toml` **at that
+# commit**, and ask the forge what repository this URL actually is. The manifest
+# is never taken from the request body (specification 7), which is what makes the
+# scope check a check on a fact rather than on a claim.
+func sourceFrom(repository as string, tag as string) {
+    def commit as string init $theForge.resolveTag($forgeConfig, $repository, $tag);
+    def text as string init $theForge.readFile($forgeConfig, $repository, $commit,
+        "deck.toml");
+    def r as forge.Repo init $theForge.repo($forgeConfig, $repository);
+    # A README is optional, so a repository without one publishes normally. It is
+    # read at the same commit as the manifest, which is what makes the page show
+    # what that release actually said rather than whatever the branch says now.
+    def readme as string init "";
+    try {
+        $readme = $theForge.readFile($forgeConfig, $repository, $commit, "README.md");
+    } catch (err) {
+        $readme = "";
+    }
+    return publishview.Source{
+        repository: $repository,
+        tag: $tag,
+        commit: $commit,
+        repoId: $r.id,
+        repoOwnerId: $r.ownerId,
+        repoOwner: $r.owner,
+        manifestText: $text,
+        readmeText: $readme
+    };
+}
+
+# callerOf turns an Authorization header into an identity, or into an empty
+# Subject. `authview.authenticate` **throws** on a missing, malformed, or expired
+# token, which is right for a module that must not guess - but an uncaught throw
+# out of a handler is a 500, and "you did not authenticate" is a 401. Every write
+# path goes through here so that mapping happens once.
+func callerOf(ctx as web.Context) {
+    def nobody as identity.Subject init identity.Subject{
+        provider: "", id: "", login: ""
+    };
+    try {
+        return authview.authenticate($auth, web.header($ctx, "Authorization"));
+    } catch (err) {
+        return $nobody;
+    }
+}
+
+# answerPublish sends a PublishReply, persists the store, and records the event.
+func answerPublish(ctx as web.Context, out as publishview.PublishReply) {
+    if ($out.changed) {
+        store.save($out.db);
+    }
+    audit.write($logSink, $out.event);
+    webapi.sendJson($ctx, $out.status, $out.body);
+}
+
+/**
+ * POST /publish - publish a version from a repository and a tag.
+ *
+ * Two ways in, and the body decides which: an `identityToken` is a CI identity
+ * token (8.9), anything else falls back to the `Authorization` bearer header.
+ * They authorise differently - a workload against a binding, a person against a
+ * scope - which is why they are separate functions in `publishview` rather than
+ * one with a flag.
+ * @param ctx {web.Context} the request context
+ */
+func apiPublish(ctx as web.Context) {
+    def body as json.Value;
+    try {
+        $body = json.decode(requestText($ctx));
+    } catch (err) {
+        webapi.fail($ctx, 400, "the request body is not JSON");
+        return;
+    }
+    def repository as string init "";
+    if (json.has($body, "/repository")) {
+        $repository = json.asString($body, "/repository");
+    }
+    def tag as string init "";
+    if (json.has($body, "/tag")) {
+        $tag = json.asString($body, "/tag");
+    }
+    def db as flatdb.DB init store.open($dbPath);
+
+    # THE CREDENTIAL IS CHECKED BEFORE THE FORGE IS TOUCHED. Reading a repository
+    # is an outbound request to a URL the caller chose, so doing it first would
+    # let anyone on the internet make this registry fetch arbitrary hosts and
+    # burn its forge rate limit, without ever holding a credential. Everything
+    # below establishes *who is asking* from local state only; the network call
+    # happens afterwards, once.
+    def mode as string init "token";
+    def claims as trustpub.Claims;
+    def ciRec as citoken.Token;
+    def who as identity.Subject;
+
+    if (json.has($body, "/identityToken")) {
+        $mode = "trusted";
+        if (not $tpOn) {
+            webapi.fail($ctx, 501, "this registry does not accept trusted publishing");
+            return;
+        }
+        try {
+            $claims = trustpub.verified(json.asString($body, "/identityToken"),
+                $tpKeys, $tpProvider);
+        } catch (err) {
+            webapi.fail($ctx, 401, "the identity token did not verify: " + $err.message);
+            return;
+        }
+    } else {
+        # A CI token (8.10) is told apart from a registry bearer token by its
+        # prefix, so the two share one header without either parsing the other.
+        def presented as string init web.bearerToken($ctx);
+        if (citoken.looksLikeToken($presented)) {
+            $mode = "ci";
+            $ciRec = store.getCiToken($db, token.fingerprint($presented));
+            if ($ciRec.fingerprint == "") {
+                webapi.unauthorized($ctx, "no such CI token");
+                return;
+            }
+        } else {
+            if (not $authOn) {
+                webapi.fail($ctx, 501,
+                    "this registry accepts no logins, so it accepts no writes");
+                return;
+            }
+            $who = callerOf($ctx);
+            if ($who.id == "") {
+                webapi.unauthorized($ctx, "a bearer token is required to publish");
+                return;
+            }
+        }
+    }
+
+    def src as publishview.Source;
+    try {
+        $src = sourceFrom($repository, $tag);
+    } catch (err) {
+        webapi.fail($ctx, 502, "could not read " + $repository + " at " + $tag +
+            ": " + $err.message);
+        return;
+    }
+    def now as string init convert.toString(token.now());
+    match ($mode) {
+        when "trusted" {
+            answerPublish($ctx, publishview.byTrustedPublisher($db, $claims,
+                $tpAudience, $tpIssuer, $src, $now));
+        }
+        when "ci" {
+            answerPublish($ctx, publishview.byCiToken($db, $ciRec, $src, $now));
+        }
+        when "token" {
+            answerPublish($ctx, publishview.byToken($db, $who, $src, $now));
+        }
+    }
+}
+
+# yankBody reads the two fields both yank routes take.
+func yankArgs(ctx as web.Context) {
+    def out as map of string to string init { "name": "", "version": "" };
+    try {
+        def body as json.Value init json.decode(requestText($ctx));
+        if (json.has($body, "/name")) {
+            $out["name"] = json.asString($body, "/name");
+        }
+        if (json.has($body, "/version")) {
+            $out["version"] = json.asString($body, "/version");
+        }
+    } catch (err) {
+        return $out;
+    }
+    return $out;
+}
+
+# answerYank runs a yank or an unyank for an authenticated caller. Both routes
+# differ only in the flag, so the authentication and the plumbing live here once.
+func answerYank(ctx as web.Context, yanked as bool) {
+    if (not $authOn) {
+        webapi.fail($ctx, 501, "this registry accepts no logins, so it accepts no writes");
+        return;
+    }
+    def who as identity.Subject init callerOf($ctx);
+    if ($who.id == "") {
+        webapi.unauthorized($ctx, "a bearer token is required");
+        return;
+    }
+    def args as map of string to string init yankArgs($ctx);
+    def db as flatdb.DB init store.open($dbPath);
+    answerPublish($ctx, publishview.setYanked($db, $who, $args["name"],
+        $args["version"], $yanked));
+}
+
+/**
+ * POST /yank - withdraw a version from new resolutions (specification 9).
+ * @param ctx {web.Context} the request context
+ */
+func apiYank(ctx as web.Context) {
+    answerYank($ctx, true);
+}
+
+/**
+ * POST /unyank - restore a withdrawn version. Yanking is reversible: a mistaken
+ * yank is undone here rather than by republishing, which immutability forbids.
+ * @param ctx {web.Context} the request context
+ */
+func apiUnyank(ctx as web.Context) {
+    answerYank($ctx, false);
+}
+
+/**
+ * GET /health - a liveness check.
+ * @param ctx {web.Context} the request context
+ */
+func apiHealth(ctx as web.Context) {
+    def reply as view.Reply init view.health();
+    webapi.sendJson($ctx, $reply.status, $reply.body);
+}
+
+/**
+ * GET /decks - list every deck name in the registry.
+ * @param ctx {web.Context} the request context
+ */
+func apiListDecks(ctx as web.Context) {
+    def db as flatdb.DB init store.open($dbPath);
+    def reply as view.Reply init view.listDecks($db);
+    webapi.sendJson($ctx, $reply.status, $reply.body);
+}
+
+/**
+ * GET /decks/:name - one deck's full record. Bare names only; a scoped name
+ * holds a `/` and must use the query form below.
+ * @param ctx {web.Context} the request context
+ */
+func apiGetDeck(ctx as web.Context) {
+    def db as flatdb.DB init store.open($dbPath);
+    def reply as view.Reply init view.getDeck($db, web.param($ctx, "name"));
+    webapi.sendJson($ctx, $reply.status, $reply.body);
+}
+
+/**
+ * GET /deck?name=<deck> - one deck's full record, addressed by query parameter.
+ * This is the form the CLI's resolver uses: a scoped name (`@jennifer/routeros`)
+ * holds a `/`, which the `/decks/:name` path route would split into two
+ * segments, so a scoped deck is only reachable this way.
+ * @param ctx {web.Context} the request context
+ */
+func apiGetDeckByQuery(ctx as web.Context) {
+    def db as flatdb.DB init store.open($dbPath);
+    def reply as view.Reply init view.getDeck($db, web.query($ctx, "name"));
+    webapi.sendJson($ctx, $reply.status, $reply.body);
+}
+
+/**
+ * GET /decks/:name/:version - one deck version's record.
+ * @param ctx {web.Context} the request context
+ */
+func apiGetVersion(ctx as web.Context) {
+    def db as flatdb.DB init store.open($dbPath);
+    def name as string init web.param($ctx, "name");
+    def reply as view.Reply init view.getVersion($db, $name, web.param($ctx, "version"));
+    webapi.sendJson($ctx, $reply.status, $reply.body);
+}
+
+/**
+ * GET /resolve?name=<deck>&constraint=<range> - the query the CLI uses to turn
+ * a name + constraint into a fetch URL and its pin.
+ * @param ctx {web.Context} the request context
+ */
+func apiResolve(ctx as web.Context) {
+    def db as flatdb.DB init store.open($dbPath);
+    def name as string init web.query($ctx, "name");
+    def reply as view.Reply init view.resolve($db, $name, web.query($ctx, "constraint"));
+    webapi.sendJson($ctx, $reply.status, $reply.body);
+}
+
+/**
+ * GET /resolve-graph?roots=<json> - transitive resolution. `roots` is a JSON
+ * object of deck name -> constraint; the reply is the flattened, version-locked
+ * graph (or an error).
+ * @param ctx {web.Context} the request context
+ */
+func apiResolveGraph(ctx as web.Context) {
+    def db as flatdb.DB init store.open($dbPath);
+    def reply as view.Reply init view.resolveGraph($db, web.query($ctx, "roots"));
+    webapi.sendJson($ctx, $reply.status, $reply.body);
+}
+
+# The versioned surface. Every route is declared once and served under each
+# mount: `/v1/...` canonically, and bare `/...` as the v1 alias for clients that
+# predate discovery. The canonical mount is declared first, so it is the first
+# entry discovery lists for the version. Every route is public - the registry is
+# read-only, and the write API is what will need `webapi`'s bearer auth and rate
+# limiting.
+#
+# Each route carries its specification feature label. `webapi.discovery` builds
+# the advertised `features` from exactly these, so the discovery document cannot
+# claim an operation the router does not serve.
+def api as webapi.Api init webapi.new();
+$api = webapi.mount($api, 1, "/v1");
+$api = webapi.alias($api, 1);
+$api = webapi.get($api, "/health", apiHealth, webapi.public());
+$api = webapi.feature($api, "health");
+$api = webapi.get($api, "/decks", apiListDecks, webapi.public());
+$api = webapi.feature($api, "decks");
+$api = webapi.get($api, "/deck", apiGetDeckByQuery, webapi.public());
+$api = webapi.feature($api, "deck");
+$api = webapi.get($api, "/decks/:name", apiGetDeck, webapi.public());
+$api = webapi.feature($api, "decks");
+$api = webapi.get($api, "/decks/:name/:version", apiGetVersion, webapi.public());
+$api = webapi.feature($api, "decks");
+$api = webapi.get($api, "/resolve", apiResolve, webapi.public());
+$api = webapi.feature($api, "resolve");
+$api = webapi.get($api, "/resolve-graph", apiResolveGraph, webapi.public());
+$api = webapi.feature($api, "resolveGraph");
+$api = webapi.get($api, "/search", apiSearch, webapi.public());
+$api = webapi.feature($api, "search");
+
+# The write API. Registered whenever *either* way of authorising a publish is
+# configured; the handler refuses the one that is not. A registry with neither
+# does not serve the route at all, so its discovery document carries no
+# `publish` feature and a client refuses the operation up front (4.4).
+# Publishing is served whenever any of the three ways of authorising it could
+# apply. CI tokens need no configuration at all - an operator mints one and it
+# works - so `publish` is offered unconditionally, and the handler refuses
+# whichever mechanism a caller reaches for that is not set up.
+$api = webapi.post($api, "/publish", apiPublish, webapi.public());
+$api = webapi.feature($api, "publish");
+
+# Yanking needs a person, not a workload: it is an editorial decision about a
+# version that already exists, so it is gated on logins rather than on trusted
+# publishing. A registry with no identity configured does not serve it.
+if ($authOn) {
+    $api = webapi.post($api, "/yank", apiYank, webapi.public());
+    $api = webapi.feature($api, "yank");
+    $api = webapi.post($api, "/unyank", apiUnyank, webapi.public());
+    $api = webapi.feature($api, "yank");
+}
+
+# The token exchange, registered only when it is configured. Leaving the routes
+# off is what keeps the derived discovery document honest: `webapi` builds
+# `features` from this table, so an unconfigured registry cannot advertise an
+# `auth` feature it would answer with a 404. The routes are public in the
+# `webapi` sense because they are how a caller *becomes* authenticated.
+if ($authOn) {
+    $api = webapi.post($api, "/auth/device", apiAuthDevice, webapi.public());
+    $api = webapi.feature($api, "auth");
+    $api = webapi.post($api, "/auth/token", apiAuthToken, webapi.public());
+    $api = webapi.feature($api, "auth");
+    $api = webapi.post($api, "/auth/refresh", apiAuthRefresh, webapi.public());
+    $api = webapi.feature($api, "auth");
+}
+
+/**
+ * The `webapi` guard shim. `webapi.guard` needs the built `Api` as well as the
+ * request, and a middleware is called with the request alone; with no closures
+ * to capture `$api`, this one-liner is what binds it.
+ * @param ctx {web.Context} the request context
+ * @return {bool} true when the request may run its handler
+ */
+func apiGuard(ctx as web.Context) {
+    return webapi.guard($api, $ctx);
+}
+
+/**
+ * The access log, as a `before` middleware. Registered ahead of the `webapi`
+ * guard so a request that the guard rejects is still recorded; middleware runs
+ * in registration order.
+ *
+ * It cannot carry a status: `web` has no after-handler hook, and wrapping every
+ * handler to get one would put the access log in the path of the thing it is
+ * supposed to observe. A request line plus the auth and admin events either side
+ * of it is enough to follow what happened.
+ * @param ctx {web.Context} the request context
+ * @return {bool} always true; observing a request never refuses it
+ */
+func accessLog(ctx as web.Context) {
+    def ev as audit.Event init audit.requestSeen(web.method($ctx), web.path($ctx),
+        web.remoteAddr($ctx));
+    if ($logRequests) {
+        # Promoted out of debug on request, so an access log does not drag every
+        # other debug record along with it.
+        $ev.level = audit.INFO;
+    }
+    audit.write($logSink, $ev);
+    return true;
+}
+
+/**
+ * The handler for a request matching no route.
+ *
+ * Registering one at all is what puts unmatched requests through the middleware
+ * chain: `web` runs middleware only around a handler, so the **built-in** 404
+ * bypasses it and would leave every mistyped path missing from the access log -
+ * which is the half of an access log worth reading. It also answers a browser
+ * with a page instead of a bare line.
+ * @param ctx {web.Context} the request context
+ */
+func siteNotFound(ctx as web.Context) {
+    # A path under a version this registry does not serve is a *protocol*
+    # mismatch, not a missing resource (specification 4.5). A bare 404 sends the
+    # user hunting for a typo in a deck name when the real problem is that their
+    # client and this registry do not overlap.
+    def mismatch as view.Reply init view.unsupportedVersion(web.path($ctx), SERVED_APIS);
+    if ($mismatch.status > 0) {
+        webapi.sendJson($ctx, $mismatch.status, $mismatch.body);
+        return;
+    }
+    if (webapi.wants($ctx) == "html") {
+        def page as webview.Page init webview.notFound("No such page: " + web.path($ctx));
+        web.html($ctx, $page.status, $page.body);
+        return;
+    }
+    webapi.notFound($ctx, "no such endpoint: " + web.path($ctx));
+}
+
+def app as web.App init web.new();
+$app = web.before($app, accessLog);
+$app = web.notFound($app, siteNotFound);
+$app = webapi.install($api, $app, apiGuard);
+
+# The index and the discovery document sit outside the versioned mounts: the
+# well-known path is fixed and unversioned, and is the one thing a client may
+# hard-code.
+$app = web.get($app, "/", apiIndex);
+$app = web.get($app, "/.well-known/jennifer-registry", apiDiscovery);
+
+# The website. Read-only by design: a deck page and the rendered documentation,
+# no form that writes anything. Deck pages sit under /deck/ rather than /decks/
+# because the latter is the JSON API's, where a two-segment path already means
+# name plus version.
+$app = web.get($app, "/deck/:scope/:deck", siteDeck);
+$app = web.get($app, "/manual/*rest", siteManual);
+$app = web.get($app, "/reference/*rest", siteReference);
+
+io.printf("jvc deck repository listening on http://localhost%s (db: %s, log: %s)\n",
+    $addr, $dbPath, audit.describe($logSink));
+audit.write($logSink, audit.serverStarted($addr, $dbPath, $providerName, $authOn));
+web.run($app, $addr);

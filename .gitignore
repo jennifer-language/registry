@@ -1,0 +1,25 @@
+# The registry database and anything else the running server writes. The
+# directory itself is tracked (via .gitkeep) so a fresh clone can start without
+# creating it; its contents never are.
+/data/*
+!/data/.gitkeep
+
+# Built documentation (grimoire.toml builds docs/ into public/docs/), and
+# anything else the site serves statically.
+/public/
+
+# Local interpreter binaries, if dropped into the tree.
+/jennifer
+/jennifer-tiny
+
+# Local secrets: the OAuth client id and the bearer-token signing key that
+# docker compose substitutes into the service. .env.example is the committed
+# template; .env itself never is.
+.env
+!.env.example
+
+# Editor / OS noise.
+*.swp
+*.tmp
+*.log
+.DS_Store

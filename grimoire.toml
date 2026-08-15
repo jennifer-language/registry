@@ -1,0 +1,52 @@
+# Grimoire book configuration for the **reference**: the API, the CLI, and the
+# specifications, for operators and client implementers.
+#
+#     grimoire build                                 # this book
+#     grimoire build --config grimoire-manual.toml   # the user manual
+#
+# The site has two books because they have two audiences and two URL paths, and
+# grimoire builds one source directory into one output directory.
+#
+# See https://github.com/jennifer-language/grimoire. Every key is optional; the
+# defaults build a usable book on their own. Note that Grimoire itself needs
+# Jennifer 0.25.0 or newer, which is a higher floor than the registry's own.
+
+[book]
+title = "Jennifer deck registry: reference"
+description = "The HTTP API, the operator CLI, and the specifications the deck registry implements."
+authors = ["the jvc contributors"]
+authorsLabel = "Maintained by"
+language = "en"
+src = "reference"
+
+[build]
+# The output directory is named for the URL path: the server serves `public` as
+# a static root and `web.serveDir` joins the whole request path, so a page at
+# /reference/api.html must live at public/reference/api.html.
+out = "public/reference"
+
+[html]
+theme = "nordic"
+mode = "auto"
+tocDepth = 3
+sectionNumbers = true
+repoUrl = "https://github.com/jennifer-language/registry"
+repoLabel = "Source"
+editUrl = "https://github.com/jennifer-language/registry/edit/main/reference/{path}"
+
+[highlight]
+# The built-in highlighter: Jennifer blocks are coloured at build time, with no
+# JavaScript and nothing fetched from a third party.
+enabled = true
+
+[highlightjs]
+# Left off deliberately. Enabling it would make the built site depend on a CDN,
+# and the only languages here the built-in highlighter does not know are TOML
+# and shell, which read fine unhighlighted.
+enabled = false
+
+[search]
+enabled = true
+
+[pdf]
+enabled = false

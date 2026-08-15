@@ -1,0 +1,42 @@
+# Grimoire book configuration for the **manual**: short task-shaped guides for
+# people using the registry, as distinct from the reference, which describes the
+# API and the specifications.
+#
+#     grimoire build --config grimoire-manual.toml
+#
+# Keep the two apart. A page that answers "how do I do X" belongs here; a page
+# that answers "what exactly does the server return" belongs in reference/.
+
+[book]
+title = "Jennifer deck registry: manual"
+description = "Finding, using, and publishing decks on a Jennifer deck registry."
+authors = ["the jvc contributors"]
+authorsLabel = "Maintained by"
+language = "en"
+src = "manual"
+
+[build]
+# Named for the URL path, like the reference book: /manual/using-a-deck.html
+# must live at public/manual/using-a-deck.html.
+out = "public/manual"
+
+[html]
+theme = "nordic"
+mode = "auto"
+tocDepth = 3
+sectionNumbers = false
+repoUrl = "https://github.com/jennifer-language/registry"
+repoLabel = "Source"
+editUrl = "https://github.com/jennifer-language/registry/edit/main/manual/{path}"
+
+[highlight]
+enabled = true
+
+[highlightjs]
+enabled = false
+
+[search]
+enabled = true
+
+[pdf]
+enabled = false

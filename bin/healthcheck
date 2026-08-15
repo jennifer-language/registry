@@ -1,0 +1,39 @@
+#!/usr/bin/env -S jennifer run
+# SPDX-License-Identifier: LGPL-3.0-only
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-capability: net
+#
+# healthcheck - the container's HEALTHCHECK probe. Exits 0 when the server
+# answers /health, non-zero otherwise. It exists because the interpreter image
+# is a slim Debian with no curl, and adding one purely to poll a local port
+# would be a package and an attack surface for one HTTP GET the language can
+# already do.
+#
+# The URL defaults to the port serve.j listens on; JVC_HEALTHURL overrides it.
+#
+#     jennifer run bin/healthcheck
+
+use os;
+use io;
+import "http.j" as http;
+
+def const TIMEOUT_MS as int init 3000;
+def const MAX_BYTES as int init 65536;
+
+def url as string init "http://127.0.0.1:8080/health";
+if (not (os.getEnv("JVC_HEALTHURL") == "")) {
+    $url = os.getEnv("JVC_HEALTHURL");
+}
+
+def none as map of string to string init {};
+try {
+    def res as http.Response init http.requestWith("GET", $url, $none, "", TIMEOUT_MS, MAX_BYTES);
+    if (not ($res.status == 200)) {
+        io.printf("unhealthy: %s answered %d\n", $url, $res.status);
+        exit 1;
+    }
+} catch (err) {
+    io.printf("unhealthy: %s unreachable (%s)\n", $url, $err.message);
+    exit 1;
+}
