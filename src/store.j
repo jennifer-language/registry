@@ -38,6 +38,9 @@
 use json;
 use strings;
 use convert;
+use fs;
+use time;
+use uuid;
 import "flatdb.j" as flatdb;
 import "semver.j" as semver;
 import "./constraint.j" as constraint;
@@ -1376,4 +1379,162 @@ export func ownersOf(db as flatdb.DB, scope as string) {
         $out[] = $other;
     }
     return $out;
+}
+
+# --- the write lock ----------------------------------------------------------
+
+# How long to wait for a held lock before giving up, and how long a lock may sit
+# untouched before it is assumed abandoned. The stale window is deliberately much
+# larger than any real write: breaking a live lock is worse than waiting, because
+# breaking it reintroduces exactly the lost update the lock exists to prevent.
+def const LOCK_WAIT_MS as int init 5000;
+def const LOCK_RETRY_MS as int init 25;
+# `time.sleep` takes a `time.Duration`, whose only field is `nanos`; there is no
+# `time.millis` constructor in this interpreter. Passing an int throws, which
+# would turn every contended writer into a crash instead of a wait.
+def const LOCK_RETRY_NANOS as int init 25000000;
+def const LOCK_STALE_SECONDS as int init 120;
+
+/**
+ * A held write lock. Release it with `unlock`, ideally through `defer` so it is
+ * released however the block exits.
+ * @field path {string} the lock's own path
+ * @field holder {string} what was written into it, for diagnosing a stuck lock
+ */
+export def struct Lock {
+    path as string,
+    holder as string
+};
+
+# lockPathFor is the lock beside the database, so the two travel together and a
+# bind-mounted data directory carries both.
+func lockPathFor(dbPath as string) {
+    return $dbPath + ".lock";
+}
+
+# holderOf reads a lock's holder label, or "" when it cannot be read.
+func holderOf(path as string) {
+    try {
+        return fs.readlink($path);
+    } catch (err) {
+        return "";
+    }
+}
+
+# stampOf pulls the acquisition time out of a holder label, or 0. The label is
+# "<uuid> <unix seconds>", so the last space-separated field is the stamp.
+# (`strings.lastIndexOf` does not exist in this interpreter; splitting is the
+# way to reach the final field.)
+func stampOf(holder as string) {
+    def parts as list of string init strings.split($holder, " ");
+    if (len($parts) < 2) {
+        return 0;
+    }
+    try {
+        return convert.toInt($parts[len($parts) - 1]);
+    } catch (err) {
+        return 0;
+    }
+}
+
+# breakIfStale removes a lock that has sat untouched past the stale window,
+# which is how a writer killed mid-write stops wedging the registry. Split out of
+# `lock` only to keep its retry loop flat. The removal races with anybody else
+# doing the same, and that is harmless: the retry that follows re-takes the lock
+# through the same atomic symlink, so there is still exactly one winner.
+func breakIfStale(path as string) {
+    def current as string init holderOf($path);
+    if ($current == "") {
+        return null;
+    }
+    if (time.unix(time.utc()) - stampOf($current) <= LOCK_STALE_SECONDS) {
+        return null;
+    }
+    try {
+        fs.remove($path);
+    } catch (rmErr) { # lint-disable: L103
+        # somebody else broke it first, which is fine
+    }
+    return null;
+}
+
+/**
+ * Take the registry's write lock, waiting for it if somebody else holds it.
+ *
+ * **`flatdb` has no locking of its own.** `flatdb.save` replaces the document
+ * crash-atomically, so a reader never sees a torn file - but two writers that
+ * each read, edit, and write back will still lose one of the two edits, and
+ * nothing in the write path notices. That is the loss this prevents, and it is
+ * not a rare race: `deckadmin` run while the server is up, or two publishes
+ * arriving together, is enough.
+ *
+ * The lock is a **symlink**, because creating one is atomic and fails if the
+ * name exists, which is the test-and-set this needs; and because its target can
+ * carry a readable holder label, so a stuck lock can be diagnosed with
+ * `ls -l` rather than guessed at.
+ *
+ * A lock older than the stale window is assumed abandoned by a killed writer and
+ * broken. That window is deliberately long: waiting is cheap, and breaking a
+ * lock that is merely slow reintroduces the very loss this exists to stop.
+ *
+ * **Holding the lock is only half of it.** The document must be *read* inside
+ * the lock as well as written, or the read happened before somebody else's write
+ * and the edit is computed against a stale copy.
+ * @param dbPath {string} the database path this lock guards
+ * @return {Lock} the held lock
+ * @throws {Error} when the lock could not be taken within the wait
+ */
+export func lock(dbPath as string) {
+    def path as string init lockPathFor($dbPath);
+    def holder as string init uuid.v4() + " " + convert.toString(time.unix(time.utc()));
+    def waited as int init 0;
+    while ($waited <= LOCK_WAIT_MS) {
+        try {
+            fs.symlink($holder, $path);
+            return Lock{ path: $path, holder: $holder };
+        } catch (err) {
+            breakIfStale($path);
+        }
+        time.sleep(time.Duration{nanos: LOCK_RETRY_NANOS});
+        $waited = $waited + LOCK_RETRY_MS;
+    }
+    throw Error{
+        kind: "store",
+        message: "could not take the registry write lock at " + $path +
+            " within " + convert.toString(LOCK_WAIT_MS) + "ms; holder: " +
+            holderOf($path),
+        file: "", line: 0, col: 0
+    };
+}
+
+/**
+ * Who currently holds the write lock, or "" when it is free.
+ *
+ * Note that **`fs.exists` cannot answer this**: the lock is a symlink whose
+ * target is a holder label rather than a path, so `exists` follows the link,
+ * finds nothing, and reports the lock absent while it is very much held.
+ * Reading the link is the test.
+ * @param dbPath {string} the database the lock guards
+ * @return {string} the holder label, or "" when unlocked
+ */
+export func lockHolder(dbPath as string) {
+    return holderOf(lockPathFor($dbPath));
+}
+
+/**
+ * Release a write lock. Safe to call on a lock somebody else has already broken:
+ * a release that finds a different holder leaves it alone rather than freeing
+ * somebody else's lock.
+ * @param held {Lock} the lock returned by `lock`
+ */
+export func unlock(held as Lock) {
+    if (not (holderOf($held.path) == $held.holder)) {
+        return null;
+    }
+    try {
+        fs.remove($held.path);
+    } catch (err) { # lint-disable: L103
+        # already gone; nothing to release
+    }
+    return null;
 }

@@ -338,6 +338,18 @@ func apiDiscovery(ctx as web.Context) {
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
+# lockedStore takes the registry's write lock. Every handler that writes goes
+# through it, and each **must** `defer store.unlock` on what it gets back.
+#
+# The read has to happen inside the lock as well as the write. `flatdb` has no
+# locking of its own: two handlers that each open, edit, and save would lose one
+# of the two edits, and nothing in the write path would notice. Requests are
+# served concurrently, each in its own worker, so that is the ordinary case
+# rather than a rare race.
+func lockedStore() {
+    return store.lock($dbPath);
+}
+
 # answerAuth sends an AuthReply, persists the store when it was edited, and
 # records what happened. The three auth handlers differ only in which authview
 # function they call and which stage they name.
@@ -379,6 +391,8 @@ func requestText(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiAuthDevice(ctx as web.Context) {
+    def held as store.Lock init lockedStore();
+    defer store.unlock($held);
     def db as flatdb.DB init store.open($dbPath);
     answerAuth($ctx, "device", authview.device($auth, $db));
 }
@@ -388,6 +402,8 @@ func apiAuthDevice(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiAuthToken(ctx as web.Context) {
+    def held as store.Lock init lockedStore();
+    defer store.unlock($held);
     def db as flatdb.DB init store.open($dbPath);
     answerAuth($ctx, "issued", authview.token($auth, $db, requestText($ctx), token.now()));
 }
@@ -397,6 +413,8 @@ func apiAuthToken(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiAuthRefresh(ctx as web.Context) {
+    def held as store.Lock init lockedStore();
+    defer store.unlock($held);
     def db as flatdb.DB init store.open($dbPath);
     answerAuth($ctx, "refreshed", authview.refresh($auth, $db, requestText($ctx), token.now()));
 }
@@ -542,6 +560,19 @@ func apiPublish(ctx as web.Context) {
             ": " + $err.message);
         return;
     }
+    # The lock is taken **after** the forge call, not before. Reading a repository
+    # is a network round trip to a host the caller chose; holding the registry's
+    # only write lock across it would let one slow forge serialise every publish
+    # on the server, and a slow enough one would push other writers past their
+    # wait. The credential was already established above from local state, so
+    # nothing that decides *authorisation* happens outside the lock.
+    def held as store.Lock init lockedStore();
+    defer store.unlock($held);
+    # Re-read under the lock: the copy opened above was read without it, and
+    # authorising or conflict-checking against a stale document is exactly the
+    # lost update the lock exists to prevent.
+    $db = store.open($dbPath);
+
     def now as string init convert.toString(token.now());
     match ($mode) {
         when "trusted" {
@@ -587,6 +618,8 @@ func answerYank(ctx as web.Context, yanked as bool) {
         return;
     }
     def args as map of string to string init yankArgs($ctx);
+    def held as store.Lock init lockedStore();
+    defer store.unlock($held);
     def db as flatdb.DB init store.open($dbPath);
     answerPublish($ctx, publishview.setYanked($db, $who, $args["name"],
         $args["version"], $yanked));

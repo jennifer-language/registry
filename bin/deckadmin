@@ -225,6 +225,24 @@ if (not ($sink.fileError == "")) {
     io.eprintf("warning: not logging to %s (%s)\n", $logCfg.path, $sink.fileError);
 }
 
+# The write lock, taken around the read *and* the write. Both halves matter:
+# `flatdb` has no locking, so two `deckadmin` runs - or one alongside a publish
+# on the server - would otherwise each read the whole document, edit their own
+# copy, and write it back, and the second write would silently drop the first
+# one's change. Measured before this existed: six concurrent adds left one deck.
+#
+# The store is re-opened here, inside the lock. The copy read at startup was read
+# without it and may already be behind, and editing a stale copy loses exactly
+# what the lock is meant to protect.
+#
+# Released by `defer`, which at a program's top level runs at exit - including on
+# `exit 1` and on an uncaught throw. That matters here: a command that fails
+# mid-dispatch releases the lock on the way out rather than leaving it for the
+# stale window to break.
+def lockHeld as store.Lock init store.lock($dbPath);
+defer store.unlock($lockHeld);
+$db = store.open($dbPath);
+
 def result as admin.AdminResult init args.dispatch($parsed, {
     "add": onAdd,
     "update": onAdd,

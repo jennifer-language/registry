@@ -409,3 +409,65 @@ func testARecordWrittenBeforeYankingExistedIsLive() {
     testing.assertFalse(isYanked($db, "ansi", "1.0.0"));
     testing.assertTrue(resolve($db, "ansi", "*").found);
 }
+
+# --- the write lock ------------------------------------------------------------
+
+func lockPath() {
+    return os.tempDir() + "/jvc_lock_test.json";
+}
+
+# freshLock clears any lock a previously failed run left behind. Without this a
+# single failing assertion wedges every later run of this file for the length of
+# the stale window, which turns one broken test into a broken suite.
+func freshLock() {
+    try {
+        fs.remove(lockPath() + ".lock");
+    } catch (err) { # lint-disable: L103
+        # nothing to clear
+    }
+    return null;
+}
+
+func testALockIsExclusive() {
+    freshLock();
+    # flatdb has no locking of its own, so this is the only thing standing
+    # between two writers and a silently lost edit
+    def held as Lock init lock(lockPath());
+    testing.assertThrows("takesASecondLock", "store");
+    unlock($held);
+}
+
+func takesASecondLock() {
+    def second as Lock init lock(lockPath());
+    unlock($second);
+    return null;
+}
+
+func testALockIsRetakeableAfterRelease() {
+    freshLock();
+    def first as Lock init lock(lockPath());
+    unlock($first);
+    def second as Lock init lock(lockPath());
+    unlock($second);
+    testing.assertEqual(lockHolder(lockPath()), "");
+}
+
+func testReleasingSomebodyElsesLockIsANoOp() {
+    freshLock();
+    # a writer whose lock was broken as stale must not then free the lock its
+    # replacement is holding
+    def held as Lock init lock(lockPath());
+    def impostor as Lock init Lock{ path: $held.path, holder: "someone-else 1" };
+    unlock($impostor);
+    testing.assertEqual(lockHolder(lockPath()), $held.holder);
+    unlock($held);
+    testing.assertEqual(lockHolder(lockPath()), "");
+}
+
+func testUnlockingTwiceIsHarmless() {
+    freshLock();
+    def held as Lock init lock(lockPath());
+    unlock($held);
+    unlock($held);
+    testing.assertEqual(lockHolder(lockPath()), "");
+}
