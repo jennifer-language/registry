@@ -228,6 +228,7 @@ func aNamespace(scope as string, subject as string, login as string) {
     return Namespace{
         scope: $scope, provider: "github", subject: $subject,
         login: $login, registeredAt: "1700000000",
+        kind: SCOPE_USER,
         coOwners: []
     };
 }
@@ -236,7 +237,8 @@ func aNamespace(scope as string, subject as string, login as string) {
 
 # aRefresh builds a Refresh record for tests.
 func aRefresh(accountId as int, expiresAt as int) {
-    return Refresh{ accountId: $accountId, login: "alice", expiresAt: $expiresAt };
+    return Refresh{ accountId: $accountId, login: "alice", expiresAt: $expiresAt,
+        orgs: [], orgsCheckedAt: 0 };
 }
 
 func testRefreshRoundTrips() {

@@ -11,7 +11,8 @@ use testing;
 def const RESERVED as list of string init ["jennifer"];
 
 func mplx() {
-    return identity.Subject{ provider: "github", id: "1234567", login: "mplx" };
+    return identity.Subject{ provider: "github", id: "1234567", login: "mplx",
+        orgs: [], orgsCheckedAt: "" };
 }
 
 func claim(subject as identity.Subject, scope as string) {
@@ -33,7 +34,7 @@ func testAnotherNameIsRefusedAndSaysWhy() {
 func testComparisonIsCaseInsensitiveOnBothSides() {
     # scopes are stored folded, so a differently-cased username still derives
     def shouty as identity.Subject init identity.Subject{
-        provider: "github", id: "1", login: "Netflix"
+        provider: "github", id: "1", login: "Netflix", orgs: [], orgsCheckedAt: ""
     };
     testing.assertTrue(claim($shouty, "netflix").allowed);
     testing.assertTrue(claim($shouty, "NETFLIX").allowed);
@@ -42,7 +43,7 @@ func testComparisonIsCaseInsensitiveOnBothSides() {
 func testAReservedNameIsRefusedEvenWhenItMatches() {
     # somebody whose username is the reserved word still does not get it
     def owner as identity.Subject init identity.Subject{
-        provider: "github", id: "9", login: "jennifer"
+        provider: "github", id: "9", login: "jennifer", orgs: [], orgsCheckedAt: ""
     };
     def d as policy.Decision init claim($owner, "jennifer");
     testing.assertFalse($d.allowed);
@@ -52,7 +53,7 @@ func testAReservedNameIsRefusedEvenWhenItMatches() {
 func testAnIdentityWithNoUsernameDerivesNothing() {
     # an OIDC subject need not carry a username at all
     def anon as identity.Subject init identity.Subject{
-        provider: "authelia", id: "sub-abc", login: ""
+        provider: "authelia", id: "sub-abc", login: "", orgs: [], orgsCheckedAt: ""
     };
     def d as policy.Decision init claim($anon, "anything");
     testing.assertFalse($d.allowed);

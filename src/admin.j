@@ -63,6 +63,8 @@ func ownershipCommands(p as args.Parser) {
     $ns = args.flag($ns, "owner", "", "", "the subject id to bind it to (omit to reserve)");
     $ns = args.flag($ns, "provider", "", "github", "the identity provider that issued it");
     $ns = args.flag($ns, "login", "", "", "the owner's username, a display label");
+    $ns = args.boolFlag($ns, "org", "",
+        "the owner is an organisation: authorise by live membership (8.7)");
     $out = args.command($out, "register-namespace",
         "register a scope decks may publish under", $ns);
 
@@ -478,8 +480,12 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
     # that covers what derivation cannot, including reassigning a scope after a
     # dispute (specification 8.2), so re-granting an existing scope is allowed.
     def reassigned as bool init store.hasNamespace($db, $scope);
-    def out as scope.ClaimResult init scope.grant($db, $scope,
-        args.asString($r, "provider"), $owner, args.asString($r, "login"), $now);
+    def kind as string init store.SCOPE_USER;
+    if (args.asBool($r, "org")) {
+        $kind = store.SCOPE_ORG;
+    }
+    def out as scope.ClaimResult init scope.grantAs($db, $scope,
+        args.asString($r, "provider"), $owner, args.asString($r, "login"), $kind, $now);
     if (not $out.allowed) {
         return failResult($db, $out.reason);
     }
@@ -959,6 +965,9 @@ export func cmdNamespaces(db as flatdb.DB, r as args.Result, now as string) {
             }
             def line as string init "  @" + $scope + "  " + $who + " [" +
                 $ns.provider + " " + $ns.subject + "]";
+            if ($ns.kind == store.SCOPE_ORG) {
+                $line = $line + " (org)";
+            }
             if (len($ns.coOwners) > 0) {
                 $line = $line + " +" + convert.toString(len($ns.coOwners)) +
                     " co-owner(s): " + strings.join($ns.coOwners, " ");

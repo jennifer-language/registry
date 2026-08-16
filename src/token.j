@@ -53,7 +53,9 @@ def const REFRESH_BYTES as int init 32;
 export def struct Identity {
     accountId as int,
     login as string,
-    expiresAt as int
+    expiresAt as int,
+    orgs as list of string,
+    orgsCheckedAt as int
 };
 
 /**
@@ -61,11 +63,18 @@ export def struct Identity {
  * @param key {bytes} the HMAC signing secret
  * @param accountId {int} the numeric GitHub account id
  * @param login {string} the GitHub login, carried as a display label
+ * @param orgs {list of string} the organisation ids the account actively belongs
+ *     to, read at login (8.7). Carried in the token because the provider token
+ *     is discarded immediately after, so this is the only chance to ask.
+ * @param checkedAt {int} when that membership was read (Unix seconds). Recorded
+ *     separately from `iat` because a refreshed token is newer than the
+ *     membership it carries, and an org-scope write needs to know which.
  * @param ttl {int} how long the token is valid, in seconds
  * @param now {int} the current time (Unix seconds), passed in so this stays pure
  * @return {string} the compact JWT
  */
-export func mint(key as bytes, accountId as int, login as string, ttl as int, now as int) {
+export func mint(key as bytes, accountId as int, login as string,
+        orgs as list of string, checkedAt as int, ttl as int, now as int) {
     def claims as json.Value init json.map();
     # `sub` is the account id as text: a JWT subject is a string, and the id is
     # what ownership binds to.
@@ -73,6 +82,12 @@ export func mint(key as bytes, accountId as int, login as string, ttl as int, no
     $claims = json.set($claims, "/login", $login);
     $claims = json.set($claims, "/iat", $now);
     $claims = json.set($claims, "/exp", $now + $ttl);
+    def ids as json.Value init json.list();
+    for (def org in $orgs) {
+        $ids = json.append($ids, "", $org);
+    }
+    $claims = json.set($claims, "/orgs", $ids);
+    $claims = json.set($claims, "/orgsAt", $checkedAt);
     return jwt.sign($claims, $key, ALG);
 }
 
@@ -87,10 +102,25 @@ export func mint(key as bytes, accountId as int, login as string, ttl as int, no
  */
 export func verify(key as bytes, token as string) {
     def claims as json.Value init jwt.verify($token, $key, ALG);
+    def orgs as list of string init [];
+    if (json.has($claims, "/orgs")) {
+        def n as int init json.length($claims, "/orgs");
+        def i as int init 0;
+        while ($i < $n) {
+            $orgs[] = json.asString($claims, "/orgs/" + convert.toString($i));
+            $i = $i + 1;
+        }
+    }
+    def checkedAt as int init 0;
+    if (json.has($claims, "/orgsAt")) {
+        $checkedAt = json.asInt($claims, "/orgsAt");
+    }
     return Identity{
         accountId: convert.toInt(json.asString($claims, "/sub")),
         login: json.asString($claims, "/login"),
-        expiresAt: json.asInt($claims, "/exp")
+        expiresAt: json.asInt($claims, "/exp"),
+        orgs: $orgs,
+        orgsCheckedAt: $checkedAt
     };
 }
 

@@ -29,13 +29,15 @@ func noReserved() {
 
 # alice is the ordinary caller: GitHub subject 1234567, username "alice".
 func alice() {
-    return identity.Subject{ provider: "github", id: "1234567", login: "alice" };
+    return identity.Subject{ provider: "github", id: "1234567", login: "alice",
+        orgs: [], orgsCheckedAt: "" };
 }
 
 # mallory holds the *same username* alice used to have, on a different account.
 # This is the case section 8.1 exists for.
 func mallory() {
-    return identity.Subject{ provider: "github", id: "9999999", login: "alice" };
+    return identity.Subject{ provider: "github", id: "9999999", login: "alice",
+        orgs: [], orgsCheckedAt: "" };
 }
 
 # --- claiming ---------------------------------------------------------------
@@ -73,7 +75,7 @@ func testAMalformedScopeIsRefusedBeforeAnythingElse() {
 
 func testAnUnauthenticatedCallerClaimsNothing() {
     def nobody as identity.Subject init identity.Subject{
-        provider: "", id: "", login: ""
+        provider: "", id: "", login: "", orgs: [], orgsCheckedAt: ""
     };
     def out as ClaimResult init claim(emptyDb(), firstcome.policy(), $nobody, "acme",
         noReserved(), NOW);
@@ -124,14 +126,14 @@ func testTheRefusalDistinguishesTakenFromDisallowed() {
 func testARenameDoesNotMoveTheScope() {
     # alice renames to alicia: same id, new login. The scope stays hers.
     def renamed as identity.Subject init identity.Subject{
-        provider: "github", id: "1234567", login: "alicia"
+        provider: "github", id: "1234567", login: "alicia", orgs: [], orgsCheckedAt: ""
     };
     testing.assertTrue(authorise(claimed(), $renamed, "alice").allowed);
 }
 
 func testSheMayAlsoClaimTheNewName() {
     def renamed as identity.Subject init identity.Subject{
-        provider: "github", id: "1234567", login: "alicia"
+        provider: "github", id: "1234567", login: "alicia", orgs: [], orgsCheckedAt: ""
     };
     def out as ClaimResult init claim(claimed(), derived.policy(), $renamed, "alicia",
         noReserved(), NOW);
@@ -194,7 +196,7 @@ func testAnUnregisteredScopeIsNotAWriteTarget() {
 func testAuthorisationIgnoresTheProviderWhenItDiffers() {
     # the same numeric id from a different provider is a different principal
     def elsewhere as identity.Subject init identity.Subject{
-        provider: "gitea", id: "1234567", login: "alice"
+        provider: "gitea", id: "1234567", login: "alice", orgs: [], orgsCheckedAt: ""
     };
     testing.assertFalse(authorise(claimed(), $elsewhere, "alice").allowed);
 }
@@ -206,4 +208,75 @@ func testAuthorisationFoldsTheScope() {
 func testScopeOfDeckIsTheAuthorisationTarget() {
     testing.assertEqual(scopeOfDeck("@Acme/Tool"), "acme");
     testing.assertEqual(scopeOfDeck("bare"), "");
+}
+
+# --- organisation scopes (8.7) -------------------------------------------------
+
+def const ORG_ID as string init "77777";
+
+# orgScope: @acme belongs to the organisation with id 77777.
+func orgScope() {
+    return grantAs(emptyDb(), "acme", "github", ORG_ID, "acme-inc",
+        store.SCOPE_ORG, NOW).db;
+}
+
+# a member carries the orgs their login found, exactly as a real token would
+func memberOf(orgs as list of string) {
+    return identity.Subject{
+        provider: "github", id: "1234567", login: "alice",
+        orgs: $orgs, orgsCheckedAt: NOW
+    };
+}
+
+func testAnActiveMemberMayWriteUnderAnOrgScope() {
+    testing.assertTrue(authorise(orgScope(), memberOf([ORG_ID]), "acme").allowed);
+}
+
+func testANonMemberMayNot() {
+    def out as policy.Decision init authorise(orgScope(), memberOf([]), "acme");
+    testing.assertFalse($out.allowed);
+    testing.assertContains($out.reason, "not an active member");
+}
+
+func testMembershipOfAnotherOrgDoesNotHelp() {
+    testing.assertFalse(authorise(orgScope(), memberOf(["99999"]), "acme").allowed);
+}
+
+func testWhoeverGrantedItGetsNothingPersonally() {
+    # the point of 8.7: the scope is the organisation's, not the claimant's, so
+    # an id that merely matches the caller is not ownership here
+    def who as identity.Subject init identity.Subject{
+        provider: "github", id: ORG_ID, login: "impostor",
+        orgs: [], orgsCheckedAt: NOW
+    };
+    testing.assertFalse(authorise(orgScope(), $who, "acme").allowed);
+}
+
+func testAnOrgScopeIgnoresTheOwnerComparison() {
+    # a user scope would allow this caller; an org scope must not, or the kind
+    # would be decorative
+    def userScope as flatdb.DB init grantAs(emptyDb(), "acme", "github", ORG_ID,
+        "acme-inc", store.SCOPE_USER, NOW).db;
+    def who as identity.Subject init identity.Subject{
+        provider: "github", id: ORG_ID, login: "x", orgs: [], orgsCheckedAt: NOW
+    };
+    testing.assertTrue(authorise($userScope, $who, "acme").allowed);
+    testing.assertFalse(authorise(orgScope(), $who, "acme").allowed);
+}
+
+func testAnOrgOnAnotherProviderIsRefused() {
+    def who as identity.Subject init identity.Subject{
+        provider: "gitea", id: "1", login: "alice",
+        orgs: [ORG_ID], orgsCheckedAt: NOW
+    };
+    def out as policy.Decision init authorise(orgScope(), $who, "acme");
+    testing.assertFalse($out.allowed);
+    testing.assertContains($out.reason, "on github");
+}
+
+func testAUserScopeIsTheDefaultKind() {
+    # an unrecognised or absent kind must read as the narrower one, or a typo
+    # turns a personal scope into one a whole organisation can write to
+    def db as flatdb.DB init grant(emptyDb(), "acme", "github", "1234567", "alice", NOW).db;
+    testing.assertEqual(store.getNamespace($db, "acme").kind, store.SCOPE_USER);
 }

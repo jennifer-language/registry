@@ -30,11 +30,13 @@ func owned() {
 }
 
 func alice() {
-    return identity.Subject{ provider: "github", id: "1234567", login: "alice" };
+    return identity.Subject{ provider: "github", id: "1234567", login: "alice",
+        orgs: [], orgsCheckedAt: "" };
 }
 
 func stranger() {
-    return identity.Subject{ provider: "github", id: "9999999", login: "mallory" };
+    return identity.Subject{ provider: "github", id: "9999999", login: "mallory",
+        orgs: [], orgsCheckedAt: "" };
 }
 
 func manifestText() {

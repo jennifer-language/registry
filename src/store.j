@@ -496,6 +496,29 @@ func recordString(rec as json.Value, field as string) {
     return "";
 }
 
+# The two kinds a scope's principal may be.
+export def const SCOPE_USER as string init "user";
+export def const SCOPE_ORG as string init "org";
+
+# scopeKindOf normalises a kind, defaulting anything unrecognised to "user".
+# Defaulting to the *narrower* kind matters: a typo must not turn a personal
+# scope into one that anybody in some organisation can write to.
+func scopeKindOf(kind as string) {
+    if ($kind == SCOPE_ORG) {
+        return SCOPE_ORG;
+    }
+    return SCOPE_USER;
+}
+
+# recordKindOfScope reads a namespace record's kind. Absent reads as "user",
+# which is what every record written before the field existed actually was.
+func recordKindOfScope(rec as json.Value) {
+    if (not json.has($rec, "/kind")) {
+        return SCOPE_USER;
+    }
+    return scopeKindOf(json.asString($rec, "/kind"));
+}
+
 # recordStrings reads an optional array of strings. Absent reads as empty, which
 # is what makes a list field additive over records written before it existed.
 func recordStrings(rec as json.Value, field as string) {
@@ -645,6 +668,9 @@ export func listNamespaces(db as flatdb.DB) {
  * @field subject {string} the provider's stable subject identifier ("" when unowned)
  * @field login {string} the owner's username, a display label refreshed on each login
  * @field registeredAt {string} when the scope was registered (Unix seconds as text)
+ * @field kind {string} `"user"` when `subject` is a person, `"org"` when it is an
+ *     organisation the provider can be asked about (8.7). Absent reads as
+ *     `"user"`, which is what every record written before this field was.
  * @field coOwners {list of string} additional principals that may write under
  *     this scope, as subject ids under the same `provider`. Empty for a scope
  *     with one owner, which is every scope written before co-ownership existed.
@@ -655,6 +681,7 @@ export def struct Namespace {
     subject as string,
     login as string,
     registeredAt as string,
+    kind as string,
     coOwners as list of string
 };
 
@@ -680,6 +707,7 @@ export func registerNamespace(db as flatdb.DB, ns as Namespace) {
     $rec = json.set($rec, "/subject", $ns.subject);
     $rec = json.set($rec, "/login", $ns.login);
     $rec = json.set($rec, "/registeredAt", $ns.registeredAt);
+    $rec = json.set($rec, "/kind", scopeKindOf($ns.kind));
     def owners as json.Value init json.list();
     for (def other in $ns.coOwners) {
         $owners = json.append($owners, "", $other);
@@ -705,6 +733,7 @@ export func getNamespace(db as flatdb.DB, scope as string) {
         subject: recordString($rec, "/subject"),
         login: recordString($rec, "/login"),
         registeredAt: recordString($rec, "/registeredAt"),
+        kind: recordKindOfScope($rec),
         coOwners: recordStrings($rec, "/coOwners")
     };
 }
@@ -783,7 +812,9 @@ func refreshPtr(fingerprint as string) {
 export def struct Refresh {
     accountId as int,
     login as string,
-    expiresAt as int
+    expiresAt as int,
+    orgs as list of string,
+    orgsCheckedAt as int
 };
 
 /**
@@ -802,6 +833,12 @@ export func putRefresh(db as flatdb.DB, fingerprint as string, rec as Refresh) {
     $rj = json.set($rj, "/accountId", $rec.accountId);
     $rj = json.set($rj, "/login", $rec.login);
     $rj = json.set($rj, "/expiresAt", $rec.expiresAt);
+    def ids as json.Value init json.list();
+    for (def org in $rec.orgs) {
+        $ids = json.append($ids, "", $org);
+    }
+    $rj = json.set($rj, "/orgs", $ids);
+    $rj = json.set($rj, "/orgsCheckedAt", $rec.orgsCheckedAt);
     return flatdb.set($out, refreshPtr($fingerprint), $rj);
 }
 
@@ -824,10 +861,16 @@ export func hasRefresh(db as flatdb.DB, fingerprint as string) {
  */
 export func getRefresh(db as flatdb.DB, fingerprint as string) {
     def rec as json.Value init flatdb.get($db, refreshPtr($fingerprint));
+    def checkedAt as int init 0;
+    if (json.has($rec, "/orgsCheckedAt")) {
+        $checkedAt = json.asInt($rec, "/orgsCheckedAt");
+    }
     return Refresh{
         accountId: json.asInt($rec, "/accountId"),
         login: json.asString($rec, "/login"),
-        expiresAt: json.asInt($rec, "/expiresAt")
+        expiresAt: json.asInt($rec, "/expiresAt"),
+        orgs: recordStrings($rec, "/orgs"),
+        orgsCheckedAt: $checkedAt
     };
 }
 

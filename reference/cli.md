@@ -181,6 +181,31 @@ shared file shows both.
 | `unyank <deck> <version>` | restore a withdrawn version |
 | `revoke <accountId>` | invalidate an identity's refresh tokens |
 
+#### Organisation scopes
+
+`--org` marks the owner as an **organisation** rather than a person, and changes
+the question every later write asks: not "is this your scope" but "are you an
+active member of that organisation".
+
+```sh
+jennifer run bin/deckadmin register-namespace acme \
+    --owner 77777 --login acme-inc --org
+```
+
+`--owner` is then the **organisation's** numeric id, not a person's. Anyone the
+organisation actively includes can publish under the scope, and anyone it removes
+stops being able to - with no list for an operator to maintain. Pending
+invitations and billing managers are excluded and always will be.
+
+The cost, stated plainly: memberships are read **at login** and carried in the
+registry's own token, because the provider token is discarded immediately after
+(8.4) and there is nothing left to ask with. A refresh reissues them without
+renewing the timestamp, so somebody removed from an organisation keeps write
+access until their token ages out rather than instantly.
+
+Implemented for GitHub. The other identity modules return no memberships, which
+makes an organisation scope unwritable there rather than writable by anybody.
+
 #### Co-owners
 
 A scope has **one owner and any number of co-owners**. A co-owner publishes and
@@ -292,6 +317,7 @@ Also available over HTTP as `POST /yank` and `POST /unyank` for the scope owner.
 | `--owner <subject>` | none | the principal the scope binds to |
 | `--provider <name>` | `github` | which identity provider issued that subject |
 | `--login <name>` | none | the owner's username, kept as a display label |
+| `--org` | off | the owner is an organisation; authorise by live membership (8.7) |
 
 This is the **operator grant** of section 8.2, and it bypasses the policy on
 purpose: it is how a deployment covers what self-service derivation cannot - an

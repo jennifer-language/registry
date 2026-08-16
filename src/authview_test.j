@@ -123,7 +123,7 @@ func testAnUnknownStateIsTerminalNotPending() {
 # --- issuing ----------------------------------------------------------------
 
 func testIssueReturnsAUsableTokenPair() {
-    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", nowish());
+    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", [], 0, nowish());
     testing.assertEqual($out.status, 200);
     testing.assertTrue($out.changed);
     testing.assertEqual(json.asInt($out.body, "/accountId"), ACCOUNT);
@@ -137,7 +137,7 @@ func testIssueReturnsAUsableTokenPair() {
 }
 
 func testIssueRecordsTheRefreshTokenByFingerprintOnly() {
-    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", nowish());
+    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", [], 0, nowish());
     def given as string init json.asString($out.body, "/refreshToken");
     testing.assertTrue(store.hasRefresh($out.db, token.fingerprint($given)));
     # the credential itself must not be what is written down
@@ -147,10 +147,10 @@ func testIssueRecordsTheRefreshTokenByFingerprintOnly() {
 func testIssuePurgesExpiredRefreshTokens() {
     def db as flatdb.DB init emptyDb();
     $db = store.putRefresh($db, "deadbeef", store.Refresh{
-        accountId: 999, login: "old", expiresAt: 1
+        accountId: 999, login: "old", expiresAt: 1, orgs: [], orgsCheckedAt: 0
     });
     testing.assertTrue(store.hasRefresh($db, "deadbeef"));
-    def out as AuthReply init issue(config(), $db, ACCOUNT, "alice", nowish());
+    def out as AuthReply init issue(config(), $db, ACCOUNT, "alice", [], 0, nowish());
     testing.assertFalse(store.hasRefresh($out.db, "deadbeef"));
 }
 
@@ -158,7 +158,7 @@ func testIssuePurgesExpiredRefreshTokens() {
 
 # loggedIn issues a pair and returns the refresh token from it.
 func loggedIn(db as flatdb.DB) {
-    return issue(config(), $db, ACCOUNT, "alice", nowish());
+    return issue(config(), $db, ACCOUNT, "alice", [], 0, nowish());
 }
 
 func refreshBody(token as string) {
@@ -207,7 +207,7 @@ func testAnExpiredRefreshTokenIs401AndIsDropped() {
     def db as flatdb.DB init emptyDb();
     def token as string init token.newRefresh();
     $db = store.putRefresh($db, token.fingerprint($token), store.Refresh{
-        accountId: ACCOUNT, login: "alice", expiresAt: 1
+        accountId: ACCOUNT, login: "alice", expiresAt: 1, orgs: [], orgsCheckedAt: 0
     });
     def out as AuthReply init refresh(config(), $db, refreshBody($token), nowish());
     testing.assertEqual($out.status, 401);

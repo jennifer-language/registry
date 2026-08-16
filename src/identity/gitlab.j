@@ -128,7 +128,9 @@ export func subjectFrom(cfg as identity.Config, doc as json.Value) {
     return identity.Subject{
         provider: $name,
         id: convert.toString(json.asInt($doc, "/id")),
-        login: $login
+        login: $login,
+        orgs: [],
+        orgsCheckedAt: ""
     };
 }
 
@@ -243,6 +245,7 @@ export func provider() {
         poll: pollOnce,
         authorizeUrl: authorize,
         exchangeCode: exchange,
-        subject: subjectOf
+        subject: subjectOf,
+        memberships: membershipsOf
     };
 }

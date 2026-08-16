@@ -11,7 +11,8 @@ use testing;
 def const RESERVED as list of string init ["jennifer"];
 
 func someone() {
-    return identity.Subject{ provider: "github", id: "1", login: "mplx" };
+    return identity.Subject{ provider: "github", id: "1", login: "mplx",
+        orgs: [], orgsCheckedAt: "" };
 }
 
 func testNothingIsSelfClaimable() {

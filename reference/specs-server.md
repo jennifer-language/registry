@@ -1238,7 +1238,7 @@ hold.
 `read:org` is listed for the organisation surface in 8.7, and is not needed by a
 version 1 registry.
 
-### 8.7 Organisation scopes (not in version 1)
+### 8.7 Organisation scopes
 
 > Co-owners (2.2) are the interim answer to the same need, and a deliberately
 > weaker one: they are an explicit list, so a departure is revoked only when
@@ -1248,11 +1248,12 @@ version 1 registry.
 > collaborator from outside the organisation, which membership cannot.
 
 
-Deferred, and recorded here so the analysis is not lost. Until this exists, an
-organisation obtains a scope by operator grant (8.2), bound to its organisation
-id like any other principal.
+A scope **MAY** be owned by an **organisation** rather than a person. Such a
+scope is granted by an operator (8.2) and marked as an organisation scope; every
+later write under it asks whether the caller can act for that organisation,
+instead of comparing their own id.
 
-When it is built, the shape follows from 8.1 without further choices:
+The shape follows from 8.1 without further choices:
 
 - the scope is owned by the **organisation's** numeric id;
 - a claim requires the claimant to be able to act for that organisation **at
@@ -1270,14 +1271,43 @@ and returns `role` (`admin`, `member`, `billing_manager`) and `state` (`active`,
 - **`billing_manager` is not authority.** It is a finance role with no
   relationship to code.
 
-**The open question is what counts as acting for an organisation.** `admin` only
-is safe but impractical, since engineers are usually not organisation admins;
-any `active` member is practical but broad, and would let anyone added to a large
-organisation publish under its identity; a designated team checked live is the
-middle path and what npm effectively does, at the cost of another API call and
-some setup. This needs deciding before the surface is built, not while.
+**What counts as acting for an organisation: any `active` member.** `admin` only
+is safer but impractical, since the engineers who publish are usually not
+organisation admins; a designated team is the middle path npm effectively takes,
+at the cost of another API call and per-organisation setup. A deployment that
+wants either of the stricter rules narrows it in its policy module (12.6); this
+document specifies the broad rule as the default and requires the two exclusions
+above regardless.
 
-Two consequences to design for, both absent from version 1:
+The consequence is worth stating plainly: **anyone an organisation adds becomes
+able to publish under its scope.** That is the same trust an organisation already
+extends by granting repository write access, and it is why membership is asked
+rather than stored.
+
+#### When membership is read
+
+A registry that discards the provider token after login (8.4, which this
+specification recommends) **cannot** ask the provider at write time, because it
+holds no credential to ask with. It **MUST** therefore read memberships during
+the exchange and carry them in its own token, and it **MUST** record when they
+were read.
+
+Two rules keep that honest:
+
+- A refreshed token **MUST NOT** advance the membership timestamp. Refreshing
+  proves possession of a refresh token, not continued membership; letting it
+  move would make a stale membership renewable indefinitely, which is the exact
+  failure an explicit owners list has.
+- A registry **SHOULD** refuse an organisation-scope write whose memberships are
+  older than a configured window, and say so, so the caller logs in again rather
+  than being told they lack access they in fact have.
+
+The cost is that revocation is not instant: somebody removed from an
+organisation keeps write access until their token's memberships age out. That
+bound is the honest form of 8.1's promise, and it is still far better than a list
+somebody has to remember to edit.
+
+Two consequences to design for:
 
 - **An abandoned organisation freezes.** If everyone leaves, or the organisation
   is deleted, nobody can publish or yank under its scope, and the operator path

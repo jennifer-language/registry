@@ -92,7 +92,9 @@ export func subjectFrom(doc as json.Value) {
     return identity.Subject{
         provider: "github",
         id: convert.toString(json.asInt($doc, "/id")),
-        login: $login
+        login: $login,
+        orgs: [],
+        orgsCheckedAt: ""
     };
 }
 
@@ -140,6 +142,53 @@ export func pollFrom(doc as json.Value) {
 }
 
 /**
+ * The organisation ids an account may act for, read from GitHub's memberships
+ * payload. **Pure**, so the two exclusions below have tests rather than comments.
+ *
+ * Two states are not membership, and 8.7 makes both non-negotiable:
+ *
+ * - **`state: "pending"`** is an invitation nobody accepted. Treating it as
+ *   membership would let anyone who can get themselves invited publish under an
+ *   organisation's name before a human agreed to it.
+ * - **`role: "billing_manager"`** is a finance role with no relationship to
+ *   code. It can see invoices; it has no business shipping a release.
+ *
+ * Everything else - `admin` and `member` - counts, which is this deployment's
+ * answer to 8.7's open question. It is the practical end of the range: requiring
+ * `admin` would exclude most of the engineers who actually publish.
+ * @param doc {json.Value} the decoded `/user/memberships/orgs` response
+ * @return {list of string} the organisation ids, as text
+ */
+export func membershipsFrom(doc as json.Value) {
+    def out as list of string init [];
+    if (not (json.typeOf($doc, "") == "list")) {
+        return $out;
+    }
+    def n as int init json.length($doc, "");
+    def i as int init 0;
+    while ($i < $n) {
+        def at as string init "/" + convert.toString($i);
+        $i = $i + 1;
+        if (not json.has($doc, $at + "/state")) {
+            continue;
+        }
+        if (not (json.asString($doc, $at + "/state") == "active")) {
+            continue;
+        }
+        if (json.has($doc, $at + "/role")) {
+            if (json.asString($doc, $at + "/role") == "billing_manager") {
+                continue;
+            }
+        }
+        if (not json.has($doc, $at + "/organization/id")) {
+            continue;
+        }
+        $out[] = convert.toString(json.asInt($doc, $at + "/organization/id"));
+    }
+    return $out;
+}
+
+/**
  * The endpoints this provider uses, given a configured base.
  * @param cfg {identity.Config} the provider configuration
  * @param which {string} "device", "token", or "user"
@@ -153,6 +202,13 @@ export func endpointFor(cfg as identity.Config, which as string) {
         when "token" {
             return identity.endpoint($cfg.baseUrl, WEB_BASE, "/login/oauth/access_token");
         }
+    }
+    if ($which == "memberships") {
+        # `active` only, from the API rather than filtered here as well: fewer
+        # rows over the wire, and the pure filter above still rejects anything
+        # that slips through.
+        return identity.endpoint($cfg.baseUrl, API_BASE,
+            "/user/memberships/orgs?state=active&per_page=100");
     }
     return identity.endpoint($cfg.baseUrl, API_BASE, "/user");
 }
@@ -226,6 +282,26 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
     return subjectFrom(json.decode($res.body));
 }
 
+# membershipsOf asks which organisations the token's owner actively belongs to.
+# The one network call; the decision about which rows count is `membershipsFrom`.
+# A failure is **not** fatal to a login: an account with no organisation
+# memberships and an account whose memberships could not be read look the same
+# from here, and refusing the login would make an org-scope feature break plain
+# user logins. The cost is that a transient failure silently yields no orgs,
+# which shows up as "you may not write under @acme" rather than as an outage.
+func membershipsOf(cfg as identity.Config, accessToken as string) {
+    def h as map of string to string init jsonHeaders();
+    $h["Authorization"] = "Bearer " + $accessToken;
+    $h["User-Agent"] = "jennifer-registry";
+    def none as list of string init [];
+    def res as http.Response init http.requestWith("GET",
+        endpointFor($cfg, "memberships"), $h, "", TIMEOUT_MS, MAX_BYTES);
+    if (not ($res.status == 200)) {
+        return $none;
+    }
+    return membershipsFrom(json.decode($res.body));
+}
+
 /**
  * The GitHub identity provider.
  * @return {identity.Provider} the vtable; every call takes an `identity.Config`
@@ -238,6 +314,7 @@ export func provider() {
         poll: pollOnce,
         authorizeUrl: authorize,
         exchangeCode: exchange,
-        subject: subjectOf
+        subject: subjectOf,
+        memberships: membershipsOf
     };
 }

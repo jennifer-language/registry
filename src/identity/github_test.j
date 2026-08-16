@@ -89,3 +89,57 @@ func testScopesDefaultButAreOverridable() {
     };
     testing.assertEqual(scopesFor($custom), "read:user");
 }
+
+# --- organisation memberships (8.7) -------------------------------------------
+
+func membershipDoc(state as string, role as string, orgId as int) {
+    def one as json.Value init json.map();
+    $one = json.set($one, "/state", $state);
+    $one = json.set($one, "/role", $role);
+    def org as json.Value init json.map();
+    $org = json.set($org, "/id", $orgId);
+    $one = json.set($one, "/organization", $org);
+    return json.append(json.list(), "", $one);
+}
+
+func testAnActiveMemberCounts() {
+    def out as list of string init membershipsFrom(membershipDoc("active", "member", 42));
+    testing.assertEqual(len($out), 1);
+    testing.assertEqual($out[0], "42");
+}
+
+func testAnAdminCounts() {
+    testing.assertEqual(len(membershipsFrom(membershipDoc("active", "admin", 42))), 1);
+}
+
+func testAPendingInvitationIsNotMembership() {
+    # non-negotiable per 8.7: an invitation nobody accepted would otherwise let
+    # anyone who can get themselves invited publish under an organisation's name
+    testing.assertEqual(len(membershipsFrom(membershipDoc("pending", "admin", 42))), 0);
+}
+
+func testABillingManagerIsNotAuthority() {
+    # non-negotiable per 8.7: a finance role with no relationship to code
+    testing.assertEqual(len(membershipsFrom(membershipDoc("active", "billing_manager", 42))), 0);
+}
+
+func testTheOrgIdIsReadAsText() {
+    # it is compared against a stored subject id, which is text; comparing 42 to
+    # "42" would silently never match
+    testing.assertEqual(membershipsFrom(membershipDoc("active", "member", 42))[0], "42");
+}
+
+func testAMalformedPayloadYieldsNothing() {
+    # fail closed: an unreadable answer must not authorise anything
+    testing.assertEqual(len(membershipsFrom(json.map())), 0);
+    testing.assertEqual(len(membershipsFrom(json.list())), 0);
+    def noOrg as json.Value init json.append(json.list(), "",
+        json.set(json.map(), "/state", "active"));
+    testing.assertEqual(len(membershipsFrom($noOrg)), 0);
+}
+
+func testTheMembershipsEndpointAsksForActiveOnly() {
+    def url as string init endpointFor(cfg(), "memberships");
+    testing.assertContains($url, "/user/memberships/orgs");
+    testing.assertContains($url, "state=active");
+}

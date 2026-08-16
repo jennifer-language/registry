@@ -34,7 +34,7 @@ func otherKey() {
 # --- minting and verifying --------------------------------------------------
 
 func testRoundTripCarriesTheIdentity() {
-    def token as string init mint(key(), ACCOUNT, "alice", 3600, nowish());
+    def token as string init mint(key(), ACCOUNT, "alice", [], 0, 3600, nowish());
     def who as Identity init verify(key(), $token);
     testing.assertEqual($who.accountId, ACCOUNT);
     testing.assertEqual($who.login, "alice");
@@ -42,7 +42,7 @@ func testRoundTripCarriesTheIdentity() {
 }
 
 func testTokenIsACompactJwt() {
-    def token as string init mint(key(), ACCOUNT, "alice", 3600, nowish());
+    def token as string init mint(key(), ACCOUNT, "alice", [], 0, 3600, nowish());
     # header.payload.signature
     testing.assertEqual(len(strings.split($token, ".")), 3);
 }
@@ -50,18 +50,18 @@ func testTokenIsACompactJwt() {
 func testSubjectIsTheAccountIdNotTheLogin() {
     # ownership binds to the numeric id, because a login can be re-registered by
     # somebody else after a rename
-    def a as string init mint(key(), ACCOUNT, "alice", 3600, nowish());
-    def b as string init mint(key(), ACCOUNT, "alice-renamed", 3600, nowish());
+    def a as string init mint(key(), ACCOUNT, "alice", [], 0, 3600, nowish());
+    def b as string init mint(key(), ACCOUNT, "alice-renamed", [], 0, 3600, nowish());
     testing.assertEqual(verify(key(), $a).accountId, verify(key(), $b).accountId);
 }
 
 # The zero-argument shims assertThrows dispatches by name.
 func throwsOnForeignKey() {
-    verify(otherKey(), mint(key(), ACCOUNT, "alice", 3600, nowish()));
+    verify(otherKey(), mint(key(), ACCOUNT, "alice", [], 0, 3600, nowish()));
 }
 
 func throwsOnTamperedToken() {
-    def token as string init mint(key(), ACCOUNT, "alice", 3600, nowish());
+    def token as string init mint(key(), ACCOUNT, "alice", [], 0, 3600, nowish());
     verify(key(), strings.substring($token, 0, len($token) - 2) + "xy");
 }
 
@@ -83,7 +83,7 @@ func testGarbageIsRejected() {
 
 func testExpiryIsEnforced() {
     # minted with a one-second life, then verified a minute later
-    def token as string init mint(key(), ACCOUNT, "alice", 1, PAST);
+    def token as string init mint(key(), ACCOUNT, "alice", [], 0, 1, PAST);
     def threw as bool init false;
     try {
         verify(key(), $token);

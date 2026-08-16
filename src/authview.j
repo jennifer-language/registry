@@ -151,19 +151,24 @@ export func stateReply(db as flatdb.DB, state as string) {
  * @param db {flatdb.DB} the store to record the refresh token in
  * @param accountId {int} the numeric GitHub account id
  * @param login {string} the GitHub login, carried as a display label
+ * @param orgs {list of string} the organisation ids read at login (8.7)
+ * @param checkedAt {int} when those memberships were read (Unix seconds). Carried
+ *     separately so a refresh can reissue them without pretending they are fresh.
  * @param now {int} the current time (Unix seconds)
  * @return {AuthReply} a 200 carrying the token pair, and the store to persist
  */
 export func issue(cfg as Config, db as flatdb.DB, accountId as int, login as string,
-        now as int) {
+        orgs as list of string, checkedAt as int, now as int) {
     def bearer as string init token.mint($cfg.signingKey, $accountId, $login,
-        $cfg.tokenTtl, $now);
+        $orgs, $checkedAt, $cfg.tokenTtl, $now);
     def refreshToken as string init token.newRefresh();
     def out as flatdb.DB init store.purgeExpiredRefresh($db, $now);
     $out = store.putRefresh($out, token.fingerprint($refreshToken), store.Refresh{
         accountId: $accountId,
         login: $login,
-        expiresAt: $now + $cfg.refreshTtl
+        expiresAt: $now + $cfg.refreshTtl,
+        orgs: $orgs,
+        orgsCheckedAt: $checkedAt
     });
     def body as json.Value init json.map();
     $body = json.set($body, "/token", $bearer);
@@ -234,7 +239,18 @@ export func token(cfg as Config, db as flatdb.DB, body as string, now as int) {
     }
     # The provider token is discarded here, deliberately: the registry issues its
     # own credential rather than storing somebody else's (specification 8.4).
-    return issue($cfg, $db, convert.toInt($who.id), $who.login, $now);
+    # Memberships are read here and nowhere else. The provider token is about to
+    # be discarded, so this is the only moment the registry can ask which
+    # organisations this account acts for (8.7). A provider that cannot answer
+    # returns none, which makes an organisation scope unwritable rather than
+    # writable by anybody.
+    def orgs as list of string init [];
+    try {
+        $orgs = $cfg.provider.memberships($cfg.providerConfig, $result.accessToken);
+    } catch (err) {
+        $orgs = [];
+    }
+    return issue($cfg, $db, convert.toInt($who.id), $who.login, $orgs, $now, $now);
 }
 
 /**
@@ -273,7 +289,13 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int) 
         };
     }
     def rotated as flatdb.DB init store.deleteRefresh($db, $print);
-    return issue($cfg, $rotated, $rec.accountId, $rec.login, $now);
+    # A refresh reissues the memberships it was given and **does not advance
+    # `orgsCheckedAt`**. Refreshing proves possession of a refresh token, not
+    # continued membership of an organisation, and letting the timestamp move
+    # would make a stale membership renewable forever - which is exactly the
+    # failure a co-owner list has and organisation scopes exist to avoid.
+    return issue($cfg, $rotated, $rec.accountId, $rec.login, $rec.orgs,
+        $rec.orgsCheckedAt, $now);
 }
 
 /**

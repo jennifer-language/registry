@@ -413,10 +413,10 @@ func testAddCapturesRequiresAndCapabilities() {
 func testRevokeDropsThatAccountsRefreshTokens() {
     def db as flatdb.DB init emptyStore();
     $db = store.putRefresh($db, "aaaa", store.Refresh{
-        accountId: 42, login: "alice", expiresAt: 1800000000
+        accountId: 42, login: "alice", expiresAt: 1800000000, orgs: [], orgsCheckedAt: 0
     });
     $db = store.putRefresh($db, "bbbb", store.Refresh{
-        accountId: 99, login: "bob", expiresAt: 1800000000
+        accountId: 99, login: "bob", expiresAt: 1800000000, orgs: [], orgsCheckedAt: 0
     });
     def r as AdminResult init dispatch($db, ["deckadmin", "revoke", "42"]);
     testing.assertTrue($r.ok);
@@ -602,7 +602,7 @@ func testReserveDefaultsHoldsThemAll() {
 func testAReservedScopeCannotBeClaimed() {
     def db as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
     def who as identity.Subject init identity.Subject{
-        provider: "github", id: "1", login: "admin"
+        provider: "github", id: "1", login: "admin", orgs: [], orgsCheckedAt: ""
     };
     def out as scope.ClaimResult init scope.claim($db, firstcome.policy(), $who,
         "admin", [], NOW);
@@ -685,12 +685,12 @@ func testACoOwnerMayWriteUnderTheScope() {
     def db as flatdb.DB init dispatch(owned(),
         ["deckadmin", "add-owner", "acme", "2000"]).db;
     def bob as identity.Subject init identity.Subject{
-        provider: "github", id: "2000", login: "bob"
+        provider: "github", id: "2000", login: "bob", orgs: [], orgsCheckedAt: ""
     };
     testing.assertTrue(scope.authorise($db, $bob, "acme").allowed);
     # and the owner still can
     def alice as identity.Subject init identity.Subject{
-        provider: "github", id: "1000", login: "alice"
+        provider: "github", id: "1000", login: "alice", orgs: [], orgsCheckedAt: ""
     };
     testing.assertTrue(scope.authorise($db, $alice, "acme").allowed);
 }
@@ -708,7 +708,7 @@ func testAStrangerStillCannot() {
     def db as flatdb.DB init dispatch(owned(),
         ["deckadmin", "add-owner", "acme", "2000"]).db;
     def eve as identity.Subject init identity.Subject{
-        provider: "github", id: "3000", login: "eve"
+        provider: "github", id: "3000", login: "eve", orgs: [], orgsCheckedAt: ""
     };
     testing.assertFalse(scope.authorise($db, $eve, "acme").allowed);
 }
@@ -719,7 +719,7 @@ func testACoOwnerOfAnotherProviderIsNotAMatch() {
     def db as flatdb.DB init dispatch(owned(),
         ["deckadmin", "add-owner", "acme", "2000"]).db;
     def elsewhere as identity.Subject init identity.Subject{
-        provider: "gitea", id: "2000", login: "bob"
+        provider: "gitea", id: "2000", login: "bob", orgs: [], orgsCheckedAt: ""
     };
     testing.assertFalse(scope.authorise($db, $elsewhere, "acme").allowed);
 }
@@ -757,7 +757,7 @@ func testRemovingACoOwnerRevokesTheirWrite() {
         ["deckadmin", "add-owner", "acme", "2000"]).db;
     $db = dispatch($db, ["deckadmin", "remove-owner", "acme", "2000"]).db;
     def bob as identity.Subject init identity.Subject{
-        provider: "github", id: "2000", login: "bob"
+        provider: "github", id: "2000", login: "bob", orgs: [], orgsCheckedAt: ""
     };
     testing.assertFalse(scope.authorise($db, $bob, "acme").allowed);
     testing.assertEqual(len(store.ownersOf($db, "acme")), 1);

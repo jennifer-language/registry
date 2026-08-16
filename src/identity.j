@@ -59,7 +59,9 @@ export def struct Config {
 export def struct Subject {
     provider as string,
     id as string,
-    login as string
+    login as string,
+    orgs as list of string,
+    orgsCheckedAt as string
 };
 
 /**
@@ -103,6 +105,10 @@ export def struct Poll {
  *     client opens under `authcode`; "" for a device-only provider
  * @field exchangeCode {func} `func(Config, code, verifier) -> string`: swap an
  *     authorization code for a provider token
+ * @field memberships {func} `func(Config, accessToken) -> list of string`: the
+ *     organisation ids this token's owner is an **active** member of. Asked once,
+ *     at login, because the provider token is discarded immediately afterwards
+ *     (8.4) and there is no way to ask again later.
  * @field subject {func} `func(Config, accessToken) -> Subject`: who this token is
  */
 export def struct Provider {
@@ -112,7 +118,8 @@ export def struct Provider {
     poll as func,
     authorizeUrl as func,
     exchangeCode as func,
-    subject as func
+    subject as func,
+    memberships as func
 };
 
 # The states a poll may report. `slowDown` is deliberately distinct from

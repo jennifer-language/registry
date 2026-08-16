@@ -102,6 +102,7 @@ export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject
         subject: $who.id,
         login: $who.login,
         registeredAt: $now,
+        kind: store.SCOPE_USER,
         coOwners: []
     });
     return ClaimResult{
@@ -127,6 +128,28 @@ export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject
  */
 export func grant(db as flatdb.DB, scope as string, provider as string,
         subject as string, login as string, now as string) {
+    return grantAs($db, $scope, $provider, $subject, $login, store.SCOPE_USER, $now);
+}
+
+/**
+ * Grant a scope, saying whether its principal is a person or an organisation.
+ *
+ * The kind decides which question every later write asks: a user scope compares
+ * the caller's own id, an organisation scope asks whether they are an active
+ * member (8.7). Getting it wrong in the permissive direction would let anyone in
+ * some organisation write under a person's scope, which is why `store` defaults
+ * an unrecognised kind to `user` rather than to `org`.
+ * @param db {flatdb.DB} the store to edit
+ * @param scope {string} the scope to grant
+ * @param provider {string} the identity provider that issued the subject
+ * @param subject {string} the principal, or "" to hold it unowned
+ * @param login {string} the owner's name, a display label
+ * @param kind {string} `store.SCOPE_USER` or `store.SCOPE_ORG`
+ * @param now {string} the registration timestamp (Unix seconds as text)
+ * @return {ClaimResult} the decision and the store to persist
+ */
+export func grantAs(db as flatdb.DB, scope as string, provider as string,
+        subject as string, login as string, kind as string, now as string) {
     def folded as string init deckname.fold($scope);
     if (not deckname.isScopeIdent($folded)) {
         return refuse($db, "@" + $folded + " is not a valid scope name");
@@ -137,9 +160,13 @@ export func grant(db as flatdb.DB, scope as string, provider as string,
         subject: $subject,
         login: $login,
         registeredAt: $now,
+        kind: $kind,
         coOwners: []
     });
     def what as string init "granted @" + $folded;
+    if ($kind == store.SCOPE_ORG) {
+        $what = "granted @" + $folded + " to an organisation";
+    }
     if ($subject == "") {
         $what = "reserved @" + $folded + " (operator-held, unowned)";
     }
@@ -162,10 +189,13 @@ export func authorise(db as flatdb.DB, who as identity.Subject, scope as string)
     if (not store.hasNamespace($db, $folded)) {
         return policy.deny("@" + $folded + " is not a registered scope");
     }
+    def ns as store.Namespace init store.getNamespace($db, $folded);
+    if ($ns.kind == store.SCOPE_ORG) {
+        return authoriseOrg($ns, $who, $folded);
+    }
     if (store.ownsNamespace($db, $folded, $who.provider, $who.id)) {
         return policy.allow("@" + $folded + " is yours");
     }
-    def ns as store.Namespace init store.getNamespace($db, $folded);
     if ($ns.subject == "") {
         return policy.deny("@" + $folded +
             " is held by an operator and has no owner to publish under it");
@@ -175,6 +205,38 @@ export func authorise(db as flatdb.DB, who as identity.Subject, scope as string)
         $owner = "another account";
     }
     return policy.deny("@" + $folded + " belongs to " + $owner);
+}
+
+# authoriseOrg answers for a scope owned by an organisation (specification 8.7).
+#
+# The question is not "did this caller claim it" but "may this caller act for
+# that organisation", and the answer comes from the memberships captured when
+# they logged in - the only moment the registry ever holds a provider token
+# (8.4). Any **active** member qualifies, which is this deployment's answer to
+# 8.7's open question; `pending` invitations and `billing_manager` are excluded
+# by the provider module before they ever reach here.
+#
+# What this buys over a co-owner list is that leaving the organisation revokes
+# access with no bookkeeping. What it costs is that the answer is only as fresh
+# as the caller's last login, so `orgsCheckedAt` is checked against a window: a
+# refresh reissues memberships without renewing that stamp, or a departed member
+# could refresh their way to indefinite access.
+func authoriseOrg(ns as store.Namespace, who as identity.Subject, folded as string) {
+    if (not ($ns.provider == $who.provider)) {
+        return policy.deny("@" + $folded + " belongs to an organisation on " +
+            $ns.provider);
+    }
+    for (def org in $who.orgs) {
+        if ($org == $ns.subject) {
+            return policy.allow("@" + $folded + " is your organisation");
+        }
+    }
+    def label as string init $ns.login;
+    if ($label == "") {
+        $label = "an organisation";
+    }
+    return policy.deny("@" + $folded + " belongs to " + $label +
+        ", and you are not an active member of it");
 }
 
 /**
