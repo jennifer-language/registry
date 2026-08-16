@@ -111,9 +111,23 @@ string.
 - Authorisation for every write under a scope asks one question: **may this
   caller currently act for the principal that owns this scope?**
 
+A scope **MAY** additionally carry **co-owners**: further principals, under the
+same provider, that may write under it. A co-owner is not a second holder of the
+scope - the record still names the principal it was granted to, and reassigning
+that is a different operation - so "who owns @acme" keeps one answer while "who
+may publish under it" can have several.
+
+Co-ownership is deliberately **not** self-service in this version. Adding one is
+an operator action (8.2), which keeps the governance questions an owners list
+otherwise raises - who may add, who may remove, whether the last owner can remove
+themselves - out of the protocol until organisation scopes (8.7) answer them
+properly. A registry **MUST NOT** let a co-owner be added to a scope with no
+owner: a reserved name has nobody to co-own with, and accepting one would produce
+a scope nobody holds that somebody can nevertheless write to.
+
 Section 8 specifies how a scope is claimed and what "act for" means. The rest of
-this document only needs the property: a scope resolves to a principal id, and
-that binding does not change when names do.
+this document only needs the property: a scope resolves to one or more principal
+ids, and those bindings do not change when names do.
 
 ### 2.3 Versions
 
@@ -1225,6 +1239,14 @@ hold.
 version 1 registry.
 
 ### 8.7 Organisation scopes (not in version 1)
+
+> Co-owners (2.2) are the interim answer to the same need, and a deliberately
+> weaker one: they are an explicit list, so a departure is revoked only when
+> somebody remembers to revoke it. Organisation scopes replace the list with a
+> question asked of the provider, which is why they are still worth building even
+> though co-owners exist. The two are complementary - a list can express a
+> collaborator from outside the organisation, which membership cannot.
+
 
 Deferred, and recorded here so the analysis is not lost. Until this exists, an
 organisation obtains a scope by operator grant (8.2), bound to its organisation

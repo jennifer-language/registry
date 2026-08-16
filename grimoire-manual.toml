@@ -8,9 +8,9 @@
 # that answers "what exactly does the server return" belongs in reference/.
 
 [book]
-title = "Jennifer deck registry: manual"
+title = "Jennifer Deck Registry - End user manual"
 description = "Finding, using, and publishing decks on a Jennifer deck registry."
-authors = ["the jvc contributors"]
+authors = [""]
 authorsLabel = "Maintained by"
 language = "en"
 src = "manual"
@@ -28,6 +28,7 @@ sectionNumbers = false
 repoUrl = "https://github.com/jennifer-language/registry"
 repoLabel = "Source"
 editUrl = "https://github.com/jennifer-language/registry/edit/main/manual/{path}"
+titleUrl = "/"
 
 [highlight]
 enabled = true

@@ -13,6 +13,8 @@
 
 use testing;
 use json;
+import "./policy/firstcome.j" as firstcome;
+import "./identity.j" as identity;
 
 def const NOW as string init "1700000000";
 
@@ -43,8 +45,17 @@ func dispatch(db as flatdb.DB, argv as list of string) {
         when "register-namespace" {
             return cmdRegisterNamespace($db, $r, NOW);
         }
+        when "add-owner" {
+            return cmdAddOwner($db, $r, NOW);
+        }
+        when "remove-owner" {
+            return cmdRemoveOwner($db, $r, NOW);
+        }
         when "namespaces" {
             return cmdNamespaces($db, $r, NOW);
+        }
+        when "reserve-defaults" {
+            return cmdReserveDefaults($db, $r, NOW);
         }
         when "mint-token" {
             return cmdMintToken($db, $r, NOW);
@@ -573,4 +584,206 @@ func testPublishersLists() {
     testing.assertContains($r.message, "@acme/ansi");
     testing.assertContains($r.message, "acme/deck-ansi");
     testing.assertContains($r.message, "pending");
+}
+
+# --- reserving the defaults ---------------------------------------------------
+
+func testReserveDefaultsHoldsThemAll() {
+    def r as AdminResult init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]);
+    testing.assertTrue($r.ok);
+    testing.assertTrue($r.changed);
+    for (def name in ["official", "admin", "api", "jennifer"]) {
+        testing.assertTrue(store.hasNamespace($r.db, $name));
+        # held, but bound to nobody: reserved is not owned
+        testing.assertEqual(store.getNamespace($r.db, $name).subject, "");
+    }
+}
+
+func testAReservedScopeCannotBeClaimed() {
+    def db as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
+    def who as identity.Subject init identity.Subject{
+        provider: "github", id: "1", login: "admin"
+    };
+    def out as scope.ClaimResult init scope.claim($db, firstcome.policy(), $who,
+        "admin", [], NOW);
+    testing.assertFalse($out.allowed);
+    # and it says *reserved*, not "claimed by another account", because nobody
+    # holds it and sending the caller after a person would be a lie
+    testing.assertContains($out.reason, "reserved by this registry");
+}
+
+func testReserveDefaultsIsIdempotent() {
+    def once as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
+    def twice as AdminResult init dispatch($once, ["deckadmin", "reserve-defaults"]);
+    testing.assertTrue($twice.ok);
+    testing.assertFalse($twice.changed);
+    testing.assertContains($twice.message, "already reserved");
+}
+
+func testReserveDefaultsNeverSeizesAnOwnedScope() {
+    # a bootstrap convenience, not an eviction tool: the operator grant is the
+    # deliberate path for taking a name back
+    def db as flatdb.DB init dispatch(emptyStore(),
+        ["deckadmin", "register-namespace", "api", "--owner", "42", "--login", "eve"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "reserve-defaults"]);
+    testing.assertEqual(store.getNamespace($r.db, "api").subject, "42");
+    testing.assertContains($r.message, "OWNED BY SOMEBODY");
+    testing.assertContains($r.message, "api");
+}
+
+func testDryRunChangesNothing() {
+    def r as AdminResult init dispatch(emptyStore(),
+        ["deckadmin", "reserve-defaults", "--dry-run"]);
+    testing.assertFalse($r.changed);
+    testing.assertContains($r.message, "dry run");
+    testing.assertFalse(store.hasNamespace($r.db, "admin"));
+}
+
+func testNamespacesDistinguishesOwnedFromReserved() {
+    # once the defaults are reserved the store holds scores of names, so a bare
+    # list stops answering the only question an operator has
+    def db as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
+    $db = dispatch($db, ["deckadmin", "register-namespace", "jennifer",
+        "--owner", "12345", "--login", "mplx"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "namespaces"]);
+    testing.assertContains($r.message, "1 owned");
+    testing.assertContains($r.message, "@jennifer  mplx [github 12345]");
+    testing.assertContains($r.message, "@admin  (reserved, no owner)");
+}
+
+func testNamespacesFilters() {
+    def db as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
+    $db = dispatch($db, ["deckadmin", "register-namespace", "jennifer",
+        "--owner", "12345", "--login", "mplx"]).db;
+    def owned as AdminResult init dispatch($db, ["deckadmin", "namespaces", "--owned"]);
+    testing.assertContains($owned.message, "@jennifer");
+    testing.assertFalse(strings.contains($owned.message, "@admin"));
+    def held as AdminResult init dispatch($db, ["deckadmin", "namespaces", "--reserved"]);
+    testing.assertContains($held.message, "@admin");
+    testing.assertFalse(strings.contains($held.message, "@jennifer  mplx"));
+}
+
+func testGrantingAReservedScopeMakesItPublishable() {
+    # the whole point of reserving: held until an operator hands it to somebody
+    def db as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
+    testing.assertEqual(store.getNamespace($db, "jennifer").subject, "");
+    $db = dispatch($db, ["deckadmin", "register-namespace", "jennifer",
+        "--owner", "12345", "--login", "mplx"]).db;
+    testing.assertTrue(store.ownsNamespace($db, "jennifer", "github", "12345"));
+    def r as AdminResult init dispatch($db, gitAdd("@jennifer/routeros", "0.1.0", "https://x/a"));
+    testing.assertTrue($r.ok);
+}
+
+# --- co-owners ----------------------------------------------------------------
+
+func owned() {
+    return dispatch(emptyStore(), ["deckadmin", "register-namespace", "acme",
+        "--owner", "1000", "--login", "alice"]).db;
+}
+
+func testACoOwnerMayWriteUnderTheScope() {
+    def db as flatdb.DB init dispatch(owned(),
+        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def bob as identity.Subject init identity.Subject{
+        provider: "github", id: "2000", login: "bob"
+    };
+    testing.assertTrue(scope.authorise($db, $bob, "acme").allowed);
+    # and the owner still can
+    def alice as identity.Subject init identity.Subject{
+        provider: "github", id: "1000", login: "alice"
+    };
+    testing.assertTrue(scope.authorise($db, $alice, "acme").allowed);
+}
+
+func testACoOwnerIsNotTheOwner() {
+    # adding one must not move the scope's identity: that is a transfer, and a
+    # different verb
+    def db as flatdb.DB init dispatch(owned(),
+        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    testing.assertEqual(store.getNamespace($db, "acme").subject, "1000");
+    testing.assertEqual(len(store.ownersOf($db, "acme")), 2);
+}
+
+func testAStrangerStillCannot() {
+    def db as flatdb.DB init dispatch(owned(),
+        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def eve as identity.Subject init identity.Subject{
+        provider: "github", id: "3000", login: "eve"
+    };
+    testing.assertFalse(scope.authorise($db, $eve, "acme").allowed);
+}
+
+func testACoOwnerOfAnotherProviderIsNotAMatch() {
+    # a scope binds to one provider; the same numeric id elsewhere is a
+    # different principal
+    def db as flatdb.DB init dispatch(owned(),
+        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def elsewhere as identity.Subject init identity.Subject{
+        provider: "gitea", id: "2000", login: "bob"
+    };
+    testing.assertFalse(scope.authorise($db, $elsewhere, "acme").allowed);
+}
+
+func testAddingACoOwnerIsIdempotent() {
+    def db as flatdb.DB init dispatch(owned(),
+        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def again as AdminResult init dispatch($db, ["deckadmin", "add-owner", "acme", "2000"]);
+    testing.assertFalse($again.changed);
+    testing.assertContains($again.message, "already a co-owner");
+}
+
+func testAReservedScopeCannotTakeACoOwner() {
+    # no owner to co-own with; accepting one would leave a scope nobody holds
+    # that somebody can nevertheless write to
+    def db as flatdb.DB init dispatch(emptyStore(),
+        ["deckadmin", "register-namespace", "jennifer"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "add-owner", "jennifer", "2000"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "reserved");
+}
+
+func testTheOwnerCannotBeRemovedAsACoOwner() {
+    # losing the last owner would leave decks nobody can yank
+    def db as flatdb.DB init dispatch(owned(),
+        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "remove-owner", "acme", "1000"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "is the owner");
+    testing.assertContains($r.message, "register-namespace");
+}
+
+func testRemovingACoOwnerRevokesTheirWrite() {
+    def db as flatdb.DB init dispatch(owned(),
+        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    $db = dispatch($db, ["deckadmin", "remove-owner", "acme", "2000"]).db;
+    def bob as identity.Subject init identity.Subject{
+        provider: "github", id: "2000", login: "bob"
+    };
+    testing.assertFalse(scope.authorise($db, $bob, "acme").allowed);
+    testing.assertEqual(len(store.ownersOf($db, "acme")), 1);
+}
+
+func testRemovingSomebodyWhoIsNotACoOwnerFails() {
+    def r as AdminResult init dispatch(owned(), ["deckadmin", "remove-owner", "acme", "9999"]);
+    testing.assertFalse($r.ok);
+}
+
+func testCoOwnersAreShownInTheListing() {
+    def db as flatdb.DB init dispatch(owned(),
+        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "namespaces"]);
+    testing.assertContains($r.message, "co-owner(s): 2000");
+}
+
+func testARecordWithoutCoOwnersReadsAsOne() {
+    # the field is additive: a namespace written before co-ownership existed has
+    # no list, and must keep working
+    testing.assertEqual(len(store.getNamespace(owned(), "acme").coOwners), 0);
+    testing.assertEqual(len(store.ownersOf(owned(), "acme")), 1);
+}
+
+func testAReservedScopeHasNoOwnersAtAll() {
+    def db as flatdb.DB init dispatch(emptyStore(),
+        ["deckadmin", "register-namespace", "jennifer"]).db;
+    testing.assertEqual(len(store.ownersOf($db, "jennifer")), 0);
 }

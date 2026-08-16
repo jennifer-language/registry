@@ -32,6 +32,7 @@ import "./scope.j" as scope;
 import "./audit.j" as audit;
 import "./trustpub.j" as trustpub;
 import "./citoken.j" as citoken;
+import "./reserved.j" as reserved;
 import "./token.j" as token;
 import "semver.j" as semver;
 
@@ -51,6 +52,58 @@ export def struct AdminResult {
     message as string,
     event as audit.Event
 };
+
+# ownershipCommands adds the scope-ownership and credential half of the grammar.
+# Split out of `parser` only for length: one function declaring every command was
+# past the point where a reader could find the one they wanted.
+func ownershipCommands(p as args.Parser) {
+    def out as args.Parser init $p;
+    def ns as args.Parser init args.parser("register-namespace", "register a scope");
+    $ns = args.positional($ns, "scope", "the scope to register (acme or @acme)");
+    $ns = args.flag($ns, "owner", "", "", "the subject id to bind it to (omit to reserve)");
+    $ns = args.flag($ns, "provider", "", "github", "the identity provider that issued it");
+    $ns = args.flag($ns, "login", "", "", "the owner's username, a display label");
+    $out = args.command($out, "register-namespace",
+        "register a scope decks may publish under", $ns);
+
+    def ao as args.Parser init args.parser("add-owner",
+        "let another principal write under a scope");
+    $ao = args.positional($ao, "scope", "the scope");
+    $ao = args.positional($ao, "subject", "the principal id to add");
+    $out = args.command($out, "add-owner", "add a co-owner to a scope", $ao);
+
+    def ro as args.Parser init args.parser("remove-owner", "revoke a co-owner");
+    $ro = args.positional($ro, "scope", "the scope");
+    $ro = args.positional($ro, "subject", "the principal id to remove");
+    $out = args.command($out, "remove-owner", "remove a co-owner from a scope", $ro);
+
+    def nsl as args.Parser init args.parser("namespaces", "list registered scopes");
+    $nsl = args.boolFlag($nsl, "owned", "", "only scopes that have an owner");
+    $nsl = args.boolFlag($nsl, "reserved", "", "only scopes held with no owner");
+    $out = args.command($out, "namespaces", "list registered scopes", $nsl);
+
+    def rs as args.Parser init args.parser("reserve-defaults",
+        "hold every reserved scope, so nobody can claim one");
+    $rs = args.boolFlag($rs, "dry-run", "n", "list what would be reserved, change nothing");
+    $out = args.command($out, "reserve-defaults",
+        "hold every reserved scope operator-held", $rs);
+
+    def ct as args.Parser init args.parser("mint-token",
+        "mint a CI token for non-interactive publishing");
+    $ct = args.positional($ct, "scope", "the scope it may write under");
+    $ct = args.flag($ct, "deck", "", "", "narrow it to one deck within that scope");
+    $ct = args.flag($ct, "name", "", "ci", "a label, shown in listings");
+    $ct = args.flag($ct, "days", "", "90", "how long it lives (0 = never expires)");
+    $out = args.command($out, "mint-token", "mint a CI token (shown once)", $ct);
+
+    def ctl as args.Parser init args.parser("tokens", "list CI tokens");
+    $out = args.command($out, "tokens", "list CI tokens", $ctl);
+
+    def ctr as args.Parser init args.parser("revoke-token", "revoke one CI token");
+    $ctr = args.positional($ctr, "fingerprint", "the token fingerprint from `tokens`");
+    $out = args.command($out, "revoke-token", "revoke one CI token", $ctr);
+    return $out;
+}
 
 /**
  * How this invocation should log. Resolved from the command line and the
@@ -227,31 +280,7 @@ export func parser() {
     $ls = args.positionalOpt($ls, "deck", "", "the deck whose versions to list");
     $p = args.command($p, "list", "list decks, or one deck's versions", $ls);
 
-    def ns as args.Parser init args.parser("register-namespace", "register a scope");
-    $ns = args.positional($ns, "scope", "the scope to register (acme or @acme)");
-    $ns = args.flag($ns, "owner", "", "", "the subject id to bind it to (omit to reserve)");
-    $ns = args.flag($ns, "provider", "", "github", "the identity provider that issued it");
-    $ns = args.flag($ns, "login", "", "", "the owner's username, a display label");
-    $p = args.command($p, "register-namespace", "register a scope decks may publish under", $ns);
-
-    def nsl as args.Parser init args.parser("namespaces", "list registered scopes");
-    $p = args.command($p, "namespaces", "list registered scopes", $nsl);
-
-    def ct as args.Parser init args.parser("mint-token",
-        "mint a CI token for non-interactive publishing");
-    $ct = args.positional($ct, "scope", "the scope it may write under");
-    $ct = args.flag($ct, "deck", "", "", "narrow it to one deck within that scope");
-    $ct = args.flag($ct, "name", "", "ci", "a label, shown in listings");
-    $ct = args.flag($ct, "days", "", "90", "how long it lives (0 = never expires)");
-    $p = args.command($p, "mint-token", "mint a CI token (shown once)", $ct);
-
-    def ctl as args.Parser init args.parser("tokens", "list CI tokens");
-    $p = args.command($p, "tokens", "list CI tokens", $ctl);
-
-    def ctr as args.Parser init args.parser("revoke-token", "revoke one CI token");
-    $ctr = args.positional($ctr, "fingerprint", "the token fingerprint from `tokens`");
-    $p = args.command($p, "revoke-token", "revoke one CI token", $ctr);
-
+    $p = ownershipCommands($p);
     def yk as args.Parser init args.parser("yank", "withdraw a version from new resolutions");
     $yk = args.positional($yk, "deck", "the deck name");
     $yk = args.positional($yk, "version", "the version to withdraw");
@@ -481,6 +510,74 @@ export func cmdRevoke(db as flatdb.DB, r as args.Result, now as string) {
     def out as flatdb.DB init store.revokeAccount($db, $id);
     return editResult($out, "revoked the refresh tokens of account " + $raw,
         audit.tokensRevoked($raw, $held));
+}
+
+/**
+ * Register every reserved scope operator-held, so no self-service claim can take
+ * one (see `reserved.j` for what is on the list and why brands are not).
+ *
+ * **Idempotent, and it never touches a scope that already exists.** A name
+ * somebody legitimately owns is reported and left alone rather than seized: this
+ * is a bootstrap convenience, not an eviction tool, and the operator grant is
+ * the deliberate path for taking a name back.
+ *
+ * Worth running on a fresh registry before it is public, and again after the
+ * list grows. `--dry-run` prints the plan.
+ * @param db {flatdb.DB} the current registry store
+ * @param r {args.Result} the parsed command line
+ * @param now {string} the registration timestamp (Unix seconds as text)
+ * @return {AdminResult} the result: the (edited) store, flags, and a message
+ */
+export func cmdReserveDefaults(db as flatdb.DB, r as args.Result, now as string) {
+    def names as list of string init reserved.defaults();
+    def malformed as list of string init reserved.invalidAmong($names);
+    if (len($malformed) > 0) {
+        return failResult($db, "the reserved list contains names the grammar rejects: " +
+            strings.join($malformed, ", "));
+    }
+    def dry as bool init args.asBool($r, "dry-run");
+    def out as flatdb.DB init $db;
+    def added as list of string init [];
+    def held as list of string init [];
+    def owned as list of string init [];
+    for (def name in $names) {
+        if (not store.hasNamespace($db, $name)) {
+            $added[] = $name;
+            if (not $dry) {
+                $out = scope.grant($out, $name, "", "", "", $now).db;
+            }
+            continue;
+        }
+        if (store.getNamespace($db, $name).subject == "") {
+            $held[] = $name;
+        } else {
+            $owned[] = $name;
+        }
+    }
+    def lines as list of string init [];
+    if ($dry) {
+        $lines[] = "dry run; nothing was changed.";
+    }
+    $lines[] = "would reserve " + convert.toString(len($added)) + " scope(s)";
+    if (not $dry) {
+        $lines[len($lines) - 1] = "reserved " + convert.toString(len($added)) + " scope(s)";
+    }
+    if (len($added) > 0) {
+        $lines[] = "  " + strings.join($added, " ");
+    }
+    if (len($held) > 0) {
+        $lines[] = "already reserved: " + convert.toString(len($held));
+    }
+    if (len($owned) > 0) {
+        # The interesting case: somebody holds a name the list wants. Left alone,
+        # and named, because it is a decision for a person.
+        $lines[] = "OWNED BY SOMEBODY, left untouched: " + strings.join($owned, " ");
+    }
+    if (len($added) == 0 or $dry) {
+        return readResult($db, strings.join($lines, "\n"));
+    }
+    return editResult($out, strings.join($lines, "\n"),
+        audit.scopesReserved(len($added), len($owned)));
 }
 
 /**
@@ -740,6 +837,84 @@ export func cmdPublishers(db as flatdb.DB, r as args.Result, now as string) {
 }
 
 /**
+ * Add a co-owner: a second principal that may write under a scope.
+ *
+ * **Not a transfer.** The scope still names one owner as the principal it was
+ * granted to; a co-owner publishes and yanks under it but does not become the
+ * scope's identity. Handing the scope on is `register-namespace`, which is a
+ * different verb on purpose.
+ *
+ * Co-owners are held as subject ids under the scope's own provider, with no
+ * login stored beside them: the id is what authorises, and a second copy of a
+ * display label is a second thing to go stale after a rename.
+ * @param db {flatdb.DB} the current registry store
+ * @param r {args.Result} the parsed command line
+ * @param now {string} unused; kept so every command shares one handler shape
+ * @return {AdminResult} the result: the (edited) store, flags, and a message
+ */
+export func cmdAddOwner(db as flatdb.DB, r as args.Result, now as string) {
+    def scopeName as string init deckname.fold(args.asString($r, "scope"));
+    if (strings.startsWith($scopeName, "@")) {
+        $scopeName = strings.substring($scopeName, 1, len($scopeName));
+    }
+    if (not store.hasNamespace($db, $scopeName)) {
+        return failResult($db, "namespace @" + $scopeName + " is not registered");
+    }
+    def subject as string init strings.trim(args.asString($r, "subject"));
+    if ($subject == "") {
+        return failResult($db, "a co-owner is a principal id, not a login");
+    }
+    def ns as store.Namespace init store.getNamespace($db, $scopeName);
+    if ($ns.subject == "") {
+        return failResult($db, "@" + $scopeName + " is reserved and has no owner; " +
+            "grant it first with 'register-namespace " + $scopeName + " --owner <id>'");
+    }
+    if ($ns.subject == $subject) {
+        return readResult($db, $subject + " already owns @" + $scopeName);
+    }
+    def before as int init len(store.ownersOf($db, $scopeName));
+    def out as flatdb.DB init store.addCoOwner($db, $scopeName, $subject);
+    if (len(store.ownersOf($out, $scopeName)) == $before) {
+        return readResult($db, $subject + " is already a co-owner of @" + $scopeName);
+    }
+    return editResult($out, "added " + $subject + " as a co-owner of @" + $scopeName,
+        audit.coOwnerAdded($scopeName, $ns.provider, $subject));
+}
+
+/**
+ * Remove a co-owner. The scope's own owner cannot be removed this way: losing
+ * the last owner would leave decks nobody can yank, so reassignment is
+ * `register-namespace`.
+ * @param db {flatdb.DB} the current registry store
+ * @param r {args.Result} the parsed command line
+ * @param now {string} unused; kept so every command shares one handler shape
+ * @return {AdminResult} the result: the (edited) store, flags, and a message
+ */
+export func cmdRemoveOwner(db as flatdb.DB, r as args.Result, now as string) {
+    def scopeName as string init deckname.fold(args.asString($r, "scope"));
+    if (strings.startsWith($scopeName, "@")) {
+        $scopeName = strings.substring($scopeName, 1, len($scopeName));
+    }
+    if (not store.hasNamespace($db, $scopeName)) {
+        return failResult($db, "namespace @" + $scopeName + " is not registered");
+    }
+    def subject as string init strings.trim(args.asString($r, "subject"));
+    def ns as store.Namespace init store.getNamespace($db, $scopeName);
+    if ($ns.subject == $subject and not ($subject == "")) {
+        return failResult($db, $subject + " is the owner of @" + $scopeName +
+            ", not a co-owner; reassign it with 'register-namespace " + $scopeName +
+            " --owner <id>'");
+    }
+    def out as flatdb.DB init store.removeCoOwner($db, $scopeName, $subject);
+    def before as int init len(store.ownersOf($db, $scopeName));
+    if (len(store.ownersOf($out, $scopeName)) == $before) {
+        return failResult($db, $subject + " is not a co-owner of @" + $scopeName);
+    }
+    return editResult($out, "removed " + $subject + " from @" + $scopeName,
+        audit.coOwnerRemoved($scopeName, $ns.provider, $subject));
+}
+
+/**
  * List the registered namespace scopes.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} unused; kept so every command shares one handler shape
@@ -751,11 +926,52 @@ export func cmdNamespaces(db as flatdb.DB, r as args.Result, now as string) {
     if (len($scopes) == 0) {
         return readResult($db, "(no namespaces registered)");
     }
-    def msg as string init "namespaces:";
+    # Reserving the defaults puts scores of operator-held names in the store, so
+    # a bare list of names stopped answering the question an operator actually
+    # has, which is "which of these has an owner". Each line says which it is,
+    # and the filters exist because the reserved block otherwise buries the few
+    # entries anybody is looking for.
+    def onlyOwned as bool init args.asBool($r, "owned");
+    def onlyReserved as bool init args.asBool($r, "reserved");
+    def lines as list of string init [];
+    def owned as int init 0;
+    def held as int init 0;
     for (def scope in $scopes) {
-        $msg = $msg + "\n  @" + $scope;
+        def ns as store.Namespace init store.getNamespace($db, $scope);
+        def isHeld as bool init $ns.subject == "";
+        if ($isHeld) {
+            $held = $held + 1;
+        } else {
+            $owned = $owned + 1;
+        }
+        if ($onlyOwned and $isHeld) {
+            continue;
+        }
+        if ($onlyReserved and not $isHeld) {
+            continue;
+        }
+        if ($isHeld) {
+            $lines[] = "  @" + $scope + "  (reserved, no owner)";
+        } else {
+            def who as string init $ns.login;
+            if ($who == "") {
+                $who = "(no login recorded)";
+            }
+            def line as string init "  @" + $scope + "  " + $who + " [" +
+                $ns.provider + " " + $ns.subject + "]";
+            if (len($ns.coOwners) > 0) {
+                $line = $line + " +" + convert.toString(len($ns.coOwners)) +
+                    " co-owner(s): " + strings.join($ns.coOwners, " ");
+            }
+            $lines[] = $line;
+        }
     }
-    return readResult($db, $msg);
+    def head as string init "namespaces: " + convert.toString($owned) + " owned, " +
+        convert.toString($held) + " reserved";
+    if (len($lines) == 0) {
+        return readResult($db, $head + "\n  (none matching)");
+    }
+    return readResult($db, $head + "\n" + strings.join($lines, "\n"));
 }
 
 /**

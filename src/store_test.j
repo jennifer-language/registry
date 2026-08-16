@@ -227,7 +227,8 @@ func testVersionEngines() {
 func aNamespace(scope as string, subject as string, login as string) {
     return Namespace{
         scope: $scope, provider: "github", subject: $subject,
-        login: $login, registeredAt: "1700000000"
+        login: $login, registeredAt: "1700000000",
+        coOwners: []
     };
 }
 

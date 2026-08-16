@@ -82,6 +82,13 @@ export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject
         if (store.ownsNamespace($db, $folded, $who.provider, $who.id)) {
             return refuse($db, "@" + $folded + " is already yours");
         }
+        # A registered scope with no owner is *reserved*, not taken. Saying
+        # "another account" there would be false and would send the caller
+        # looking for a person who does not exist.
+        if (store.getNamespace($db, $folded).subject == "") {
+            return refuse($db, "@" + $folded + " is reserved by this registry; " +
+                "ask an operator if you have a claim to it");
+        }
         return refuse($db, "@" + $folded + " is claimed by another account; " +
             "an operator can reassign it if that is wrong");
     }
@@ -94,7 +101,8 @@ export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject
         provider: $who.provider,
         subject: $who.id,
         login: $who.login,
-        registeredAt: $now
+        registeredAt: $now,
+        coOwners: []
     });
     return ClaimResult{
         allowed: true, reason: $verdict.reason, db: $out, changed: true
@@ -128,7 +136,8 @@ export func grant(db as flatdb.DB, scope as string, provider as string,
         provider: $provider,
         subject: $subject,
         login: $login,
-        registeredAt: $now
+        registeredAt: $now,
+        coOwners: []
     });
     def what as string init "granted @" + $folded;
     if ($subject == "") {

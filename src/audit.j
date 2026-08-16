@@ -610,3 +610,50 @@ export func ciTokenUsed(fingerprint as string, name as string, deck as string) {
     };
     return Event{ level: INFO, message: "write authorised by ci token", fields: $f };
 }
+
+/**
+ * The reserved scopes were registered in bulk. `conflicts` counts names the list
+ * wanted that somebody already owns, which is the number worth looking at: it is
+ * either a legitimate owner who got there first, or a name that should never
+ * have been claimable.
+ * @param reservedCount {int} how many scopes were newly held
+ * @param conflicts {int} how many were left alone because somebody owns them
+ * @return {Event} the event
+ */
+export func scopesReserved(reservedCount as int, conflicts as int) {
+    def f as map of string to string init {
+        "reserved": convert.toString($reservedCount),
+        "conflicts": convert.toString($conflicts)
+    };
+    return Event{ level: WARN, message: "reserved scopes registered", fields: $f };
+}
+
+/**
+ * A co-owner was added to a scope. A second principal can now publish and yank
+ * under it, which is a change in who may write, so it is recorded as loudly as
+ * a grant.
+ * @param scope {string} the scope
+ * @param provider {string} the identity provider the subject belongs to
+ * @param subject {string} the principal added
+ * @return {Event} the event
+ */
+export func coOwnerAdded(scope as string, provider as string, subject as string) {
+    def f as map of string to string init {
+        "scope": $scope, "provider": $provider, "subject": $subject
+    };
+    return Event{ level: WARN, message: "co-owner added", fields: $f };
+}
+
+/**
+ * A co-owner was removed from a scope.
+ * @param scope {string} the scope
+ * @param provider {string} the identity provider the subject belongs to
+ * @param subject {string} the principal removed
+ * @return {Event} the event
+ */
+export func coOwnerRemoved(scope as string, provider as string, subject as string) {
+    def f as map of string to string init {
+        "scope": $scope, "provider": $provider, "subject": $subject
+    };
+    return Event{ level: WARN, message: "co-owner removed", fields: $f };
+}

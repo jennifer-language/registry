@@ -496,6 +496,22 @@ func recordString(rec as json.Value, field as string) {
     return "";
 }
 
+# recordStrings reads an optional array of strings. Absent reads as empty, which
+# is what makes a list field additive over records written before it existed.
+func recordStrings(rec as json.Value, field as string) {
+    def out as list of string init [];
+    if (not json.has($rec, $field)) {
+        return $out;
+    }
+    def n as int init json.length($rec, $field);
+    def i as int init 0;
+    while ($i < $n) {
+        $out[] = json.asString($rec, $field + "/" + convert.toString($i));
+        $i = $i + 1;
+    }
+    return $out;
+}
+
 # recordBool reads an optional boolean field. Absent reads as false, which is
 # what makes `yanked` additive: every record written before the field existed is
 # a live version, which is exactly what it was.
@@ -629,13 +645,17 @@ export func listNamespaces(db as flatdb.DB) {
  * @field subject {string} the provider's stable subject identifier ("" when unowned)
  * @field login {string} the owner's username, a display label refreshed on each login
  * @field registeredAt {string} when the scope was registered (Unix seconds as text)
+ * @field coOwners {list of string} additional principals that may write under
+ *     this scope, as subject ids under the same `provider`. Empty for a scope
+ *     with one owner, which is every scope written before co-ownership existed.
  */
 export def struct Namespace {
     scope as string,
     provider as string,
     subject as string,
     login as string,
-    registeredAt as string
+    registeredAt as string,
+    coOwners as list of string
 };
 
 /**
@@ -660,6 +680,11 @@ export func registerNamespace(db as flatdb.DB, ns as Namespace) {
     $rec = json.set($rec, "/subject", $ns.subject);
     $rec = json.set($rec, "/login", $ns.login);
     $rec = json.set($rec, "/registeredAt", $ns.registeredAt);
+    def owners as json.Value init json.list();
+    for (def other in $ns.coOwners) {
+        $owners = json.append($owners, "", $other);
+    }
+    $rec = json.set($rec, "/coOwners", $owners);
     return flatdb.set($out, namespacePtr($ns.scope), $rec);
 }
 
@@ -679,7 +704,8 @@ export func getNamespace(db as flatdb.DB, scope as string) {
         provider: recordString($rec, "/provider"),
         subject: recordString($rec, "/subject"),
         login: recordString($rec, "/login"),
-        registeredAt: recordString($rec, "/registeredAt")
+        registeredAt: recordString($rec, "/registeredAt"),
+        coOwners: recordStrings($rec, "/coOwners")
     };
 }
 
@@ -708,7 +734,22 @@ export func ownsNamespace(db as flatdb.DB, scope as string, provider as string,
         return false;
     }
     def ns as Namespace init getNamespace($db, $scope);
-    return $ns.provider == $provider and $ns.subject == $subject;
+    if (not ($ns.provider == $provider)) {
+        return false;
+    }
+    if ($ns.subject == $subject) {
+        return true;
+    }
+    # A co-owner writes under the scope exactly as the owner does. They are held
+    # as bare subject ids under the same provider, and no login is stored beside
+    # them: the id is what authorises, a login is decoration, and a second copy
+    # of a display label is a second thing to go stale after a rename.
+    for (def other in $ns.coOwners) {
+        if ($other == $subject) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -1199,4 +1240,97 @@ export func getReadme(db as flatdb.DB, name as string) {
         return "";
     }
     return recordString(flatdb.get($db, deckPtr($name)), "/readme");
+}
+
+/**
+ * Add a co-owner to a scope, returning a fresh DB.
+ *
+ * A co-owner writes under the scope exactly as the owner does. What they are
+ * **not** is a second holder of the scope's identity: the record still names one
+ * `subject` as the principal it was granted to, and reassigning that is
+ * `registerNamespace`. This is the difference between "let my colleague publish"
+ * and "hand the scope over".
+ *
+ * Idempotent, and it refuses an unowned scope: a reserved name has no owner to
+ * co-own with, and quietly accepting one would leave a scope nobody holds that
+ * somebody can nevertheless write to.
+ * @param db {flatdb.DB} the store to edit
+ * @param scope {string} the scope
+ * @param subject {string} the principal to add, under the scope's own provider
+ * @return {flatdb.DB} a fresh store, or the original when nothing changed
+ * @throws {Error} when the scope is not registered
+ */
+export func addCoOwner(db as flatdb.DB, scope as string, subject as string) {
+    def ns as Namespace init getNamespace($db, $scope);
+    if ($subject == "" or $ns.subject == "" or $ns.subject == $subject) {
+        return $db;
+    }
+    for (def other in $ns.coOwners) {
+        if ($other == $subject) {
+            return $db;
+        }
+    }
+    # A list field of a struct cannot be appended to in place; build the list,
+    # then assign it back.
+    def owners as list of string init $ns.coOwners;
+    $owners[] = $subject;
+    def out as Namespace init $ns;
+    $out.coOwners = $owners;
+    return registerNamespace($db, $out);
+}
+
+/**
+ * Remove a co-owner from a scope, returning a fresh DB.
+ *
+ * The scope's own `subject` cannot be removed this way. Losing the last owner
+ * would leave a scope with decks under it and nobody able to yank them, so
+ * handing the scope on is `registerNamespace` and is deliberately a different
+ * verb.
+ * @param db {flatdb.DB} the store to edit
+ * @param scope {string} the scope
+ * @param subject {string} the principal to remove
+ * @return {flatdb.DB} a fresh store, or the original when nothing changed
+ * @throws {Error} when the scope is not registered
+ */
+export func removeCoOwner(db as flatdb.DB, scope as string, subject as string) {
+    def ns as Namespace init getNamespace($db, $scope);
+    def kept as list of string init [];
+    def found as bool init false;
+    for (def other in $ns.coOwners) {
+        if ($other == $subject) {
+            $found = true;
+        } else {
+            $kept[] = $other;
+        }
+    }
+    if (not $found) {
+        return $db;
+    }
+    def out as Namespace init $ns;
+    $out.coOwners = $kept;
+    return registerNamespace($db, $out);
+}
+
+/**
+ * Every principal that may write under a scope: the owner first, then any
+ * co-owners. Empty when the scope is reserved, which is what makes a reserved
+ * scope unwritable rather than merely unclaimed.
+ * @param db {flatdb.DB} the store to read
+ * @param scope {string} the scope
+ * @return {list of string} the subject ids
+ */
+export func ownersOf(db as flatdb.DB, scope as string) {
+    def out as list of string init [];
+    if (not hasNamespace($db, $scope)) {
+        return $out;
+    }
+    def ns as Namespace init getNamespace($db, $scope);
+    if ($ns.subject == "") {
+        return $out;
+    }
+    $out[] = $ns.subject;
+    for (def other in $ns.coOwners) {
+        $out[] = $other;
+    }
+    return $out;
 }

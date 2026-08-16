@@ -12,9 +12,9 @@
 # Jennifer 0.25.0 or newer, which is a higher floor than the registry's own.
 
 [book]
-title = "Jennifer deck registry: reference"
+title = "Jennifer Deck Registry - Administrator Reference"
 description = "The HTTP API, the operator CLI, and the specifications the deck registry implements."
-authors = ["the jvc contributors"]
+authors = [""]
 authorsLabel = "Maintained by"
 language = "en"
 src = "reference"
@@ -33,6 +33,7 @@ sectionNumbers = true
 repoUrl = "https://github.com/jennifer-language/registry"
 repoLabel = "Source"
 editUrl = "https://github.com/jennifer-language/registry/edit/main/reference/{path}"
+titleUrl = "/"
 
 [highlight]
 # The built-in highlighter: Jennifer blocks are coloured at build time, with no

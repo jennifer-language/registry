@@ -167,16 +167,93 @@ shared file shows both.
 | `remove <deck> [version]` | remove one version, or a whole deck |
 | `list [deck]` | list decks, or one deck's versions |
 | `register-namespace <scope> [flags]` | grant a scope to a principal, or reserve it |
-| `namespaces` | list registered scopes |
+| `add-owner <scope> <subject>` | let another principal write under a scope |
+| `remove-owner <scope> <subject>` | revoke a co-owner |
+| `namespaces [--owned\|--reserved]` | list registered scopes and who owns each |
 | `trust <deck> <repositoryId> [flags]` | let a CI workflow publish a deck (8.9) |
 | `untrust <deck>` | remove a deck's trusted publisher |
 | `publishers` | list trusted publishers |
+| `reserve-defaults [--dry-run]` | hold every reserved scope so nobody can claim one |
 | `mint-token <scope> [flags]` | mint a CI token, shown once (8.10) |
 | `tokens` | list CI tokens and when each was last used |
 | `revoke-token <fingerprint>` | revoke one CI token |
 | `yank <deck> <version>` | withdraw a version from new resolutions |
 | `unyank <deck> <version>` | restore a withdrawn version |
 | `revoke <accountId>` | invalidate an identity's refresh tokens |
+
+#### Co-owners
+
+A scope has **one owner and any number of co-owners**. A co-owner publishes and
+yanks under the scope exactly as the owner does; what they do not do is become
+the scope's identity, so `register-namespace` remains the way to hand a scope on.
+
+```sh
+jennifer run bin/deckadmin add-owner acme 67890
+jennifer run bin/deckadmin remove-owner acme 67890
+```
+
+The argument is the **principal id**, not a login - the same rule as everywhere
+else, so a rename never moves who may write. Co-owners live under the scope's own
+provider; the same numeric id at a different provider is a different person and
+is refused.
+
+Two guards, both deliberate:
+
+- **A reserved scope cannot take a co-owner.** There is no owner to co-own with,
+  and accepting one would leave a scope nobody holds that somebody can write to.
+  Grant it first.
+- **The owner cannot be removed this way.** Losing the last owner would leave
+  decks nobody can yank. Reassign with `register-namespace` instead.
+
+Note what this is *not* for: letting a whole team publish rarely needs co-owners
+at all. A **CI token** scoped to the namespace, or a **trusted publisher** per
+deck, lets many people and pipelines publish without anyone holding a second
+administrative credential. Reach for a co-owner when somebody needs to *manage*
+the scope, not merely publish under it.
+
+#### Handing a reserved scope to somebody
+
+Reserving holds a name; it does not retire it. A reserved scope is simply
+**registered with no owner**, so the same command that grants any scope hands it
+over:
+
+```sh
+jennifer run bin/deckadmin register-namespace jennifer --owner 12345 --login mplx
+```
+
+That is how `@jennifer`, `@official`, or any other held name becomes publishable:
+an operator decides who gets it, and from that moment the ordinary ownership
+rules apply. `reserve-defaults` will not take it back afterwards - it reports the
+scope as owned and leaves it alone.
+
+`namespaces` shows which is which, with `--owned` and `--reserved` to filter,
+because a registry that has reserved the defaults holds scores of names and the
+useful entries would otherwise be buried:
+
+```
+namespaces: 1 owned, 75 reserved
+  @jennifer  mplx [github 12345]
+  @admin  (reserved, no owner)
+```
+
+#### `reserve-defaults`
+
+Registers every scope in `src/reserved.j` as operator-held, so no self-service
+claim can take one. Run it on a fresh registry before it is public, and again
+whenever the list grows.
+
+Idempotent, and it **never seizes a scope somebody already owns** - it reports
+the conflict and leaves it alone. `--dry-run` prints the plan without writing.
+
+The list holds names that would mislead a reader whoever owns them: `official`,
+`admin`, `security`, `api`, `www`, the project's own names, and placeholders like
+`test` and `example`.
+
+**Brand names are not on it.** Under the `derived` claim policy, `@microsoft` can
+only be claimed by the account called `microsoft`, so the identity provider has
+already answered the question; a brand list has no natural edge and would imply
+this registry adjudicates trademarks, which it does not. Disputes go through the
+operator path instead.
 
 #### `mint-token`
 

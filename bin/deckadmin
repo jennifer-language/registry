@@ -75,12 +75,39 @@ func onRegisterNamespace(r as args.Result) {
 }
 
 /**
+ * The `add-owner` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onAddOwner(r as args.Result) {
+    return admin.cmdAddOwner($db, $r, $now);
+}
+
+/**
+ * The `remove-owner` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onRemoveOwner(r as args.Result) {
+    return admin.cmdRemoveOwner($db, $r, $now);
+}
+
+/**
  * The `namespaces` handler.
  * @param r {args.Result} the parsed command line
  * @return {admin.AdminResult} the outcome
  */
 func onNamespaces(r as args.Result) {
     return admin.cmdNamespaces($db, $r, $now);
+}
+
+/**
+ * The `reserve-defaults` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onReserveDefaults(r as args.Result) {
+    return admin.cmdReserveDefaults($db, $r, $now);
 }
 
 /**
@@ -204,7 +231,10 @@ def result as admin.AdminResult init args.dispatch($parsed, {
     "remove": onRemove,
     "list": onList,
     "register-namespace": onRegisterNamespace,
+    "add-owner": onAddOwner,
+    "remove-owner": onRemoveOwner,
     "namespaces": onNamespaces,
+    "reserve-defaults": onReserveDefaults,
     "mint-token": onMintToken,
     "tokens": onTokens,
     "revoke-token": onRevokeToken,
