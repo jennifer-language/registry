@@ -15,29 +15,109 @@ not a tool you run by hand.
 Both read the same database, so `deckadmin` edits show up in the server without a
 restart: every request opens the store fresh.
 
+## Configuration
+
+Settings come from three places, each overriding the one before:
+
+1. built-in defaults - a read-only, plain-HTTP registry
+2. `config.toml` (or `$REGISTRY_CONFIG`), if present
+3. the environment
+
+**The environment wins.** The file states how a deployment is meant to run; the
+environment varies one instance, or injects a secret, without editing a file into
+an image. `config.toml.example` documents every key beside the variable that
+overrides it.
+
+An environment variable set to an **empty string counts as unset**, so a stray
+blank cannot erase what the file configured. Booleans are the exception and parse
+their value (`1 true yes on` / `0 false no off`), because `0` has to be able to
+switch off what the file switched on.
+
+A configuration that cannot be served is refused at startup with the reason,
+rather than accepted and discovered at the first request.
+
+## TLS and Let's Encrypt
+
+The registry can obtain and renew its own certificate over the ACME HTTP-01
+challenge, storing it in the data directory beside the database.
+
+```toml
+[tls]
+enabled = true
+domains = ["registry.example.com"]
+email = "ops@example.com"
+agreeTos = true
+```
+
+`agreeTos` has no default of `true` and never will: accepting a CA's terms is a
+decision an operator makes, not one a program makes for them.
+
+**Port 80 must reach the plain listener from the internet.** That is where the CA
+knocks for the challenge, and it is why the plain listener is not simply a
+redirect to HTTPS. The plain listener starts first and stays up throughout, so
+the registry keeps serving while a certificate is being obtained or renewed.
+
+**Use the staging directory first.** It issues untrusted certificates with far
+higher rate limits; production limits are per registered domain per week, and a
+misconfigured deployment can exhaust them before anyone notices. The registry
+says at boot when it is pointed at staging, because otherwise the first sign is a
+browser warning.
+
+```
+REGISTRY_ACME_DIRECTORY=https://acme-staging-v02.api.letsencrypt.org/directory
+```
+
+Renewal is decided from the recorded issue time, `renewBeforeDays` before the
+90 day lifetime expires. A renewal that fails while a valid certificate is still
+on disk keeps serving the old one and logs the failure; a *first* issuance that
+fails leaves the registry on plain HTTP with an `error` in the log rather than
+refusing to start.
+
 ## Environment
+
+> **Renamed.** These variables used to be `JVC_*`. `jvc` is the *client*, so a
+> host running both had one `JVC_DB` meaning two different databases. The old
+> names are still read and warn on use; they will stop being read in a later
+> version. A rename that merely ignored them would be worse than none, because an
+> unset variable falls back to a **default** - an already-configured deployment
+> would silently start serving a different database rather than failing.
+>
+> `JVC_TOKEN` is unaffected: that one belongs to the client.
 
 | Variable | Default | Used by | Meaning |
 | -------- | ------- | ------- | ------- |
-| `JVC_DB` | `data/decks.json` | both | the flatdb database path |
-| `JVC_ADDR` | `:8080` | `serve` | the listen address |
-| `JVC_LOG` | unset | both | append the operational log to this file |
-| `JVC_LOG_LEVEL` | `info` | both | `debug`, `info`, `warn`, `error` |
-| `JVC_LOG_FORMAT` | `logfmt` | both | the *file* format: `text`, `logfmt`, `json` |
-| `JVC_LOG_REQUESTS` | `0` | `serve` | record one line per request |
-| `JVC_IDENTITY` | `github` | `serve` | which identity module: `github`, `gitlab`, `gitea`, `forgejo`, `oidc` |
-| `JVC_IDENTITY_CLIENTID` | unset | `serve` | the OAuth application id |
-| `JVC_IDENTITY_BASEURL` | unset | `serve` | the provider's base URL, for a self-hosted instance |
-| `JVC_IDENTITY_SECRET` | unset | `serve` | the client secret, for a provider that needs one |
-| `JVC_IDENTITY_SCOPES` | per module | `serve` | override the requested scopes |
-| `JVC_TOKEN_KEY` | unset | `serve` | the HMAC secret bearer tokens are signed with |
-| `JVC_FORGE` | `github` | `serve` | which forge module: `github`, `gitlab`, `gitea`, `forgejo` |
-| `JVC_FORGE_BASEURL` | unset | `serve` | the forge's API root, for a self-hosted instance |
-| `JVC_FORGE_TOKEN` | unset | `serve` | a service token, where the forge needs one to read |
-| `JVC_FORGE_HOST` | unset | `serve` | the hostname whose URLs this forge claims |
-| `JVC_TRUSTPUB_AUDIENCE` | unset | `serve` | the `aud` a CI token must carry; gates trusted publishing |
-| `JVC_TRUSTPUB_PROVIDER` | `github-actions` | `serve` | `github-actions`, `gitlab-ci`, or `gitea-actions` |
-| `JVC_TRUSTPUB_ISSUER` | per provider | `serve` | the OIDC issuer, required for anything self-hosted |
+| `REGISTRY_DB` | `data/decks.json` | both | the flatdb database path |
+| `REGISTRY_ADDR` | `:8080` | `serve` | the listen address |
+| `REGISTRY_URL` | unset | `serve` | the canonical base URL advertised in discovery |
+| `REGISTRY_CLIENT_IP_HEADER` | unset | `serve` | header a trusted proxy puts the real client address in |
+| `REGISTRY_POLICY` | `derived` | `serve` | who may claim a scope: `derived`, `operator`, `firstcome` |
+| `REGISTRY_LOG` | unset | both | append the operational log to this file |
+| `REGISTRY_LOG_LEVEL` | `info` | both | `debug`, `info`, `warn`, `error` |
+| `REGISTRY_LOG_FORMAT` | `logfmt` | both | the *file* format: `text`, `logfmt`, `json` |
+| `REGISTRY_LOG_REQUESTS` | `0` | `serve` | record one line per request |
+| `REGISTRY_IDENTITY` | `github` | `serve` | which identity module: `github`, `gitlab`, `gitea`, `forgejo`, `oidc` |
+| `REGISTRY_IDENTITY_CLIENTID` | unset | `serve` | the OAuth application id |
+| `REGISTRY_IDENTITY_BASEURL` | unset | `serve` | the provider's base URL, for a self-hosted instance |
+| `REGISTRY_IDENTITY_SECRET` | unset | `serve` | the client secret, for a provider that needs one |
+| `REGISTRY_IDENTITY_SCOPES` | per module | `serve` | override the requested scopes |
+| `REGISTRY_TOKEN_KEY` | unset | `serve` | the HMAC secret bearer tokens are signed with |
+| `REGISTRY_CONFIG` | `config.toml` | `serve` | where the configuration file is |
+| `REGISTRY_TLS` | `0` | `serve` | serve HTTPS and obtain a certificate |
+| `REGISTRY_TLS_ADDR` | `:8443` | `serve` | the HTTPS listen address |
+| `REGISTRY_TLS_DOMAINS` | unset | `serve` | the certificate's names, comma or space separated |
+| `REGISTRY_TLS_EMAIL` | unset | `serve` | the account contact the CA requires |
+| `REGISTRY_ACME_AGREE_TOS` | `0` | `serve` | accept the CA's terms |
+| `REGISTRY_ACME_DIRECTORY` | Let's Encrypt production | `serve` | the ACME directory URL |
+| `REGISTRY_TLS_CERTDIR` | `data/tls` | `serve` | where the certificate is stored |
+| `REGISTRY_ACME_CHALLENGEDIR` | `data/acme-challenge` | `serve` | where challenge responses are written |
+| `REGISTRY_TLS_RENEW_BEFORE_DAYS` | `30` | `serve` | how early to renew |
+| `REGISTRY_FORGE` | `github` | `serve` | which forge module: `github`, `gitlab`, `gitea`, `forgejo` |
+| `REGISTRY_FORGE_BASEURL` | unset | `serve` | the forge's API root, for a self-hosted instance |
+| `REGISTRY_FORGE_TOKEN` | unset | `serve` | a service token, where the forge needs one to read |
+| `REGISTRY_FORGE_HOST` | unset | `serve` | the hostname whose URLs this forge claims |
+| `REGISTRY_TRUSTPUB_AUDIENCE` | unset | `serve` | the `aud` a CI token must carry; gates trusted publishing |
+| `REGISTRY_TRUSTPUB_PROVIDER` | `github-actions` | `serve` | `github-actions`, `gitlab-ci`, or `gitea-actions` |
+| `REGISTRY_TRUSTPUB_ISSUER` | per provider | `serve` | the OIDC issuer, required for anything self-hosted |
 
 The server's console always receives the log, in human-readable text; the file
 is the extra copy, and it is the only one that survives a restart. **Both
@@ -45,20 +125,31 @@ binaries write to the same file**, which is what makes it worth reading: the
 server never sees a publish and `deckadmin` never sees a request. Nothing rotates
 it, so a long-lived deployment should point logrotate at it.
 
-`JVC_LOG_REQUESTS` is separate from the level because an access log is wanted at
+**Behind a proxy the access log records the proxy** unless you name the header
+carrying the real address. Unset is the safe default: the connection's own peer
+cannot be forged, whereas a header can be sent by anybody. Only name one if
+something in front of the registry sets it *and* strips any client-supplied copy
+- otherwise the audit log becomes what callers claim about themselves.
+
+Behind Cloudflare use `CF-Connecting-IP`, which Cloudflare overwrites on every
+request and which therefore survives any number of hops. Behind Traefik alone use
+`X-Forwarded-For`; the first entry is taken, which is the original client by
+convention.
+
+`REGISTRY_LOG_REQUESTS` is separate from the level because an access log is wanted at
 `info` far more often than the rest of `debug` is, and because a container with a
 30-second health probe otherwise fills its log with itself.
 
-**`JVC_IDENTITY_CLIENTID` and `JVC_TOKEN_KEY` gate the login surface.** Set both and the registry serves the
+**`REGISTRY_IDENTITY_CLIENTID` and `REGISTRY_TOKEN_KEY` gate the login surface.** Set both and the registry serves the
 token exchange and advertises it; leave either unset and the auth routes are not
 registered, no `auth` object appears in the discovery document, and a client
 reports that this registry accepts no logins. That default is deliberate: a
 registry with no write API has nothing to authenticate.
 
-`JVC_TOKEN_KEY` is a secret. Changing it invalidates every outstanding bearer
+`REGISTRY_TOKEN_KEY` is a secret. Changing it invalidates every outstanding bearer
 token at once, which is the blunt instrument if one leaks.
 
-**`JVC_TRUSTPUB_AUDIENCE` gates publishing from CI** (specification 8.9). Set it
+**`REGISTRY_TRUSTPUB_AUDIENCE` gates publishing from CI** (specification 8.9). Set it
 and `POST /publish` accepts a CI identity token in place of a bearer token, and
 the discovery document advertises the audience so a job knows what to ask its CI
 system for. It is **not** a secret - publishing it is what makes the check
@@ -70,7 +161,7 @@ The issuer's key set is fetched **once at boot** and held for the process, so a
 key rotation needs a restart. Fetching per request would put two round trips in
 front of every publish and make this registry unavailable whenever the issuer is.
 
-`JVC_FORGE*` configures how a publish reads a repository: resolving a tag to a
+`REGISTRY_FORGE*` configures how a publish reads a repository: resolving a tag to a
 commit and reading `deck.toml` at it. Identity and forge are independent choices
 that only coincide on `github.com`, so they are configured separately.
 
@@ -81,7 +172,7 @@ first run needs no seed file.
 
 ```sh
 jennifer serve bin/serve
-JVC_DB=/srv/registry.json JVC_ADDR=:9000 jennifer serve bin/serve
+REGISTRY_DB=/srv/registry.json REGISTRY_ADDR=:9000 jennifer serve bin/serve
 ```
 
 It serves the JSON routes in [api.md](api.md) and the website below. There is no
@@ -145,14 +236,14 @@ argument parser resolves them. `deckadmin --log x.log add ...` works;
 
 | Flag | Environment | Default | Means |
 | ---- | ----------- | ------- | ----- |
-| `--log <path>` | `JVC_LOG` | none | append events to this file |
-| `--log-level <level>` | `JVC_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `--log-format <fmt>` | `JVC_LOG_FORMAT` | `logfmt` | `text`, `logfmt`, `json` |
+| `--log <path>` | `REGISTRY_LOG` | none | append events to this file |
+| `--log-level <level>` | `REGISTRY_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `--log-format <fmt>` | `REGISTRY_LOG_FORMAT` | `logfmt` | `text`, `logfmt`, `json` |
 | `-v`, `--verbose` | | off | also print each event to the console |
 | `-q`, `--quiet` | | off | suppress the result message |
 
 A flag beats the environment, which beats the default, so a container can set
-`JVC_LOG` once and a single command can still be redirected. `--verbose` is off
+`REGISTRY_LOG` once and a single command can still be redirected. `--verbose` is off
 by default because `deckadmin` already prints a result line; turning it on is for
 when the structured form is what you want to read.
 
@@ -385,7 +476,7 @@ already issued are signed and stateless, so they expire on their own within
 
 A private registry usually delegates identity to its own SSO and hosts code on
 its own forge, and those are **two independent choices**
-([specs-server.md](specs-server.md) section 12):
+([specs-server.md](/specs/specs-server.html) section 12):
 
 | Role | Answers | Examples |
 | ---- | ------- | -------- |
@@ -512,12 +603,12 @@ jennifer run bin/deckadmin namespaces
 
 Registration is idempotent, and it is the operator's grant. The specification
 describes deriving scope ownership from a GitHub account instead, which would
-retire this step; see [specs-server.md](specs-server.md) section 8.
+retire this step; see [specs-server.md](/specs/specs-server.html) section 8.
 
 ## Docker
 
 ```sh
-JVC_UID=$(id -u) JVC_GID=$(id -g) docker compose up -d --build
+REGISTRY_UID=$(id -u) REGISTRY_GID=$(id -g) docker compose up -d --build
 docker compose logs -f
 docker compose exec jvc jennifer run bin/deckadmin list
 docker compose down
@@ -553,11 +644,11 @@ Two build arguments set the runtime user:
 
 The Dockerfile defaults are the base image's own `jennifer` user, which is right
 for a **named volume**: Docker initialises one from the image, so ownership
-matches by construction. Compose passes `${JVC_UID:-1000}` / `${JVC_GID:-1000}`
+matches by construction. Compose passes `${REGISTRY_UID:-1000}` / `${REGISTRY_GID:-1000}`
 instead, because it bind-mounts.
 
 ```sh
-JVC_UID=$(id -u) JVC_GID=$(id -g) docker compose up -d --build
+REGISTRY_UID=$(id -u) REGISTRY_GID=$(id -g) docker compose up -d --build
 ```
 
 Put them in a `.env` beside `docker-compose.yml` to avoid repeating them.
@@ -583,4 +674,4 @@ Two things to know before changing the base:
 
 There is no `curl` in that base image, so the container healthcheck is
 `bin/healthcheck`, which polls `/health` and exits non-zero when it does not
-answer. `JVC_HEALTHURL` overrides the URL it probes.
+answer. `REGISTRY_HEALTHURL` overrides the URL it probes.

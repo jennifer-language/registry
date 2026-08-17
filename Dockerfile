@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 
 ########################################################################
-# Docs stage: render both books into the static site. The manual is the
-# task-shaped user guide at /manual; the reference is the API and the
-# specifications at /reference. Grimoire builds one source directory into one
-# output directory, so each book is its own config and its own invocation.
+# Docs stage: render all three books into the static site. The user manual is
+# the task-shaped guide at /manual; the admin manual is the API and the operator
+# CLI at /reference; the specifications are the normative contracts at /specs.
+# Grimoire builds one source directory into one output directory, so each book is
+# its own config and its own invocation.
 #
 # The image's entrypoint is `jennifer run /opt/grimoire/grimoire`, so RUN
 # invokes the binary directly. Output lands under /work/public, per each config.
@@ -17,11 +18,13 @@
 FROM ghcr.io/jennifer-language/grimoire AS docs
 
 WORKDIR /work
-COPY grimoire.toml grimoire-manual.toml ./
+COPY grimoire.toml grimoire-manual.toml grimoire-specs.toml ./
 COPY reference/ ./reference/
 COPY manual/ ./manual/
+COPY specs/ ./specs/
 RUN ["jennifer", "run", "/opt/grimoire/grimoire", "build"]
 RUN ["jennifer", "run", "/opt/grimoire/grimoire", "build", "--config", "grimoire-manual.toml"]
+RUN ["jennifer", "run", "/opt/grimoire/grimoire", "build", "--config", "grimoire-specs.toml"]
 
 ########################################################################
 # Runtime stage: the official interpreter image plus this app. Its module
@@ -47,7 +50,7 @@ FROM ghcr.io/jennifer-language/jennifer:dev AS runtime
 # crash-atomic, it writes a temp file *beside* the target, so the directory has
 # to be writable, not merely the file. Build with the host's ids to match:
 #
-#     JVC_UID=$(id -u) JVC_GID=$(id -g) docker compose up -d --build
+#     REGISTRY_UID=$(id -u) REGISTRY_GID=$(id -g) docker compose up -d --build
 #
 # Named on purpose: `UID` is readonly and unexported in bash, so `${UID}` in a
 # compose file silently resolves to nothing and would quietly take the default.
@@ -60,8 +63,9 @@ WORKDIR /app
 COPY bin/ /app/bin/
 COPY src/ /app/src/
 
-# The website's static root: both rendered books, served at /manual and
-# /reference. Built in the docs stage rather than copied from the build context,
+# The website's static root: all three rendered books, served at /manual,
+# /reference, and /specs. Built in the docs stage rather than copied from the
+# build context,
 # so an image never ships a stale local render (public/ is dockerignored for
 # that reason).
 COPY --from=docs /work/public /app/public
@@ -75,6 +79,7 @@ COPY --from=docs /work/public /app/public
 # that exists in /etc/passwd, which is what lets an arbitrary host id work.
 USER root
 RUN mkdir -p /app/data && chown -R ${UID}:${GID} /app
+COPY --chmod=0755 bin/entrypoint.sh /entrypoint.sh
 VOLUME ["/app/data"]
 USER ${UID}:${GID}
 
@@ -82,12 +87,18 @@ USER ${UID}:${GID}
 # guaranteed to be able to write and the one place a `deckadmin` run through
 # `docker exec` can append to the same file. It goes to stdout as well, so
 # `docker logs` works without mounting anything.
-ENV JVC_ADDR=":8080" \
-    JVC_DB="/app/data/decks.json" \
-    JVC_LOG="/app/data/registry.log" \
-    JVC_LOG_LEVEL="info" \
-    JVC_LOG_FORMAT="logfmt" \
-    JVC_LOG_REQUESTS="0"
+# The uid the entrypoint drops to when it is started as root. Baked from the
+# build args so the two can never disagree.
+ENV REGISTRY_RUN_UID="${UID}" \
+    REGISTRY_RUN_GID="${GID}" \
+    REGISTRY_ADDR=":8080" \
+    REGISTRY_DB="/app/data/decks.json" \
+    REGISTRY_TLS_CERTDIR="/app/data/tls" \
+    REGISTRY_ACME_CHALLENGEDIR="/app/data/acme-challenge" \
+    REGISTRY_LOG="/app/data/registry.log" \
+    REGISTRY_LOG_LEVEL="info" \
+    REGISTRY_LOG_FORMAT="logfmt" \
+    REGISTRY_LOG_REQUESTS="0"
 
 # Fail the build early if the interpreter or the module tree is broken: this
 # parses the whole server, its modules, and every pragma in them.
@@ -101,7 +112,14 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["jennifer", "run", "/app/bin/healthcheck"]
 
-# The base image's entrypoint is /usr/bin/jennifer, so CMD is its arguments.
+# The entrypoint wraps /usr/bin/jennifer rather than replacing it: started
+# unprivileged it hands straight over, and started as root (`user: "0:0"`) it
+# first takes ownership of the data volume and then drops back down. CMD is
+# still the interpreter's arguments either way.
+#
+# HEALTHCHECK and `docker exec` bypass ENTRYPOINT, so both still call `jennifer`
+# directly and are unaffected by this.
 # serve resolves the stdlib from /usr/share/jennifer/modules and its own
 # modules (../src/store.j, ...) relative to bin/serve.
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["serve", "bin/serve"]

@@ -148,7 +148,7 @@ export func subjectFrom(cfg as identity.Config, doc as json.Value) {
         provider: $name,
         id: json.asString($doc, "/sub"),
         login: $login,
-        orgs: [],
+        orgs: {},
         orgsCheckedAt: ""
     };
 }

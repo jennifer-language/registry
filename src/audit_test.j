@@ -112,10 +112,14 @@ func testNoBuilderCanBeHandedASecret() {
     # is no parameter a token could arrive through. If someone later adds one,
     # this test still passes - but the arity change is what review should catch,
     # and the record below is what it should be compared against.
-    def issued as Event init tokenIssued("issued", "1234567", "alice");
-    testing.assertEqual(len($issued.fields), 2);
+    def issued as Event init tokenIssued("issued", "1234567", "alice", "acme,viverto");
+    testing.assertEqual(len($issued.fields), 3);
     testing.assertEqual($issued.fields["subject"], "1234567");
     testing.assertEqual($issued.fields["login"], "alice");
+    # The third field is the organisation list. It is public information - the
+    # same logins any visitor reads off a deck page - and it is here because an
+    # incomplete one is otherwise invisible until a claim fails.
+    testing.assertEqual($issued.fields["orgs"], "acme,viverto");
 
     def started as Event init loginStarted("github");
     testing.assertEqual(len($started.fields), 1);
@@ -192,4 +196,30 @@ func testAttributingAnEventWithNoCommandFieldIsANoOp() {
     def ev as Event init attribute(deckRemoved("@acme/tool", "1.0.0"), "remove");
     testing.assertFalse(maps.has($ev.fields, "command"));
     testing.assertEqual(attribute(none(), "add").level, "");
+}
+
+# --- which address gets recorded ----------------------------------------------
+
+func testThePeerIsUsedWhenNoHeaderIsConfigured() {
+    # the default: unforgeable, and correct when nothing is in front of us
+    testing.assertEqual(clientOf("", "10.0.1.12:44496"), "10.0.1.12:44496");
+    testing.assertEqual(clientOf("   ", "10.0.1.12:44496"), "10.0.1.12:44496");
+}
+
+func testAConfiguredHeaderWins() {
+    testing.assertEqual(clientOf("203.0.113.7", "10.0.1.12:44496"), "203.0.113.7");
+}
+
+func testTheFirstEntryOfAChainIsTheClient() {
+    # X-Forwarded-For grows left to right: client, then each proxy it passed
+    testing.assertEqual(clientOf("203.0.113.7, 172.68.1.1, 10.0.1.12",
+        "10.0.1.12:44496"), "203.0.113.7");
+    testing.assertEqual(clientOf(" 203.0.113.7 ,172.68.1.1 ", "10.0.1.12:0"),
+        "203.0.113.7");
+}
+
+func testAnEmptyChainFallsBackToThePeer() {
+    # a proxy that set the header but put nothing in it must not blank the record
+    testing.assertEqual(clientOf(",", "10.0.1.12:44496"), "10.0.1.12:44496");
+    testing.assertEqual(clientOf(" , , ", "10.0.1.12:44496"), "10.0.1.12:44496");
 }

@@ -1,7 +1,11 @@
-# The Jennifer deck registry: reference
+# The Jennifer deck registry: administrator manual
 
 > Looking for how to **find, use, or publish** a deck? That is the
-> [manual](/manual/). These pages are the API, the CLI, and the specifications.
+> [user manual](/manual/). Looking for the normative contract rather than what
+> this implementation does? That is the [specifications](/specs/).
+>
+> These pages are the HTTP API and the operator CLI: what this server actually
+> serves, and how to run it.
 
 The HTTP repository that [jvc](https://github.com/jennifer-language/jvc),
 Jennifer's deck manager, resolves and fetches decks from, plus the operator CLI
@@ -19,8 +23,8 @@ that version.
 | - | - |
 | [The executables](cli.md) | `serve` and `deckadmin`: every command and flag |
 | [The HTTP API](api.md) | endpoints, the version record, discovery |
-| [Server specification](specs-server.md) | the normative contract this project implements |
-| [Client specification](specs-client.md) | what a client must do; headed for the jvc repository |
+| [Server specification](/specs/specs-server.html) | the normative contract this project implements - in the [specifications](/specs/) book |
+| [Client specification](/specs/specs-client.html) | what a client must do - in the [specifications](/specs/) book |
 
 Working on the code itself is documented in `CLAUDE.md` at the repository root,
 which is not part of this site.

@@ -1,13 +1,37 @@
 # Finding a deck
 
+There are three ways in, depending on how well you already know what you want.
+
 ## Search
 
-The registry's front page lists every published deck, and the search box matches
-on both the deck name and its description, case-insensitively. Searching for
-`router` finds `@acme/routeros` by name, and also finds a deck whose description
-mentions routers.
+The search box matches on both the deck name and its description,
+case-insensitively. Searching for `router` finds `@acme/routeros` by name, and
+also finds a deck whose description mentions routers.
 
 An empty search is not an error: it lists everything.
+
+## Browse and tags
+
+**Browse** lists every deck published here. The front page deliberately does not:
+a complete listing is not browsing once a registry has more than a page of decks,
+and it is the wrong thing to greet somebody with.
+
+**Tags** is the other way in, for when you know the shape of what you want but
+not its name. Each deck carries up to five keywords chosen by its author, and the
+tag index shows them twice: as a cloud sized by how many decks carry each one,
+which tells you what this registry is mostly *for*, and as a complete
+alphabetical list, which is what you scan when you already have a word in mind.
+Each tag has its own page at `/tag/<keyword>` listing the decks that carry it.
+
+Tags come from the deck's newest version, so a keyword an author drops in a later
+release stops grouping the deck.
+
+## Who published it
+
+Every deck page names the **scope** it was published under and links to that
+scope's page, which lists everything else published under it and who holds it.
+That is the quickest way from "this one deck looks useful" to "what else does
+this author maintain".
 
 From a terminal, the same search is available as JSON:
 

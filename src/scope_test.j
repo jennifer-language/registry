@@ -30,14 +30,14 @@ func noReserved() {
 # alice is the ordinary caller: GitHub subject 1234567, username "alice".
 func alice() {
     return identity.Subject{ provider: "github", id: "1234567", login: "alice",
-        orgs: [], orgsCheckedAt: "" };
+        orgs: {}, orgsCheckedAt: "" };
 }
 
 # mallory holds the *same username* alice used to have, on a different account.
 # This is the case section 8.1 exists for.
 func mallory() {
     return identity.Subject{ provider: "github", id: "9999999", login: "alice",
-        orgs: [], orgsCheckedAt: "" };
+        orgs: {}, orgsCheckedAt: "" };
 }
 
 # --- claiming ---------------------------------------------------------------
@@ -75,7 +75,7 @@ func testAMalformedScopeIsRefusedBeforeAnythingElse() {
 
 func testAnUnauthenticatedCallerClaimsNothing() {
     def nobody as identity.Subject init identity.Subject{
-        provider: "", id: "", login: "", orgs: [], orgsCheckedAt: ""
+        provider: "", id: "", login: "", orgs: {}, orgsCheckedAt: ""
     };
     def out as ClaimResult init claim(emptyDb(), firstcome.policy(), $nobody, "acme",
         noReserved(), NOW);
@@ -126,14 +126,14 @@ func testTheRefusalDistinguishesTakenFromDisallowed() {
 func testARenameDoesNotMoveTheScope() {
     # alice renames to alicia: same id, new login. The scope stays hers.
     def renamed as identity.Subject init identity.Subject{
-        provider: "github", id: "1234567", login: "alicia", orgs: [], orgsCheckedAt: ""
+        provider: "github", id: "1234567", login: "alicia", orgs: {}, orgsCheckedAt: ""
     };
     testing.assertTrue(authorise(claimed(), $renamed, "alice").allowed);
 }
 
 func testSheMayAlsoClaimTheNewName() {
     def renamed as identity.Subject init identity.Subject{
-        provider: "github", id: "1234567", login: "alicia", orgs: [], orgsCheckedAt: ""
+        provider: "github", id: "1234567", login: "alicia", orgs: {}, orgsCheckedAt: ""
     };
     def out as ClaimResult init claim(claimed(), derived.policy(), $renamed, "alicia",
         noReserved(), NOW);
@@ -196,7 +196,7 @@ func testAnUnregisteredScopeIsNotAWriteTarget() {
 func testAuthorisationIgnoresTheProviderWhenItDiffers() {
     # the same numeric id from a different provider is a different principal
     def elsewhere as identity.Subject init identity.Subject{
-        provider: "gitea", id: "1234567", login: "alice", orgs: [], orgsCheckedAt: ""
+        provider: "gitea", id: "1234567", login: "alice", orgs: {}, orgsCheckedAt: ""
     };
     testing.assertFalse(authorise(claimed(), $elsewhere, "alice").allowed);
 }
@@ -221,7 +221,7 @@ func orgScope() {
 }
 
 # a member carries the orgs their login found, exactly as a real token would
-func memberOf(orgs as list of string) {
+func memberOf(orgs as map of string to string) {
     return identity.Subject{
         provider: "github", id: "1234567", login: "alice",
         orgs: $orgs, orgsCheckedAt: NOW
@@ -229,17 +229,17 @@ func memberOf(orgs as list of string) {
 }
 
 func testAnActiveMemberMayWriteUnderAnOrgScope() {
-    testing.assertTrue(authorise(orgScope(), memberOf([ORG_ID]), "acme").allowed);
+    testing.assertTrue(authorise(orgScope(), memberOf({"acme": ORG_ID}), "acme").allowed);
 }
 
 func testANonMemberMayNot() {
-    def out as policy.Decision init authorise(orgScope(), memberOf([]), "acme");
+    def out as policy.Decision init authorise(orgScope(), memberOf({}), "acme");
     testing.assertFalse($out.allowed);
     testing.assertContains($out.reason, "not an active member");
 }
 
 func testMembershipOfAnotherOrgDoesNotHelp() {
-    testing.assertFalse(authorise(orgScope(), memberOf(["99999"]), "acme").allowed);
+    testing.assertFalse(authorise(orgScope(), memberOf({"other": "99999"}), "acme").allowed);
 }
 
 func testWhoeverGrantedItGetsNothingPersonally() {
@@ -247,7 +247,7 @@ func testWhoeverGrantedItGetsNothingPersonally() {
     # an id that merely matches the caller is not ownership here
     def who as identity.Subject init identity.Subject{
         provider: "github", id: ORG_ID, login: "impostor",
-        orgs: [], orgsCheckedAt: NOW
+        orgs: {}, orgsCheckedAt: NOW
     };
     testing.assertFalse(authorise(orgScope(), $who, "acme").allowed);
 }
@@ -258,7 +258,7 @@ func testAnOrgScopeIgnoresTheOwnerComparison() {
     def userScope as flatdb.DB init grantAs(emptyDb(), "acme", "github", ORG_ID,
         "acme-inc", store.SCOPE_USER, NOW).db;
     def who as identity.Subject init identity.Subject{
-        provider: "github", id: ORG_ID, login: "x", orgs: [], orgsCheckedAt: NOW
+        provider: "github", id: ORG_ID, login: "x", orgs: {}, orgsCheckedAt: NOW
     };
     testing.assertTrue(authorise($userScope, $who, "acme").allowed);
     testing.assertFalse(authorise(orgScope(), $who, "acme").allowed);
@@ -267,7 +267,7 @@ func testAnOrgScopeIgnoresTheOwnerComparison() {
 func testAnOrgOnAnotherProviderIsRefused() {
     def who as identity.Subject init identity.Subject{
         provider: "gitea", id: "1", login: "alice",
-        orgs: [ORG_ID], orgsCheckedAt: NOW
+        orgs: {"acme": ORG_ID}, orgsCheckedAt: NOW
     };
     def out as policy.Decision init authorise(orgScope(), $who, "acme");
     testing.assertFalse($out.allowed);

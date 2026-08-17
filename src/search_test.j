@@ -28,7 +28,8 @@ func ver(v as string) {
         description: "",
         publishedAt: "0",
         yanked: false,
-        license: ""
+        license: "",
+        keywords: []
     };
 }
 

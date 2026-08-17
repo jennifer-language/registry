@@ -28,6 +28,7 @@ use json;
 use strings;
 use convert;
 use encoding;
+use time;
 import "http.j" as http;
 import "../identity.j" as identity;
 
@@ -43,6 +44,33 @@ def const MAX_BYTES as int init 65536;
 # login, and organisation membership for a later org surface. No `repo` scope:
 # decks are public, so contents and permissions are readable without it.
 def const DEFAULT_SCOPES as string init "read:user read:org";
+
+# How hard to try when GitHub answers with a 5xx, and how long to wait between
+# attempts. Small numbers: this runs inside a request a person is waiting on.
+def const RETRY_TRIES as int init 3;
+def const RETRY_DELAY_MS as int init 400;
+
+# getRetrying issues a GET and retries a **5xx** a couple of times.
+#
+# This exists because of where the call sits. A device code is single use: by the
+# time the registry resolves the account, the person has already approved at
+# GitHub and their code is spent. Failing there on a transient 503 costs them the
+# whole flow and they have to start again - so a blip that lasts a second should
+# not be the end of it.
+#
+# Only 5xx is retried. A 401 or 403 is a real answer and repeating it would just
+# be a slower failure, and a louder one from the point of view of GitHub.
+func getRetrying(url as string, headers as map of string to string) {
+    def res as http.Response init http.requestWith("GET", $url, $headers, "",
+        TIMEOUT_MS, MAX_BYTES);
+    def attempt as int init 1;
+    while ($res.status >= 500 and $attempt < RETRY_TRIES) {
+        time.sleep(time.fromMilliseconds(RETRY_DELAY_MS * $attempt));
+        $res = http.requestWith("GET", $url, $headers, "", TIMEOUT_MS, MAX_BYTES);
+        $attempt = $attempt + 1;
+    }
+    return $res;
+}
 
 # formField encodes one form-urlencoded pair.
 func formField(name as string, value as string) {
@@ -93,7 +121,7 @@ export func subjectFrom(doc as json.Value) {
         provider: "github",
         id: convert.toString(json.asInt($doc, "/id")),
         login: $login,
-        orgs: [],
+        orgs: {},
         orgsCheckedAt: ""
     };
 }
@@ -157,10 +185,10 @@ export func pollFrom(doc as json.Value) {
  * answer to 8.7's open question. It is the practical end of the range: requiring
  * `admin` would exclude most of the engineers who actually publish.
  * @param doc {json.Value} the decoded `/user/memberships/orgs` response
- * @return {list of string} the organisation ids, as text
+ * @return {map of string to string} folded organisation login -> numeric id
  */
 export func membershipsFrom(doc as json.Value) {
-    def out as list of string init [];
+    def out as map of string to string init {};
     if (not (json.typeOf($doc, "") == "list")) {
         return $out;
     }
@@ -183,7 +211,13 @@ export func membershipsFrom(doc as json.Value) {
         if (not json.has($doc, $at + "/organization/id")) {
             continue;
         }
-        $out[] = convert.toString(json.asInt($doc, $at + "/organization/id"));
+        if (not json.has($doc, $at + "/organization/login")) {
+            continue;
+        }
+        # Keyed by the folded login, because that is how a claim names it, and
+        # valued by the id, because that is what ownership binds to.
+        $out[strings.lower(json.asString($doc, $at + "/organization/login"))] =
+            convert.toString(json.asInt($doc, $at + "/organization/id"));
     }
     return $out;
 }
@@ -270,8 +304,20 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
     def h as map of string to string init jsonHeaders();
     $h["Authorization"] = "Bearer " + $accessToken;
     $h["User-Agent"] = "jennifer-registry";
-    def res as http.Response init http.requestWith("GET", endpointFor($cfg, "user"), $h,
-        "", TIMEOUT_MS, MAX_BYTES);
+    def res as http.Response init getRetrying(endpointFor($cfg, "user"), $h);
+    if ($res.status >= 500) {
+        # Not a rejection: GitHub could not answer. Worth saying so in those
+        # words, because "rejected the token" sends whoever reads it looking at
+        # the token, the client id, and the scopes - none of which are at fault.
+        throw Error{
+            kind: "identity",
+            message: "the GitHub API is unavailable (HTTP " +
+                convert.toString($res.status) + " after " +
+                convert.toString(RETRY_TRIES) + " attempts); the login can be " +
+                "retried once it recovers",
+            file: "", line: 0, col: 0
+        };
+    }
     if (not ($res.status == 200)) {
         throw Error{
             kind: "identity",
@@ -293,9 +339,8 @@ func membershipsOf(cfg as identity.Config, accessToken as string) {
     def h as map of string to string init jsonHeaders();
     $h["Authorization"] = "Bearer " + $accessToken;
     $h["User-Agent"] = "jennifer-registry";
-    def none as list of string init [];
-    def res as http.Response init http.requestWith("GET",
-        endpointFor($cfg, "memberships"), $h, "", TIMEOUT_MS, MAX_BYTES);
+    def none as map of string to string init {};
+    def res as http.Response init getRetrying(endpointFor($cfg, "memberships"), $h);
     if (not ($res.status == 200)) {
         return $none;
     }

@@ -1,0 +1,57 @@
+# Grimoire book configuration for the **specifications**: the normative server
+# and client contracts.
+#
+#     grimoire build --config grimoire-specs.toml
+#
+# Its own book, and not a section of the reference, because the two are read
+# differently and one of them is not ours. The reference describes what this
+# implementation does; these describe what any implementation must do, and the
+# client half is maintained by the jvc team and is only held here until it moves.
+# Splitting them means that move is a directory rename rather than an extraction.
+
+[book]
+title = "Jennifer Deck Registry - Specifications"
+description = "The normative server and client specifications for a Jennifer deck registry."
+authors = [""]
+authorsLabel = "Maintained by"
+language = "en"
+src = "specs"
+
+[build]
+# Named for the URL path, like the other two books: /specs/specs-server.html
+# must live at public/specs/specs-server.html.
+out = "public/specs"
+
+[html]
+# Monospace throughout, which is the point. A specification is read the way an
+# RFC is read - by section number, in fixed columns, with the prose and the
+# payload examples in one measure - and the proportional themes the other two
+# books use make a wire format harder to scan than it needs to be. `terminal` is
+# the only built-in theme that sets a monospace face for body text as well as
+# code, so this is the theme choice, not a decorative one.
+theme = "terminal"
+mode = "auto"
+# Deeper than the other books: these documents nest to x.y.z and a reader
+# navigating by section number needs the numbers in the sidebar.
+tocDepth = 4
+# Off, deliberately. Both documents number their own sections in their headings,
+# and every cross-reference in both is by that number. A second, automatic
+# numbering on top would produce two different numbers for one section and make
+# every internal reference wrong.
+sectionNumbers = false
+repoUrl = "https://github.com/jennifer-language/registry"
+repoLabel = "Source"
+editUrl = "https://github.com/jennifer-language/registry/edit/main/specs/{path}"
+titleUrl = "/"
+
+[highlight]
+enabled = true
+
+[highlightjs]
+enabled = false
+
+[search]
+enabled = true
+
+[pdf]
+enabled = false

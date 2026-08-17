@@ -33,6 +33,7 @@ import "./audit.j" as audit;
 import "./trustpub.j" as trustpub;
 import "./citoken.j" as citoken;
 import "./reserved.j" as reserved;
+import "./keywords.j" as keywords;
 import "./token.j" as token;
 import "semver.j" as semver;
 
@@ -90,6 +91,13 @@ func ownershipCommands(p as args.Parser) {
     $out = args.command($out, "reserve-defaults",
         "hold every reserved scope operator-held", $rs);
 
+    def kw as args.Parser init args.parser("keywords",
+        "inspect the refused-keyword list, or encode a term for it");
+    $kw = args.positionalList($kw, "words",
+        "terms to encode; with none, print the current list");
+    $out = args.command($out, "keywords",
+        "show the refused-keyword list, or encode terms for it", $kw);
+
     def ct as args.Parser init args.parser("mint-token",
         "mint a CI token for non-interactive publishing");
     $ct = args.positional($ct, "scope", "the scope it may write under");
@@ -134,9 +142,9 @@ export def struct LogOptions {
  * make each command print itself twice; `--verbose` is for when the structured
  * form is what you want to see.
  * @param r {args.Result} the parsed command line
- * @param envPath {string} JVC_LOG
- * @param envLevel {string} JVC_LOG_LEVEL
- * @param envFormat {string} JVC_LOG_FORMAT
+ * @param envPath {string} REGISTRY_LOG
+ * @param envLevel {string} REGISTRY_LOG_LEVEL
+ * @param envFormat {string} REGISTRY_LOG_FORMAT
  * @return {LogOptions} the resolved options
  */
 export func logOptions(r as args.Result, envPath as string, envLevel as string,
@@ -261,11 +269,11 @@ export func parser() {
     # result down into the subcommand parser, which is what makes that work; a
     # flag placed after the command is matched against the command's own grammar
     # and would be rejected as unknown.
-    $p = args.flag($p, "log", "", "", "append events to this file (JVC_LOG)");
+    $p = args.flag($p, "log", "", "", "append events to this file (REGISTRY_LOG)");
     $p = args.flag($p, "log-level", "", "",
-        "debug, info, warn, or error (JVC_LOG_LEVEL; default info)");
+        "debug, info, warn, or error (REGISTRY_LOG_LEVEL; default info)");
     $p = args.flag($p, "log-format", "", "",
-        "text, logfmt, or json (JVC_LOG_FORMAT; default logfmt for a file)");
+        "text, logfmt, or json (REGISTRY_LOG_FORMAT; default logfmt for a file)");
     $p = args.boolFlag($p, "verbose", "v", "also print each event to the console");
     $p = args.boolFlag($p, "quiet", "q", "suppress the result message");
     $p = args.command($p, "add", "publish a version (an upsert)",
@@ -409,7 +417,8 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
         description: $description,
         publishedAt: $now,
         yanked: false,
-        license: ""
+        license: "",
+        keywords: []
     };
     # Whether this overwrites an existing version decides how loudly it is
     # recorded, so it must be asked before the store is edited.
@@ -1012,6 +1021,80 @@ export func cmdList(db as flatdb.DB, r as args.Result, now as string) {
         $msg = $msg + "\n  " + $version;
     }
     return readResult($db, $msg);
+}
+
+/**
+ * `deckadmin keywords` - read the refused-keyword list, or encode terms for it.
+ *
+ * The list is stored base64 so that a public repository does not carry a page of
+ * the vocabulary it refuses (see `keywords.j`). That is right for the file and
+ * useless for the operator maintaining it, who needs to see what is actually on
+ * the list and needs the encoded form of anything they want to add. This is the
+ * one place both are available, and it is deliberately an operator command
+ * rather than an endpoint: the decoded list is exactly what should not be
+ * fetchable by anything that crawls.
+ *
+ * With no arguments it prints the list, grouped by why each group exists. With
+ * words, it prints the line to paste into the module.
+ *
+ * Reads nothing and writes nothing, so it works against any registry, including
+ * none.
+ * @param db {flatdb.DB} the store, returned untouched
+ * @param r {args.Result} the parsed command line
+ * @param now {string} unused; kept so the shape matches its siblings
+ * @return {AdminResult} the listing or the encoded terms
+ */
+export func cmdKeywords(db as flatdb.DB, r as args.Result, now as string) {
+    def words as list of string init args.asList($r, "words");
+    if (len($words) == 0) {
+        return readResult($db, keywordListing());
+    }
+    def msg as string init "encoded, newest first - paste into the right group " +
+        "in src/keywords.j:";
+    for (def word in $words) {
+        def folded as string init keywords.fold($word);
+        def note as string init "";
+        if (not keywords.isWellFormed($folded)) {
+            # Encoding it anyway would produce a line that can never match, since
+            # every lookup runs on an already-folded, well-formed keyword.
+            $note = "   # WARNING: not a well-formed keyword; it would never match";
+        }
+        if (keywords.isBlocked($folded)) {
+            $note = "   # already refused";
+        }
+        $msg = $msg + "\n  \"" + keywords.encode($folded) + "\"," + $note;
+    }
+    return readResult($db, $msg);
+}
+
+# keywordListing renders the refused list in plaintext, grouped by reason.
+func keywordListing() {
+    def msg as string init "refused keywords (decoded; " +
+        io.sprintf("%d", len(keywords.blocked())) + " terms)";
+    def groups as list of list of string init [
+        ["child sexual abuse - never relax this group", "abuse"],
+        ["sexual content - refused as a category here", "adult"],
+        ["hate speech aimed at people", "slur"]
+    ];
+    for (def group in $groups) {
+        $msg = $msg + "\n\n  " + $group[0] + ":";
+        $msg = $msg + "\n    " + strings.join(keywordGroup($group[1]), " ");
+    }
+    $msg = $msg + "\n\n  also refused as a substring of any longer keyword:";
+    $msg = $msg + "\n    " + strings.join(keywords.blockedSubstrings(), " ");
+    return $msg;
+}
+
+# keywordGroup names one group of the list. A lookup by name rather than three
+# call sites, so `cmdKeywords` stays a table and not a chain of branches.
+func keywordGroup(which as string) {
+    if ($which == "abuse") {
+        return keywords.abuse();
+    }
+    if ($which == "adult") {
+        return keywords.adult();
+    }
+    return keywords.slur();
 }
 
 /**

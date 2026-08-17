@@ -133,6 +133,9 @@ export func isChecksum(s as string) {
  * @field yanked {bool} true when the version is withdrawn from new resolutions
  *     but still fetchable, so an existing lockfile keeps installing
  * @field license {string} the SPDX identifier from the manifest ("" when absent)
+ * @field keywords {list of string} the deck's tags, already normalised by
+ *     `keywords.normalise` at publish time. Absent reads as empty, which is what
+ *     makes the field additive over versions published before it existed.
  */
 export def struct DeckVersion {
     version as string,
@@ -147,7 +150,8 @@ export def struct DeckVersion {
     description as string,
     publishedAt as string,
     yanked as bool,
-    license as string
+    license as string,
+    keywords as list of string
 };
 
 /**
@@ -389,7 +393,8 @@ export func getVersionRecord(db as flatdb.DB, name as string, version as string)
         description: recordString($rec, "/description"),
         publishedAt: recordString($rec, "/publishedAt"),
         yanked: recordBool($rec, "/yanked"),
-        license: recordString($rec, "/license")
+        license: recordString($rec, "/license"),
+        keywords: versionKeywords($db, $name, $version)
     };
 }
 
@@ -442,6 +447,11 @@ export func putVersion(db as flatdb.DB, name as string, description as string, v
         $cjson = json.append($cjson, "", $cap);
     }
     $vjson = json.set($vjson, "/capabilities", $cjson);
+    def kjson as json.Value init json.list();
+    for (def word in $ver.keywords) {
+        $kjson = json.append($kjson, "", $word);
+    }
+    $vjson = json.set($vjson, "/keywords", $kjson);
     $vjson = json.set($vjson, "/description", $ver.description);
     $vjson = json.set($vjson, "/publishedAt", $ver.publishedAt);
     $out = flatdb.set($out, versionPtr($name, $ver.version), $vjson);
@@ -538,6 +548,18 @@ func recordStrings(rec as json.Value, field as string) {
     return $out;
 }
 
+# recordMap reads an optional object of string values into a map.
+func recordMap(rec as json.Value, field as string) {
+    def out as map of string to string init {};
+    if (not json.has($rec, $field)) {
+        return $out;
+    }
+    for (def key in json.keys($rec, $field)) {
+        $out[$key] = json.asString($rec, $field + "/" + $key);
+    }
+    return $out;
+}
+
 # recordBool reads an optional boolean field. Absent reads as false, which is
 # what makes `yanked` additive: every record written before the field existed is
 # a live version, which is exactly what it was.
@@ -597,6 +619,30 @@ export func versionEngines(db as flatdb.DB, name as string, version as string) {
     }
     for (def key in flatdb.keys($db, $engPtr)) {
         $out[$key] = json.asString(flatdb.get($db, $engPtr + "/" + ptrEscape($key)));
+    }
+    return $out;
+}
+
+/**
+ * Return a published version's keywords, as normalised at publish time.
+ *
+ * Absent reads as empty, which is what makes the field additive: every version
+ * published before keywords existed is a version with no tags, which is exactly
+ * what it was.
+ * @param db {flatdb.DB} the store to read
+ * @param name {string} the deck name
+ * @param version {string} the version string
+ * @return {list of string} the version's keywords
+ */
+export func versionKeywords(db as flatdb.DB, name as string, version as string) {
+    def out as list of string init [];
+    def at as string init versionPtr($name, $version) + "/keywords";
+    if (not flatdb.has($db, $at)) {
+        return $out;
+    }
+    def arr as json.Value init flatdb.get($db, $at);
+    for (def i as int init 0; $i < json.length($arr, ""); $i = $i + 1) {
+        $out[] = json.asString($arr, "/" + convert.toString($i));
     }
     return $out;
 }
@@ -816,7 +862,7 @@ export def struct Refresh {
     accountId as int,
     login as string,
     expiresAt as int,
-    orgs as list of string,
+    orgs as map of string to string,
     orgsCheckedAt as int
 };
 
@@ -836,9 +882,9 @@ export func putRefresh(db as flatdb.DB, fingerprint as string, rec as Refresh) {
     $rj = json.set($rj, "/accountId", $rec.accountId);
     $rj = json.set($rj, "/login", $rec.login);
     $rj = json.set($rj, "/expiresAt", $rec.expiresAt);
-    def ids as json.Value init json.list();
-    for (def org in $rec.orgs) {
-        $ids = json.append($ids, "", $org);
+    def ids as json.Value init json.map();
+    for (def name in $rec.orgs) {
+        $ids = json.set($ids, "/" + $name, $rec.orgs[$name]);
     }
     $rj = json.set($rj, "/orgs", $ids);
     $rj = json.set($rj, "/orgsCheckedAt", $rec.orgsCheckedAt);
@@ -872,7 +918,7 @@ export func getRefresh(db as flatdb.DB, fingerprint as string) {
         accountId: json.asInt($rec, "/accountId"),
         login: json.asString($rec, "/login"),
         expiresAt: json.asInt($rec, "/expiresAt"),
-        orgs: recordStrings($rec, "/orgs"),
+        orgs: recordMap($rec, "/orgs"),
         orgsCheckedAt: $checkedAt
     };
 }
@@ -1389,10 +1435,6 @@ export func ownersOf(db as flatdb.DB, scope as string) {
 # breaking it reintroduces exactly the lost update the lock exists to prevent.
 def const LOCK_WAIT_MS as int init 5000;
 def const LOCK_RETRY_MS as int init 25;
-# `time.sleep` takes a `time.Duration`, whose only field is `nanos`; there is no
-# `time.millis` constructor in this interpreter. Passing an int throws, which
-# would turn every contended writer into a crash instead of a wait.
-def const LOCK_RETRY_NANOS as int init 25000000;
 def const LOCK_STALE_SECONDS as int init 120;
 
 /**
@@ -1493,9 +1535,23 @@ export func lock(dbPath as string) {
             fs.symlink($holder, $path);
             return Lock{ path: $path, holder: $holder };
         } catch (err) {
+            # A failed `symlink` means one of two very different things. If
+            # somebody holds the lock, this is contention and waiting is right.
+            # If nothing holds it, the lock could not be *created* - a read-only
+            # mount, a missing directory, the wrong uid - and no amount of
+            # waiting will help. Reporting that as a timeout blames contention
+            # for a permissions problem and costs the caller the wait as well.
+            if (holderOf($path) == "") {
+                throw Error{
+                    kind: "store",
+                    message: "cannot create the registry write lock at " + $path +
+                        ": " + $err.message,
+                    file: "", line: 0, col: 0
+                };
+            }
             breakIfStale($path);
         }
-        time.sleep(time.Duration{nanos: LOCK_RETRY_NANOS});
+        time.sleep(time.fromMilliseconds(LOCK_RETRY_MS));
         $waited = $waited + LOCK_RETRY_MS;
     }
     throw Error{
@@ -1537,4 +1593,68 @@ export func unlock(held as Lock) {
         # already gone; nothing to release
     }
     return null;
+}
+
+# --- lookup counts -----------------------------------------------------------
+
+# statsPtr is the JSON Pointer of a deck's lookup-count record. Kept in its own
+# top-level table rather than inside the deck's record so that counting writes
+# and publishing writes touch different subtrees: a flush that lands while an
+# operator is editing a deck then merges cleanly instead of racing over one
+# object. It also keeps `getDeckJson` free of a member that changes constantly,
+# which matters because that value is what the API serves.
+func statsPtr(name as string) {
+    return "/stats/" + ptrEscape(deckname.fold($name));
+}
+
+/**
+ * A deck's lookup-count record, or an empty object when it has never been
+ * looked up.
+ *
+ * Empty rather than absent is what lets `stats.summarise` answer with zeroes for
+ * a deck nobody has resolved yet, so a page has nothing to special-case.
+ * @param db {flatdb.DB} the store
+ * @param name {string} the deck name
+ * @return {json.Value} the record, possibly empty
+ */
+export func getStats(db as flatdb.DB, name as string) {
+    if (not flatdb.has($db, statsPtr($name))) {
+        return json.map();
+    }
+    return flatdb.get($db, statsPtr($name));
+}
+
+/**
+ * Write a deck's lookup-count record, returning a fresh DB.
+ * @param db {flatdb.DB} the store to edit
+ * @param name {string} the deck name
+ * @param rec {json.Value} the record to store
+ * @return {flatdb.DB} a fresh store
+ */
+export func putStats(db as flatdb.DB, name as string, rec as json.Value) {
+    def out as flatdb.DB init $db;
+    if (not flatdb.has($out, "/stats")) {
+        $out = flatdb.set($out, "/stats", json.map());
+    }
+    return flatdb.set($out, statsPtr($name), $rec);
+}
+
+/**
+ * A deck's live versions, newest first.
+ *
+ * `listLiveVersions` answers in document order, which is the right shape for a
+ * resolver choosing by constraint and the wrong one for a page that wants "the
+ * current release". This is the ordered form.
+ * @param db {flatdb.DB} the store
+ * @param name {string} the deck name
+ * @return {list of string} the unyanked versions, highest first
+ */
+export func listLiveVersionsDescending(db as flatdb.DB, name as string) {
+    def out as list of string init [];
+    for (def v in listVersionsDescending($db, $name)) {
+        if (not isYanked($db, $name, $v)) {
+            $out[] = $v;
+        }
+    }
+    return $out;
 }

@@ -123,7 +123,7 @@ func testAnUnknownStateIsTerminalNotPending() {
 # --- issuing ----------------------------------------------------------------
 
 func testIssueReturnsAUsableTokenPair() {
-    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", [], 0, nowish());
+    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", {}, 0, nowish());
     testing.assertEqual($out.status, 200);
     testing.assertTrue($out.changed);
     testing.assertEqual(json.asInt($out.body, "/accountId"), ACCOUNT);
@@ -136,8 +136,38 @@ func testIssueReturnsAUsableTokenPair() {
     testing.assertEqual($who.login, "alice");
 }
 
+func testTheLoginAnswersWithTheOrganisationsItSaw() {
+    # The point of reporting them: a member of three organisations whose provider
+    # discloses one gets a token that silently covers one, and every later
+    # refusal blames the scope name. Named here, the shortfall is visible at the
+    # moment of login instead.
+    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice",
+        {"viverto": "42", "acme": "7"}, 0, nowish());
+    testing.assertEqual(json.length($out.body, "/orgs"), 2);
+    # sorted, so a client prints them in a stable order rather than a map's
+    testing.assertEqual(json.asString($out.body, "/orgs/0"), "acme");
+    testing.assertEqual(json.asString($out.body, "/orgs/1"), "viverto");
+}
+
+func testTheOrganisationListNamesLoginsNotIds() {
+    # An id is what ownership binds to and a login is what a claim is typed as,
+    # so publishing the ids would be both useless to the caller and the one part
+    # worth not handing out.
+    def out as json.Value init orgNames({"viverto": "42"});
+    testing.assertEqual(json.asString($out, "/0"), "viverto");
+}
+
+func testAnAccountInNoOrganisationsGetsAnEmptyList() {
+    # present and empty, not absent: a client can say "none" rather than having
+    # to distinguish a registry that does not report them at all
+    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", {}, 0,
+        nowish());
+    testing.assertTrue(json.has($out.body, "/orgs"));
+    testing.assertEqual(json.length($out.body, "/orgs"), 0);
+}
+
 func testIssueRecordsTheRefreshTokenByFingerprintOnly() {
-    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", [], 0, nowish());
+    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", {}, 0, nowish());
     def given as string init json.asString($out.body, "/refreshToken");
     testing.assertTrue(store.hasRefresh($out.db, token.fingerprint($given)));
     # the credential itself must not be what is written down
@@ -147,10 +177,10 @@ func testIssueRecordsTheRefreshTokenByFingerprintOnly() {
 func testIssuePurgesExpiredRefreshTokens() {
     def db as flatdb.DB init emptyDb();
     $db = store.putRefresh($db, "deadbeef", store.Refresh{
-        accountId: 999, login: "old", expiresAt: 1, orgs: [], orgsCheckedAt: 0
+        accountId: 999, login: "old", expiresAt: 1, orgs: {}, orgsCheckedAt: 0
     });
     testing.assertTrue(store.hasRefresh($db, "deadbeef"));
-    def out as AuthReply init issue(config(), $db, ACCOUNT, "alice", [], 0, nowish());
+    def out as AuthReply init issue(config(), $db, ACCOUNT, "alice", {}, 0, nowish());
     testing.assertFalse(store.hasRefresh($out.db, "deadbeef"));
 }
 
@@ -158,7 +188,7 @@ func testIssuePurgesExpiredRefreshTokens() {
 
 # loggedIn issues a pair and returns the refresh token from it.
 func loggedIn(db as flatdb.DB) {
-    return issue(config(), $db, ACCOUNT, "alice", [], 0, nowish());
+    return issue(config(), $db, ACCOUNT, "alice", {}, 0, nowish());
 }
 
 func refreshBody(token as string) {
@@ -207,7 +237,7 @@ func testAnExpiredRefreshTokenIs401AndIsDropped() {
     def db as flatdb.DB init emptyDb();
     def token as string init token.newRefresh();
     $db = store.putRefresh($db, token.fingerprint($token), store.Refresh{
-        accountId: ACCOUNT, login: "alice", expiresAt: 1, orgs: [], orgsCheckedAt: 0
+        accountId: ACCOUNT, login: "alice", expiresAt: 1, orgs: {}, orgsCheckedAt: 0
     });
     def out as AuthReply init refresh(config(), $db, refreshBody($token), nowish());
     testing.assertEqual($out.status, 401);

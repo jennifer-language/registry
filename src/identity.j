@@ -60,7 +60,7 @@ export def struct Subject {
     provider as string,
     id as string,
     login as string,
-    orgs as list of string,
+    orgs as map of string to string,
     orgsCheckedAt as string
 };
 
@@ -105,8 +105,9 @@ export def struct Poll {
  *     client opens under `authcode`; "" for a device-only provider
  * @field exchangeCode {func} `func(Config, code, verifier) -> string`: swap an
  *     authorization code for a provider token
- * @field memberships {func} `func(Config, accessToken) -> list of string`: the
- *     organisation ids this token's owner is an **active** member of. Asked once,
+ * @field memberships {func} `func(Config, accessToken) -> map of string to string`:
+ *     the organisations this token's owner is an **active** member of, as folded
+ *     login -> id. Asked once,
  *     at login, because the provider token is discarded immediately afterwards
  *     (8.4) and there is no way to ask again later.
  * @field subject {func} `func(Config, accessToken) -> Subject`: who this token is

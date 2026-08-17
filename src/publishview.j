@@ -137,7 +137,10 @@ func storeVersion(db as flatdb.DB, m as manifest.Manifest, src as Source, now as
         description: $m.description,
         publishedAt: $now,
         yanked: false,
-        license: $m.license
+        license: $m.license,
+        # Already normalised by `manifest.parse`, so a publish carries the tags
+        # the registry will actually index rather than what the file asked for.
+        keywords: $m.keywords
     };
     def out as flatdb.DB init store.putVersion($db, $m.name, $m.description, $ver);
     # The README is recorded after the deck exists, and only when the repository

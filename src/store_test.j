@@ -36,7 +36,8 @@ func sampleVersion(version as string, url as string) {
         description: "v " + $version,
         publishedAt: "1700000000",
         yanked: false,
-        license: ""
+        license: "",
+        keywords: []
     };
 }
 
@@ -169,7 +170,8 @@ func tarVersion(version as string, url as string) {
         description: "v " + $version,
         publishedAt: "1700000000",
         yanked: false,
-        license: ""
+        license: "",
+        keywords: []
     };
 }
 
@@ -212,7 +214,8 @@ func testVersionEngines() {
         requires: {}, engines: {"jennifer": "^0.21.0"}, capabilities: [],
         description: "", publishedAt: "0",
         yanked: false,
-        license: ""
+        license: "",
+        keywords: []
     };
     $db = putVersion($db, "@a/b", "", $ver);
     def e as map of string to string init versionEngines($db, "@a/b", "1.0.0");
@@ -238,7 +241,7 @@ func aNamespace(scope as string, subject as string, login as string) {
 # aRefresh builds a Refresh record for tests.
 func aRefresh(accountId as int, expiresAt as int) {
     return Refresh{ accountId: $accountId, login: "alice", expiresAt: $expiresAt,
-        orgs: [], orgsCheckedAt: 0 };
+        orgs: {}, orgsCheckedAt: 0 };
 }
 
 func testRefreshRoundTrips() {
@@ -249,6 +252,24 @@ func testRefreshRoundTrips() {
     testing.assertEqual($rec.accountId, 42);
     testing.assertEqual($rec.login, "alice");
     testing.assertEqual($rec.expiresAt, 1800000000);
+}
+
+func testTheOrganisationsOnARefreshRoundTrip() {
+    # Every other test built a record with no organisations, so the map was
+    # written and never read back, and reading it back was broken. A refresh is
+    # the only path that reissues a token without asking the provider again -
+    # losing the map here would silently strip a caller of every organisation
+    # scope the moment their first token expired.
+    def db as flatdb.DB init emptyStore();
+    $db = putRefresh($db, "bbbb", Refresh{
+        accountId: 42, login: "alice", expiresAt: 1800000000,
+        orgs: {"acme": "7", "viverto": "42"}, orgsCheckedAt: 1700000000
+    });
+    def rec as Refresh init getRefresh($db, "bbbb");
+    testing.assertEqual(len($rec.orgs), 2);
+    testing.assertEqual($rec.orgs["acme"], "7");
+    testing.assertEqual($rec.orgs["viverto"], "42");
+    testing.assertEqual($rec.orgsCheckedAt, 1700000000);
 }
 
 func testUnknownRefreshIsAbsent() {

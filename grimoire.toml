@@ -1,19 +1,22 @@
-# Grimoire book configuration for the **reference**: the API, the CLI, and the
-# specifications, for operators and client implementers.
+# Grimoire book configuration for the **administrator manual**: the HTTP API and
+# the operator CLI, for people running a registry.
 #
 #     grimoire build                                 # this book
 #     grimoire build --config grimoire-manual.toml   # the user manual
+#     grimoire build --config grimoire-specs.toml    # the specifications
 #
-# The site has two books because they have two audiences and two URL paths, and
-# grimoire builds one source directory into one output directory.
+# The site has three books because they have three audiences and three URL paths,
+# and grimoire builds one source directory into one output directory. The
+# normative specifications used to live here and are now their own book: this one
+# describes what this implementation does, that one what any implementation must.
 #
 # See https://github.com/jennifer-language/grimoire. Every key is optional; the
 # defaults build a usable book on their own. Note that Grimoire itself needs
 # Jennifer 0.25.0 or newer, which is a higher floor than the registry's own.
 
 [book]
-title = "Jennifer Deck Registry - Administrator Reference"
-description = "The HTTP API, the operator CLI, and the specifications the deck registry implements."
+title = "Jennifer Deck Registry - Administrator Manual"
+description = "The HTTP API and the operator CLI of the Jennifer deck registry."
 authors = [""]
 authorsLabel = "Maintained by"
 language = "en"

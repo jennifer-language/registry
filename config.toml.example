@@ -1,0 +1,94 @@
+# The jvc deck registry's configuration.
+#
+# Copy to config.toml, or point REGISTRY_CONFIG at it. Every key here can also be set
+# from the environment, and **the environment wins** - the file states how a
+# deployment is meant to run, the environment varies one instance or injects a
+# secret without editing a file into an image.
+#
+# A key you leave out keeps its default. An environment variable set to an empty
+# string is treated as unset, so a stray blank in a compose file cannot silently
+# blank a setting configured here.
+
+# The registry's own public base URL, advertised in the discovery document so a
+# client can record where a deck came from. A registry cannot work this out for
+# itself behind a proxy, so it is declared here or not at all.
+# url = "https://registry.example.com"   # REGISTRY_URL
+
+# The header a trusted proxy puts the real client address in. Unset means log the
+# connection's own peer, which behind a proxy is the proxy - but which no caller
+# can forge. Only name a header if something in front of this registry sets it
+# **and strips any copy the client sent**, or the audit log becomes whatever
+# callers claim about themselves.
+#
+#   behind Cloudflare (any depth):  CF-Connecting-IP   - Cloudflare overwrites it
+#   behind Traefik alone:           X-Forwarded-For    - first entry is taken
+#
+# clientIpHeader = "CF-Connecting-IP"    # REGISTRY_CLIENT_IP_HEADER
+
+# addr = ":8080"                    # REGISTRY_ADDR
+# db = "data/decks.json"            # REGISTRY_DB
+
+# The HMAC key the registry signs its OWN bearer tokens with. A secret; prefer
+# REGISTRY_TOKEN_KEY over writing it here. Generate with: openssl rand -hex 32
+# tokenKey = ""                     # REGISTRY_TOKEN_KEY
+
+[log]
+# file = ""                         # REGISTRY_LOG        ("" = console only)
+# level = "info"                    # REGISTRY_LOG_LEVEL  debug/info/warn/error
+# format = "logfmt"                 # REGISTRY_LOG_FORMAT text/logfmt/json (file only)
+# requests = false                  # REGISTRY_LOG_REQUESTS one line per request
+
+[identity]
+# Who a caller is. Leave clientId empty and the registry accepts no logins,
+# which is the right default for a read-only deployment.
+# provider = "github"               # REGISTRY_IDENTITY  github/gitlab/gitea/forgejo/oidc
+# clientId = ""                     # REGISTRY_IDENTITY_CLIENTID
+# baseUrl = ""                      # REGISTRY_IDENTITY_BASEURL   self-hosted instances
+# secret = ""                       # REGISTRY_IDENTITY_SECRET    providers that need one
+# scopes = ""                       # REGISTRY_IDENTITY_SCOPES
+
+# Who may claim a scope over HTTP.
+#   derived   - you may claim the scope matching your own login (the default,
+#               and what the official registry runs)
+#   operator  - nobody; every scope is granted with deckadmin
+#   firstcome - anybody may claim any free name
+# policy = "derived"                # REGISTRY_POLICY
+
+[forge]
+# Where a publish reads repositories from. Independent of identity above; the
+# two only coincide on github.com.
+# provider = "github"               # REGISTRY_FORGE
+# baseUrl = ""                      # REGISTRY_FORGE_BASEURL
+# token = ""                        # REGISTRY_FORGE_TOKEN
+# host = ""                         # REGISTRY_FORGE_HOST
+
+[trustedPublishing]
+# Publishing from CI with no stored credential (specification 8.9). The audience
+# must be specific to this registry - its hostname is a good choice - because its
+# whole purpose is that a token minted elsewhere is refused here. Not a secret:
+# it is advertised in the discovery document.
+# audience = ""                     # REGISTRY_TRUSTPUB_AUDIENCE  ("" = disabled)
+# provider = "github-actions"       # REGISTRY_TRUSTPUB_PROVIDER
+# issuer = ""                       # REGISTRY_TRUSTPUB_ISSUER    self-hosted CI
+
+[tls]
+# HTTPS with a Let's Encrypt certificate, obtained over the HTTP-01 challenge and
+# stored under the data directory. The plain listener above must be reachable on
+# port 80 from the internet for the challenge to succeed: that is where the CA
+# knocks, and it is why `addr` stays plain HTTP rather than redirecting.
+#
+# enabled = false                   # REGISTRY_TLS
+# addr = ":8443"                    # REGISTRY_TLS_ADDR
+# domains = ["registry.example.com"] # REGISTRY_TLS_DOMAINS  (comma or space separated)
+# email = "ops@example.com"         # REGISTRY_TLS_EMAIL    the CA requires a contact
+# agreeTos = false                  # REGISTRY_ACME_AGREE_TOS  must be set deliberately
+#
+# Point at staging while you get the DNS and firewall right. Staging issues
+# untrusted certificates with far higher rate limits; production limits are per
+# registered domain per week and a misconfigured deployment can exhaust them.
+# directory = "https://acme-staging-v02.api.letsencrypt.org/directory"
+# directory = "https://acme-v02.api.letsencrypt.org/directory"   # REGISTRY_ACME_DIRECTORY
+#
+# certDir = "data/tls"              # REGISTRY_TLS_CERTDIR
+# challengeDir = "data/acme-challenge"  # REGISTRY_ACME_CHALLENGEDIR
+# renewBeforeDays = 30              # REGISTRY_TLS_RENEW_BEFORE_DAYS

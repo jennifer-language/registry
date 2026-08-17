@@ -129,7 +129,7 @@ export func subjectFrom(cfg as identity.Config, doc as json.Value) {
         provider: $name,
         id: convert.toString(json.asInt($doc, "/id")),
         login: $login,
-        orgs: [],
+        orgs: {},
         orgsCheckedAt: ""
     };
 }

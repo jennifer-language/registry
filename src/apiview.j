@@ -40,7 +40,7 @@ export def const SERVICE_NAME as string init "jennifer-registry";
 def const SERVICE_VERSION as string init "0.1.0";
 
 # The registry specification version this server implements. This tracks
-# reference/specs-server.md, not the API major: a *document* can change shape
+# specs/specs-server.md, not the API major: a *document* can change shape
 # without breaking an endpoint, and `apis[].version` is what carries the API
 # major.
 #
@@ -125,14 +125,26 @@ export func index() {
  *
  * The URLs are absolute paths used verbatim, which is the one exception to
  * prefixing requests with a version's base path (specification 4.1).
+ * **`url` is what the registry calls itself**, and is omitted when a deployment
+ * has not declared one. A registry usually cannot work its own address out: it
+ * sees a listen address and a `Host` header, both of which describe how *this*
+ * request arrived rather than what the registry is called. Behind a proxy, in a
+ * container, or on a private network, those are routinely not the public name.
+ * So it is configured, and its absence means "I do not know", which is honest -
+ * a guess would be recorded in somebody's lockfile as this registry's identity.
  * @param base {json.Value} the document from `webapi.discovery`
+ * @param canonicalUrl {string} the registry's public base URL ("" to omit)
  * @param authUrls {map of string to string} the `auth` members: `provider`,
  *     `flow`, `deviceUrl`, `tokenUrl`, `refreshUrl`; empty when the registry
  *     accepts no logins
  * @return {Reply} a 200 reply with the discovery document
  */
-export func discovery(base as json.Value, authUrls as map of string to string) {
+export func discovery(base as json.Value, canonicalUrl as string,
+        authUrls as map of string to string) {
     def body as json.Value init $base;
+    if (not (strings.trim($canonicalUrl) == "")) {
+        $body = json.set($body, "/url", strings.trim($canonicalUrl));
+    }
     if (len($authUrls) == 0) {
         return Reply{ status: 200, body: $body };
     }

@@ -38,6 +38,20 @@ import "jwt.j" as jwt;
 # signs and verifies its own tokens, so there is no third party to hand a public
 # key to. `verify` is told the algorithm it expects, which is what closes the
 # algorithm-confusion attack.
+# The signing algorithm. Symmetric, and that is a decision with a condition
+# attached rather than a default.
+#
+# It holds because **this registry is the only thing that verifies these tokens**:
+# clients present them and never inspect them, and nothing else is handed the
+# key. One key, no distribution, no public half to publish or rotate.
+#
+# It stops holding the moment anything else needs to verify - a CDN edge
+# authorising at the boundary, a companion service, a second implementation.
+# With HMAC the ability to verify *is* the ability to sign, so giving a verifier
+# the key gives it the power to mint a token for any account. At that point this
+# must become asymmetric (`jwt` supports ES256 over a `crypto.ecGenerateKey`
+# pair) and the public half must be published. Specification 8.5 states the rule;
+# this comment exists so the person adding the second verifier meets it here too.
 def const ALG as string init "HS256";
 
 # How many bytes of entropy a refresh token carries. 32 bytes is 256 bits from
@@ -54,7 +68,7 @@ export def struct Identity {
     accountId as int,
     login as string,
     expiresAt as int,
-    orgs as list of string,
+    orgs as map of string to string,
     orgsCheckedAt as int
 };
 
@@ -63,8 +77,9 @@ export def struct Identity {
  * @param key {bytes} the HMAC signing secret
  * @param accountId {int} the numeric GitHub account id
  * @param login {string} the GitHub login, carried as a display label
- * @param orgs {list of string} the organisation ids the account actively belongs
- *     to, read at login (8.7). Carried in the token because the provider token
+ * @param orgs {map of string to string} the organisations the account actively
+ *     belongs to, folded login -> id, read at login (8.7). Carried in the
+ *     token because the provider token
  *     is discarded immediately after, so this is the only chance to ask.
  * @param checkedAt {int} when that membership was read (Unix seconds). Recorded
  *     separately from `iat` because a refreshed token is newer than the
@@ -74,7 +89,8 @@ export def struct Identity {
  * @return {string} the compact JWT
  */
 export func mint(key as bytes, accountId as int, login as string,
-        orgs as list of string, checkedAt as int, ttl as int, now as int) {
+        orgs as map of string to string, checkedAt as int, ttl as int,
+        now as int) {
     def claims as json.Value init json.map();
     # `sub` is the account id as text: a JWT subject is a string, and the id is
     # what ownership binds to.
@@ -82,9 +98,9 @@ export func mint(key as bytes, accountId as int, login as string,
     $claims = json.set($claims, "/login", $login);
     $claims = json.set($claims, "/iat", $now);
     $claims = json.set($claims, "/exp", $now + $ttl);
-    def ids as json.Value init json.list();
-    for (def org in $orgs) {
-        $ids = json.append($ids, "", $org);
+    def ids as json.Value init json.map();
+    for (def name in $orgs) {
+        $ids = json.set($ids, "/" + $name, $orgs[$name]);
     }
     $claims = json.set($claims, "/orgs", $ids);
     $claims = json.set($claims, "/orgsAt", $checkedAt);
@@ -102,13 +118,10 @@ export func mint(key as bytes, accountId as int, login as string,
  */
 export func verify(key as bytes, token as string) {
     def claims as json.Value init jwt.verify($token, $key, ALG);
-    def orgs as list of string init [];
+    def orgs as map of string to string init {};
     if (json.has($claims, "/orgs")) {
-        def n as int init json.length($claims, "/orgs");
-        def i as int init 0;
-        while ($i < $n) {
-            $orgs[] = json.asString($claims, "/orgs/" + convert.toString($i));
-            $i = $i + 1;
+        for (def name in json.keys($claims, "/orgs")) {
+            $orgs[$name] = json.asString($claims, "/orgs/" + $name);
         }
     }
     def checkedAt as int init 0;

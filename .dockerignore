@@ -18,6 +18,12 @@ data
 # carry a stale copy; see the Dockerfile's grimoire stage.
 public
 
+# The local configuration. A deployment supplies its own by bind-mounting one or
+# by setting environment; baking a developer's config.toml into the image would
+# make every deployment inherit it. config.toml.example is documentation and is
+# matched by the *.md rule above only if renamed, so it is listed explicitly.
+config.toml
+
 # Local secrets. Compose reads .env on the host and passes the values in as
 # environment; it must never be baked into an image layer, where every later
 # stage and anyone who pulls the image can read it. The template goes too: the

@@ -6,7 +6,7 @@
 # deckadmin - maintain the jvc deck repository's flatdb store: insert, update,
 # remove, and list deck versions. A thin entry point over the `admin` module
 # (which holds the grammar, the logic, and its tests). The store path defaults
-# to data/decks.json, overridable with the JVC_DB environment variable. Run from
+# to data/decks.json, overridable with the REGISTRY_DB environment variable. Run
 # the repo root:
 #
 #     jennifer run bin/deckadmin add @acme/tool 1.3.0 <url> --ref v1.3.0 --commit <sha>
@@ -22,6 +22,7 @@
 
 use os;
 use io;
+use maps;
 use time;
 use convert;
 import "flatdb.j" as flatdb;
@@ -29,14 +30,33 @@ import "args.j" as args;
 import "../src/store.j" as store;
 import "../src/admin.j" as admin;
 import "../src/audit.j" as audit;
+import "../src/config.j" as config;
+
+# Read through `config.readEnv` so the deprecated `JVC_*` names keep working here
+# exactly as they do in the server. Three programs disagreeing about whether the
+# old names still work is how a deployment ends up half-migrated.
+def env as config.EnvRead init config.readEnv([
+    "REGISTRY_DB", "REGISTRY_LOG", "REGISTRY_LOG_LEVEL", "REGISTRY_LOG_FORMAT"
+]);
+for (def old in $env.deprecated) {
+    io.eprintf("warning: %s is deprecated and will stop being read\n", $old);
+}
 
 def dbPath as string init "data/decks.json";
-if (not (os.getEnv("JVC_DB") == "")) {
-    $dbPath = os.getEnv("JVC_DB");
+if (maps.has($env.values, "REGISTRY_DB")) {
+    $dbPath = $env.values["REGISTRY_DB"];
 }
 
 def db as flatdb.DB init store.open($dbPath);
 def now as string init convert.toString(time.unix(time.utc()));
+
+# envOr reads a collected variable, or "" when it was not set.
+func envOr(values as map of string to string, name as string) {
+    if (maps.has($values, $name)) {
+        return $values[$name];
+    }
+    return "";
+}
 
 /**
  * The `add` / `update` handler.
@@ -217,12 +237,24 @@ if ($parsed.command == "") {
 # records the attempt. An unwritable path is reported here and then stops
 # mattering: maintaining the registry is more important than logging that it was
 # maintained.
-def logCfg as admin.LogOptions init admin.logOptions($parsed, os.getEnv("JVC_LOG"),
-    os.getEnv("JVC_LOG_LEVEL"), os.getEnv("JVC_LOG_FORMAT"));
+def logCfg as admin.LogOptions init admin.logOptions($parsed,
+    envOr($env.values, "REGISTRY_LOG"), envOr($env.values, "REGISTRY_LOG_LEVEL"),
+    envOr($env.values, "REGISTRY_LOG_FORMAT"));
 def sink as audit.Sink init audit.open($logCfg.level, $logCfg.format, $logCfg.path,
     $logCfg.console);
 if (not ($sink.fileError == "")) {
     io.eprintf("warning: not logging to %s (%s)\n", $logCfg.path, $sink.fileError);
+}
+
+# `keywords` is answered before any of that. It is the one command that reads no
+# registry and writes none: it reports a word list compiled into the binary. So
+# it must not take the write lock, must not require a writable data directory,
+# and must not fail on a host that has no registry at all - which is exactly the
+# situation an operator is in when they are working out what to add to the list.
+if ($parsed.command == "keywords") {
+    def listing as admin.AdminResult init admin.cmdKeywords($db, $parsed, $now);
+    io.printf("%s\n", $listing.message);
+    exit 0;
 }
 
 # The write lock, taken around the read *and* the write. Both halves matter:

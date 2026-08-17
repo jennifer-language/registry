@@ -12,7 +12,7 @@ def const RESERVED as list of string init ["jennifer"];
 
 func mplx() {
     return identity.Subject{ provider: "github", id: "1234567", login: "mplx",
-        orgs: [], orgsCheckedAt: "" };
+        orgs: {}, orgsCheckedAt: "" };
 }
 
 func claim(subject as identity.Subject, scope as string) {
@@ -34,7 +34,7 @@ func testAnotherNameIsRefusedAndSaysWhy() {
 func testComparisonIsCaseInsensitiveOnBothSides() {
     # scopes are stored folded, so a differently-cased username still derives
     def shouty as identity.Subject init identity.Subject{
-        provider: "github", id: "1", login: "Netflix", orgs: [], orgsCheckedAt: ""
+        provider: "github", id: "1", login: "Netflix", orgs: {}, orgsCheckedAt: ""
     };
     testing.assertTrue(claim($shouty, "netflix").allowed);
     testing.assertTrue(claim($shouty, "NETFLIX").allowed);
@@ -43,7 +43,7 @@ func testComparisonIsCaseInsensitiveOnBothSides() {
 func testAReservedNameIsRefusedEvenWhenItMatches() {
     # somebody whose username is the reserved word still does not get it
     def owner as identity.Subject init identity.Subject{
-        provider: "github", id: "9", login: "jennifer", orgs: [], orgsCheckedAt: ""
+        provider: "github", id: "9", login: "jennifer", orgs: {}, orgsCheckedAt: ""
     };
     def d as policy.Decision init claim($owner, "jennifer");
     testing.assertFalse($d.allowed);
@@ -53,7 +53,7 @@ func testAReservedNameIsRefusedEvenWhenItMatches() {
 func testAnIdentityWithNoUsernameDerivesNothing() {
     # an OIDC subject need not carry a username at all
     def anon as identity.Subject init identity.Subject{
-        provider: "authelia", id: "sub-abc", login: "", orgs: [], orgsCheckedAt: ""
+        provider: "authelia", id: "sub-abc", login: "", orgs: {}, orgsCheckedAt: ""
     };
     def d as policy.Decision init claim($anon, "anything");
     testing.assertFalse($d.allowed);
@@ -66,4 +66,27 @@ func testStanceRefusesAnUnverifiableSource() {
 
 func testNameIsNotNarrowed() {
     testing.assertTrue(policy().nameOk("acme", "routeros").allowed);
+}
+
+func testARefusalNamesTheOrganisationsTheTokenCarries() {
+    # The failure this message exists for: a member of three organisations whose
+    # provider disclosed one. Without the list, the refusal reads as "you are not
+    # a member", which is false and sends the reader to the wrong place.
+    def who as identity.Subject init identity.Subject{
+        provider: "github", id: "1234567", login: "mplx",
+        orgs: {"gmitirol": "42"}, orgsCheckedAt: ""
+    };
+    def out as policy.Decision init matchesLogin($who, "viverto", []);
+    testing.assertFalse($out.allowed);
+    testing.assertContains($out.reason, "gmitirol");
+    testing.assertContains($out.reason, "disclosing");
+}
+
+func testARefusalWithNoOrganisationsSaysSo() {
+    # "()" would read as a rendering bug; "none" is a statement about the token
+    def who as identity.Subject init identity.Subject{
+        provider: "github", id: "1234567", login: "mplx",
+        orgs: {}, orgsCheckedAt: ""
+    };
+    testing.assertContains(matchesLogin($who, "viverto", []).reason, "(none)");
 }

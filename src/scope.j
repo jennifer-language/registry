@@ -24,6 +24,7 @@
  * # if (out.changed) { store.save(out.db); }
  */
 
+use maps;
 import "flatdb.j" as flatdb;
 import "./store.j" as store;
 import "./policy.j" as policy;
@@ -96,13 +97,26 @@ export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject
     if (not $verdict.allowed) {
         return refuse($db, $verdict.reason);
     }
+    # Which principal the scope binds to. Claiming an organisation binds it to
+    # the **organisation's** id, not the claimant's: the claim proves they can
+    # act for it today, and grants them nothing personally (8.7). Every later
+    # write re-asks whether the caller still belongs to it, so a departure needs
+    # no bookkeeping.
+    def owner as string init $who.id;
+    def label as string init $who.login;
+    def kind as string init store.SCOPE_USER;
+    if (maps.has($who.orgs, $folded)) {
+        $owner = $who.orgs[$folded];
+        $label = $folded;
+        $kind = store.SCOPE_ORG;
+    }
     def out as flatdb.DB init store.registerNamespace($db, store.Namespace{
         scope: $folded,
         provider: $who.provider,
-        subject: $who.id,
-        login: $who.login,
+        subject: $owner,
+        login: $label,
         registeredAt: $now,
-        kind: store.SCOPE_USER,
+        kind: $kind,
         coOwners: []
     });
     return ClaimResult{
@@ -226,8 +240,8 @@ func authoriseOrg(ns as store.Namespace, who as identity.Subject, folded as stri
         return policy.deny("@" + $folded + " belongs to an organisation on " +
             $ns.provider);
     }
-    for (def org in $who.orgs) {
-        if ($org == $ns.subject) {
+    for (def name in $who.orgs) {
+        if ($who.orgs[$name] == $ns.subject) {
             return policy.allow("@" + $folded + " is your organisation");
         }
     }

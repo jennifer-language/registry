@@ -28,26 +28,39 @@ import "./store.j" as store;
  * @field description {string} the deck's description ("" when it has none)
  * @field latest {string} the highest published version ("" when none are)
  * @field versions {int} how many versions are published
+ * @field live {bool} whether any version is installable, i.e. not yanked. A
+ *     listing that shows a yanked version as a deck's "latest" is telling a
+ *     reader the opposite of what a resolver will do with it.
  */
 export def struct Hit {
     name as string,
     description as string,
     latest as string,
-    versions as int
+    versions as int,
+    live as bool
 };
 
 # hitFor summarises one deck into a Hit.
+#
+# `latest` is the newest **live** version where there is one, because that is the
+# version a reader would install. A deck whose every version is yanked still
+# reports its newest, with `live` false to say what it is: hiding it would make
+# the deck look unpublished rather than withdrawn.
 func hitFor(db as flatdb.DB, name as string) {
     def all as list of string init store.listVersionsDescending($db, $name);
+    def live as list of string init store.listLiveVersionsDescending($db, $name);
     def latest as string init "";
-    if (len($all) > 0) {
+    if (len($live) > 0) {
+        $latest = $live[0];
+    } elseif (len($all) > 0) {
         $latest = $all[0];
     }
     return Hit{
         name: $name,
         description: store.deckDescription($db, $name),
         latest: $latest,
-        versions: len($all)
+        versions: len($all),
+        live: len($live) > 0
     };
 }
 

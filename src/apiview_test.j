@@ -36,7 +36,8 @@ func version(v as string, url as string) {
         description: "v " + $v,
         publishedAt: "1700000000",
         yanked: false,
-        license: ""
+        license: "",
+        keywords: []
     };
 }
 
@@ -69,7 +70,7 @@ func noAuth() {
 }
 
 func testDiscoveryKeepsTheRouteDerivedBase() {
-    def reply as Reply init discovery(discoveryBase(), noAuth());
+    def reply as Reply init discovery(discoveryBase(), "", noAuth());
     testing.assertEqual($reply.status, 200);
     testing.assertEqual(json.asString($reply.body, "/registry"), SERVICE_NAME);
     testing.assertEqual(json.asString($reply.body, "/spec"), SPEC_VERSION);
@@ -84,7 +85,7 @@ func testDiscoveryOmitsAuthWhenNoneIsConfigured() {
     # this registry accepts no logins. Advertising a provider with no endpoints
     # behind it would leave a client knowing identity is GitHub and still having
     # nowhere to send the exchange.
-    def reply as Reply init discovery(discoveryBase(), noAuth());
+    def reply as Reply init discovery(discoveryBase(), "", noAuth());
     testing.assertFalse(json.has($reply.body, "/auth"));
 }
 
@@ -96,7 +97,7 @@ func testDiscoveryAdvertisesTheAuthEndpointsWhenConfigured() {
         "tokenUrl": "/v1/auth/token",
         "refreshUrl": "/v1/auth/refresh"
     };
-    def reply as Reply init discovery(discoveryBase(), $urls);
+    def reply as Reply init discovery(discoveryBase(), "", $urls);
     # whatever the caller supplied: this module never learns which provider is
     # configured, which is what lets a new one need no change here
     testing.assertEqual(json.asString($reply.body, "/auth/provider"), "gitea");
@@ -185,7 +186,8 @@ func versionReq(v as string, url as string, requires as map of string to string)
         requires: $requires, engines: {}, capabilities: [], description: "",
         publishedAt: "0",
         yanked: false,
-        license: ""
+        license: "",
+        keywords: []
     };
 }
 
@@ -244,4 +246,28 @@ func testAnUnservedVersionIsA400NamingTheSupportedOnes() {
     testing.assertEqual(json.asString($reply.body, "/error"), "unsupported API version");
     testing.assertEqual(json.length($reply.body, "/apis"), 1);
     testing.assertEqual(json.asInt($reply.body, "/apis/0"), 1);
+}
+
+# --- the canonical URL --------------------------------------------------------
+
+func testTheCanonicalUrlIsAdvertisedWhenConfigured() {
+    def reply as Reply init discovery(discoveryBase(),
+        "https://registry.jennifer-lang.dev", noAuth());
+    testing.assertEqual(json.asString($reply.body, "/url"),
+        "https://registry.jennifer-lang.dev");
+}
+
+func testAnUndeclaredCanonicalUrlIsOmitted() {
+    # Absence means "I do not know what I am called", which is the honest answer
+    # for a registry that has not been told. A guess would end up recorded in
+    # somebody's lockfile as this registry's identity.
+    testing.assertFalse(json.has(discovery(discoveryBase(), "", noAuth()).body, "/url"));
+    testing.assertFalse(json.has(discovery(discoveryBase(), "   ", noAuth()).body, "/url"));
+}
+
+func testTheCanonicalUrlDoesNotDisturbTheRestOfTheDocument() {
+    def reply as Reply init discovery(discoveryBase(), "https://r.example", noAuth());
+    testing.assertEqual(json.asString($reply.body, "/registry"), SERVICE_NAME);
+    testing.assertEqual(json.asString($reply.body, "/spec"), SPEC_VERSION);
+    testing.assertEqual(json.asInt($reply.body, "/apis/0/version"), 1);
 }

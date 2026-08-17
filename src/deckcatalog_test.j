@@ -29,7 +29,8 @@ func ver(v as string, requires as map of string to string) {
         description: "",
         publishedAt: "0",
         yanked: false,
-        license: ""
+        license: "",
+        keywords: []
     };
 }
 

@@ -93,19 +93,27 @@ func testScopesDefaultButAreOverridable() {
 # --- organisation memberships (8.7) -------------------------------------------
 
 func membershipDoc(state as string, role as string, orgId as int) {
+    return membershipNamed($state, $role, $orgId, "acme");
+}
+
+func membershipNamed(state as string, role as string, orgId as int, login as string) {
     def one as json.Value init json.map();
     $one = json.set($one, "/state", $state);
     $one = json.set($one, "/role", $role);
     def org as json.Value init json.map();
     $org = json.set($org, "/id", $orgId);
+    $org = json.set($org, "/login", $login);
     $one = json.set($one, "/organization", $org);
     return json.append(json.list(), "", $one);
 }
 
 func testAnActiveMemberCounts() {
-    def out as list of string init membershipsFrom(membershipDoc("active", "member", 42));
+    def out as map of string to string init membershipsFrom(
+        membershipDoc("active", "member", 42));
     testing.assertEqual(len($out), 1);
-    testing.assertEqual($out[0], "42");
+    # keyed by the folded login, because that is how a claim names it, and valued
+    # by the id, because that is what ownership binds to
+    testing.assertEqual($out["acme"], "42");
 }
 
 func testAnAdminCounts() {
@@ -126,7 +134,26 @@ func testABillingManagerIsNotAuthority() {
 func testTheOrgIdIsReadAsText() {
     # it is compared against a stored subject id, which is text; comparing 42 to
     # "42" would silently never match
-    testing.assertEqual(membershipsFrom(membershipDoc("active", "member", 42))[0], "42");
+    testing.assertEqual(membershipsFrom(membershipDoc("active", "member", 42))["acme"], "42");
+}
+
+func testTheLoginIsFolded() {
+    # a claim arrives folded, so the key has to be too or the lookup misses
+    testing.assertEqual(len(membershipsFrom(membershipNamed("active", "member", 7,
+        "Viverto"))), 1);
+    testing.assertEqual(membershipsFrom(membershipNamed("active", "member", 7,
+        "Viverto"))["viverto"], "7");
+}
+
+func testAnOrganisationWithoutALoginIsSkipped() {
+    # the id alone cannot be claimed by name, so a row missing the login is not
+    # usable and is dropped rather than half-recorded
+    def one as json.Value init json.map();
+    $one = json.set($one, "/state", "active");
+    def org as json.Value init json.map();
+    $org = json.set($org, "/id", 9);
+    $one = json.set($one, "/organization", $org);
+    testing.assertEqual(len(membershipsFrom(json.append(json.list(), "", $one))), 0);
 }
 
 func testAMalformedPayloadYieldsNothing() {

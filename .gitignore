@@ -18,6 +18,10 @@
 .env
 !.env.example
 
+# The local configuration. config.toml.example is the committed template; a
+# real config.toml holds one deployment's settings and possibly its secrets.
+config.toml
+
 # Editor / OS noise.
 *.swp
 *.tmp

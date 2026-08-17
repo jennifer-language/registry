@@ -134,6 +134,27 @@ ids, and those bindings do not change when names do.
 A version is a **Semantic Versioning 2.0.0** string: `major.minor.patch` with
 optional `-prerelease` and `+build`. The registry **MUST** reject anything else.
 
+**No leading `v`.** `1.2.3` is a version; `v1.2.3` is not, and a registry
+**MUST** reject it rather than stripping the prefix. This follows from SemVer
+2.0.0, which excludes it, but it is stated here because it is the single most
+likely thing to get wrong: **a git tag conventionally carries the prefix and a
+version never may**, so both forms appear in one version record, one field
+apart. `version` is `1.2.3`; `ref` is whatever the tag was called, commonly
+`v1.2.3`. They answer different questions, and a registry **MUST NOT** store
+either as a normalised form of the other.
+
+That is a rule about **storage**, not about comparison. Publishing compares the
+two deliberately (8.8 step 6), and that comparison **MUST** tolerate a single
+optional leading `v` on the tag side, since otherwise no conventionally tagged
+release could ever agree with its own manifest. What is forbidden is carrying
+the tolerance any further: the version recorded, served, resolved, and written
+into a lockfile is the manifest's, exactly as spelled.
+
+The rejection applies wherever a version appears: in a constraint (2.4), in a
+`deck.toml`, and in a path segment. Normalising the prefix away there would be
+worse than refusing it, because it makes two spellings of one version and leaves
+a client to guess which one a lockfile recorded.
+
 ### 2.4 Constraints
 
 A constraint is a **single** expression. Compound ranges (`||`, `,`) are **not**
@@ -166,6 +187,38 @@ dependency graph locally, from per-deck metadata (section 5.1). The server-side
 resolution endpoints (5.3, 5.4) are a convenience for other clients and **MAY**
 be omitted by a minimal implementation; 5.1 **MUST NOT** be.
 
+### 2.5 Keywords
+
+A version **MAY** carry keywords, which exist so a registry can group decks for
+browsing. They are the only publisher-supplied field that becomes part of the
+registry's own navigation, and a registry **MUST** treat them as untrusted for
+exactly that reason.
+
+A keyword is 2 to 32 characters of lowercase ASCII letters, digits, and single
+inner hyphens, with no leading, trailing, or doubled hyphen. That grammar makes a
+keyword usable as a URL path segment with no escaping.
+
+A registry:
+
+- **MUST** fold a keyword to lowercase before storing or comparing it, so one
+  tag is one page;
+- **MUST** ignore a keyword that does not match the grammar, rather than
+  rejecting the manifest;
+- **MAY** refuse individual keywords by local policy, and the reference
+  implementation refuses a list of terms it will not build category pages for;
+- **SHOULD** cap how many it indexes per version, dropping the excess in
+  manifest order rather than rejecting the manifest. The reference implementation
+  caps at **five**, and applies the cap **after** filtering, so a publisher
+  cannot displace their own keywords by padding the list with refused ones.
+
+**No keyword is ever a reason to reject a publish.** A malformed or refused
+keyword costs the publisher that keyword. Failing a release over a tag would
+trade a working publish for a cosmetic one.
+
+Keywords are **per version**, and a registry presenting them **SHOULD** read them
+from the newest version, so that a keyword dropped in a later release stops
+grouping the deck.
+
 ## 3. The version record
 
 Every published version has this shape. It is the core data model; the API
@@ -173,10 +226,10 @@ endpoints are projections of it.
 
 | Field | Type | Required | Meaning |
 | ----- | ---- | -------- | ------- |
-| `version` | string | yes | the SemVer version (2.3) |
+| `version` | string | yes | the SemVer version (2.3), never `v`-prefixed, e.g. `1.0.0` |
 | `kind` | string | yes | `"git"` for a repository-hosted deck, `"tar.gz"` for a hosted artifact |
 | `url` | string | yes | the git clone URL (`kind: "git"`), or the artifact URL (`kind: "tar.gz"`) |
-| `ref` | string | git only | the tag the version was published from, e.g. `v1.0.0` |
+| `ref` | string | git only | the tag the version was published from, commonly `v`-prefixed, e.g. `v1.0.0` |
 | `commit` | string | git only | the full 40-character commit SHA the tag pointed at **at publish time** |
 | `repoId` | int | no | the host's immutable numeric repository id, recorded at publish (6.4) |
 | `repoOwnerId` | int | no | the numeric id of the account that owned that repository at publish (6.4) |
@@ -184,6 +237,7 @@ endpoints are projections of it.
 | `requires` | object | no | this version's runtime dependencies, deck name -> constraint |
 | `engines` | object | no | interpreters that can run it, engine name -> constraint |
 | `capabilities` | array of string | no | host capabilities its code needs |
+| `keywords` | array of string | no | the version's tags, normalised (2.5); absent reads as empty |
 | `description` | string | no | one-line summary |
 | `publishedAt` | string | no | publication time, Unix seconds as text |
 | `yanked` | bool | no | see section 9; absent means false |
@@ -246,6 +300,7 @@ This path never changes; it is the one thing a client may hard-code.
 ```json
 {
   "registry": "decks.jennifer-lang.org",
+  "url": "https://decks.jennifer-lang.org",
   "spec": "0.1.0",
   "apis": [
     { "version": 1, "basePath": "/v1", "deprecated": false },
@@ -265,6 +320,7 @@ This path never changes; it is the one thing a client may hard-code.
 | Field | Meaning |
 | ----- | ------- |
 | `registry` | a human-readable identifier, shown in client messages |
+| `url` | optional; the registry's own canonical base URL, no trailing slash |
 | `spec` | the version of **this document** the registry implements |
 | `apis` | every API version served, each with a base path to use |
 | `apis[].version` | an integer major version |
@@ -292,6 +348,24 @@ accept logins" and say so, rather than guessing an endpoint. A registry that
 does accept writes **MUST** advertise `deviceUrl` and `tokenUrl`: without them a
 client has nowhere to send the exchange and no way to learn the OAuth client id,
 which differs per registry.
+
+**`url` is what the registry calls itself.** A registry **SHOULD** advertise it,
+and **MUST** omit it rather than guess: a registry sees a listen address and a
+`Host` header, and behind a proxy, in a container, or on a private network
+neither is its public name. An absent `url` means the deployment has not declared
+one, which is a better answer than a wrong one - this string ends up recorded in
+lockfiles as this registry's identity.
+
+It **MUST** be an absolute base URL with no trailing slash, so that one registry
+has one spelling. Clients **SHOULD** use it when recording which registry a deck
+came from (`specs-client.md` section 2.3), and **SHOULD** prefer it to whatever
+address they happened to dial.
+
+A `url` that differs from the address the client used is **not** an error, and a
+client **MUST NOT** refuse the registry over it. A mirror, an internal name, and
+a public name are all legitimate ways to reach one registry. A client **MAY**
+say so once, because the same difference is also what a misdirected client looks
+like, and the person running it is the one who can tell those apart.
 
 **A CI job cannot guess the audience.** A registry accepting 8.9 tokens **MUST**
 advertise `auth.trustedPublishing.audience`, because the job has to name it when
@@ -783,14 +857,25 @@ the primary host. That is an operational decision, not a protocol change: the
 
 ## 7. Write API
 
-Not yet implemented; this is the design latitude.
-
 | Route | Does |
 | ----- | ---- |
 | `POST /publish` | publish a version from a repository and a tag |
 | `POST /yank` | mark a version yanked |
 | `POST /unyank` | reverse it |
-| `POST /owners` | add or remove a co-owner of a scope or deck |
+| `POST /claim` | claim a scope for the authenticated caller (8.2) |
+| `POST /owners` | add or remove a co-owner of a scope |
+| `GET /scopes` | list registered scopes and who holds them |
+
+`GET /scopes` is the only one of these that needs no caller. It reports each
+scope's name, kind, and whether it is owned or reserved, and for an owned one the
+owner's **login** - not the subject id. The login is already visible on every
+deck page; the id is what authorisation binds to, and a public list of them is a
+list of exactly what an impersonator would need.
+
+A refused claim **SHOULD** distinguish its cause by status: `400` for a name
+outside the grammar, `409` for one already held or reserved, `403` for a policy
+that declines. Answering `403` to all three tells a caller their credentials are
+wrong when the real answer is a typo or a taken name.
 
 A publish names a **repository and a tag**, not an uploaded file. The registry
 does the resolving:
@@ -807,7 +892,9 @@ does the resolving:
 5. reject a name that is not scoped, or a version that is not SemVer;
 6. reject a version whose `deck.toml` version disagrees with the tag - a tag
    `v1.0.0` whose manifest says `0.9.0` is a mislabelled release, not a
-   publishable one;
+   publishable one. A single leading `v` on the tag is ignored for this
+   comparison and nowhere else (2.3), so `v1.0.0` and `1.0.0` both agree with a
+   manifest saying `1.0.0`;
 7. reject a version that already exists (`409`) - **publishes are immutable**;
 8. verify the tree contains `src/` and `src/<deck>.j` (6.1).
 
@@ -1026,20 +1113,20 @@ the author leaving the organisation, and the hijack returns one level down.
 
 ### 8.2 Claiming a scope
 
-**Version 1 supports user scopes only.** Organisation-derived claims are
-specified in 8.7 and are not part of this version. That is a deliberate
-reduction: it removes membership checks, departure semantics, and the abandoned
-organisation problem, and it makes **name authority a local integer comparison** -
-the bearer token carries the account id, the scope record carries the owner id,
-and no lookup is involved.
+**Name authority is a local integer comparison.** The bearer token carries the
+principal ids the caller may act for, the scope record carries the owner id, and
+authorising a write compares them without a lookup. That holds for an
+organisation scope (8.7) exactly as it does for a personal one: what differs is
+*which* id the scope is bound to and *when* membership is established, never
+whether a network call decides a write.
 
 That is name authority only. **Publishing still calls the host**, to read the
 manifest at the commit and to check source authority (7.1), so a publish is not
-independent of GitHub. What version 1 buys is that *scope ownership* never is:
-it cannot be changed by anything happening on GitHub after the claim, and it
-stays answerable when GitHub is unreachable.
+independent of GitHub. What this buys is that *scope ownership* never is: it
+cannot be changed by anything happening on GitHub after the token was minted,
+and it stays answerable when GitHub is unreachable.
 
-A scope may be obtained two ways.
+A scope may be obtained three ways.
 
 #### Derived: a user claiming their own login
 
@@ -1055,6 +1142,26 @@ principal, and **SHOULD** say so specifically rather than returning a bare
 holder still owns the registry scope (8.5). A dispute is an operator matter
 (section 10).
 
+#### Derived: a member claiming their organisation
+
+A caller **MAY** claim the scope whose folded name equals an organisation they
+are an `active` member of, and the registry binds it to the **organisation's**
+numeric id, marked as an organisation scope (8.7). It grants the claimant
+nothing personally: they can write under it for exactly as long as they remain a
+member.
+
+The organisations a caller may claim for are those their token carries, which
+are the ones the identity provider **disclosed** - not necessarily the ones they
+belong to. A provider **MAY** withhold a membership from an application it has
+not been approved for, and GitHub does exactly that for any organisation with
+third-party application restrictions enabled.
+
+That failure mode is silent by construction: the token is valid, the account is
+real, and the only symptom is a claim refused for a name the caller plainly
+belongs to. A registry therefore **SHOULD** report the organisations a token
+carries in the token exchange's response (8.4's `orgs`), so the shortfall is
+visible at login rather than inferred from a later refusal.
+
 #### Granted: an operator assignment
 
 An operator **MAY** grant any scope to any principal id. This is not an
@@ -1063,8 +1170,9 @@ three cases that derivation cannot serve:
 
 - **a name that is not a GitHub name.** The `jennifer-language` organisation
   publishes official decks under `@jennifer`, which it does not own on GitHub;
-- **an organisation, until 8.7 exists.** An org's decks otherwise have to live
-  under an individual's personal scope, which is a bus-factor problem;
+- **an organisation the provider will not disclose.** Organisation scopes are
+  derivable (8.7), but only for a membership the identity provider is willing to
+  report; where it withholds one, the operator path is what remains;
 - **a dispute or a reassignment**, including releasing a deleted account's scope.
 
 A registry **MUST** be able to reserve names (its own, `@jennifer`, common
@@ -1177,13 +1285,24 @@ Response `200`:
   "expiresIn": 3600,
   "refreshToken": "def50200f1a2...",
   "login": "alice",
-  "accountId": 1234567
+  "accountId": 1234567,
+  "orgs": ["acme", "viverto"]
 }
 ```
 
 `login` and `accountId` are the identity the token carries, returned so a client
 can say "logged in as @alice" without decoding the token. **`accountId` is the
 identity that matters** (8.1); `login` is a display label.
+
+`orgs` is the organisation **logins** the token carries, sorted, and a registry
+that supports organisation scopes **SHOULD** return it. Present and empty means
+none; absent means the registry does not report them. Together with `login` it
+is the complete list of scopes this token could derive a claim for, which is why
+returning it matters: the list can be short for reasons invisible from the
+client side (8.2), and a caller who sees it at login recognises a missing
+organisation immediately instead of meeting an unexplained refusal later. The
+ids are deliberately **not** returned - a claim is typed as a name, and the id
+is the thing ownership binds to.
 
 `refreshToken` is optional, and present only when the registry offers 8.4's
 refresh path.
@@ -1208,6 +1327,25 @@ It carries the account id, the login, and an expiry; the client sends it as
 
 No session store, no cookie, no CSRF: it is an API call with a header.
 
+**The token is opaque to the client.** A client presents it and does not parse,
+verify, or depend on its shape; the example in 8.4 shows a JWT because that is
+the obvious choice, and its `alg` is illustrative rather than part of this
+contract.
+
+**Which signature algorithm to use follows from who verifies.** While the
+registry is the only party that verifies its own tokens, a symmetric algorithm
+is sufficient and simpler: one key, no distribution.
+
+A registry that ever lets **anything else** verify - a CDN edge authorising at
+the boundary, a companion service, a second implementation - **MUST** switch to
+an asymmetric algorithm and publish the public key. With a symmetric key, the
+ability to verify *is* the ability to sign, so handing a verifier the key hands
+it the power to mint tokens for any account. There is no way to delegate one
+without the other.
+
+That is worth deciding before the second verifier exists rather than during it,
+because the migration has to bridge tokens signed both ways.
+
 Consequences to design for:
 
 - **Expiry MUST be short enough to matter** (hours, not months) with a refresh
@@ -1215,9 +1353,13 @@ Consequences to design for:
 - **Revocation.** Revoking the GitHub grant **MUST** prevent obtaining a new
   registry token. A registry **SHOULD** also offer an operator path to invalidate
   outstanding tokens for an identity.
-- **Organisation membership MUST be re-checked at publish time**, not merely
-  trusted from a claim minted when the token was issued. Somebody removed from an
-  organisation should stop being able to publish under its scope promptly.
+- **Organisation membership is only as fresh as the token that carries it.**
+  8.7 specifies where it is read and why a registry that discards the provider
+  token cannot re-ask at publish time. The rule that survives is the one there: a
+  refreshed token **MUST NOT** advance the membership timestamp, and a registry
+  **SHOULD** refuse an organisation-scope write whose memberships have aged out.
+  Somebody removed from an organisation then loses access when their claim
+  expires, not instantly.
 
 ### 8.6 The OAuth application
 
@@ -1774,6 +1916,7 @@ A registry is usable by a client when:
 - [ ] `GET /deck?name=<scoped-name>` returns 5.1 for a known deck
 - [ ] it returns `404` with an `error` body for an unknown one
 - [ ] version records carry `version`, `kind`, `url`
+- [ ] `version` is bare SemVer: `1.0.0` is served, `v1.0.0` is refused (2.3)
 - [ ] a `kind: "git"` record carries `ref` and a full 40-character `commit`
 - [ ] a `kind: "tar.gz"` record carries a well-formed `sha256:` `checksum`
 - [ ] `/resolve` and `/resolve-graph`, if offered, carry the pin for each `kind`

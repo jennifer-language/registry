@@ -31,6 +31,8 @@
  */
 
 use strings;
+use maps;
+use lists;
 import "../identity.j" as identity;
 import "../policy.j" as policy;
 
@@ -46,11 +48,40 @@ func matchesLogin(subject as identity.Subject, scope as string, reserved as list
     if ($have == "") {
         return policy.deny("this identity has no username to derive a scope from");
     }
-    if (not ($want == $have)) {
-        return policy.deny("@" + $scope + " does not match your " + $subject.provider +
-            " username (" + $subject.login + "); ask an operator to grant it");
+    if ($want == $have) {
+        return policy.allow("@" + $scope + " matches your " + $subject.provider +
+            " username");
     }
-    return policy.allow("@" + $scope + " matches your " + $subject.provider + " username");
+    # An organisation the caller actively belongs to (8.7). The claim binds the
+    # scope to the **organisation**, not to the claimant, so being a member is
+    # what is being proven here - not a personal right to the name. Somebody who
+    # leaves keeps nothing.
+    if (maps.has($subject.orgs, $want)) {
+        return policy.allow("@" + $scope + " is a " + $subject.provider +
+            " organisation you belong to");
+    }
+    # Naming what the token actually carries, because the interesting failure is
+    # not "you are not a member" but "we were not told you are". A provider
+    # discloses the organisations it is willing to, and GitHub withholds any that
+    # has third-party application restrictions on and has not approved this
+    # registry - so a member of three can hold a token naming one. Refusing with
+    # only the username sends that person to look at the scope name, which is
+    # correct; listing what was seen sends them to look at the list, which is
+    # where the problem actually is.
+    return policy.deny("@" + $scope + " is neither your " + $subject.provider +
+        " username (" + $subject.login + ") nor one of the organisations your " +
+        "login carries (" + seenList($subject) + "). If you belong to it, your " +
+        $subject.provider + " may not be disclosing it to this registry: " +
+        "approve this application for the organisation and log in again, or " +
+        "ask an operator to grant the scope");
+}
+
+# seenList renders the organisations a token carries, for a refusal message.
+func seenList(subject as identity.Subject) {
+    if (len($subject.orgs) == 0) {
+        return "none";
+    }
+    return strings.join(lists.sort(maps.keys($subject.orgs)), ", ");
 }
 
 # stance refuses a publish whose source authority could not be established. A

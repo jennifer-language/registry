@@ -26,6 +26,8 @@
 use json;
 use strings;
 use convert;
+use maps;
+use lists;
 import "flatdb.j" as flatdb;
 import "./store.j" as store;
 import "./token.j" as token;
@@ -151,14 +153,14 @@ export func stateReply(db as flatdb.DB, state as string) {
  * @param db {flatdb.DB} the store to record the refresh token in
  * @param accountId {int} the numeric GitHub account id
  * @param login {string} the GitHub login, carried as a display label
- * @param orgs {list of string} the organisation ids read at login (8.7)
+ * @param orgs {map of string to string} the organisations read at login (8.7)
  * @param checkedAt {int} when those memberships were read (Unix seconds). Carried
  *     separately so a refresh can reissue them without pretending they are fresh.
  * @param now {int} the current time (Unix seconds)
  * @return {AuthReply} a 200 carrying the token pair, and the store to persist
  */
 export func issue(cfg as Config, db as flatdb.DB, accountId as int, login as string,
-        orgs as list of string, checkedAt as int, now as int) {
+        orgs as map of string to string, checkedAt as int, now as int) {
     def bearer as string init token.mint($cfg.signingKey, $accountId, $login,
         $orgs, $checkedAt, $cfg.tokenTtl, $now);
     def refreshToken as string init token.newRefresh();
@@ -176,7 +178,36 @@ export func issue(cfg as Config, db as flatdb.DB, accountId as int, login as str
     $body = json.set($body, "/refreshToken", $refreshToken);
     $body = json.set($body, "/login", $login);
     $body = json.set($body, "/accountId", $accountId);
+    $body = json.set($body, "/orgs", orgNames($orgs));
     return AuthReply{ status: 200, body: $body, db: $out, changed: true };
+}
+
+/**
+ * The organisation logins a token carries, sorted.
+ *
+ * Reported back at login because the alternative is a silent shortfall. An
+ * identity provider hands over the organisations it is *willing* to disclose,
+ * not the ones the account belongs to: on GitHub an organisation that enforces
+ * third-party application restrictions is simply absent from the response until
+ * somebody approves this registry for it. The account looks like a non-member,
+ * a claim under that scope is refused with a message about names not matching,
+ * and nothing anywhere says which organisations were actually seen.
+ *
+ * So the token exchange answers with them. A client can print "you can claim:
+ * ..." and the person recognises immediately that one of theirs is missing,
+ * which turns a confusing refusal later into an obvious omission now. The
+ * **logins** are returned and the ids are not, for the same reason `listScopes`
+ * reports logins: an id is what ownership binds to, and a login is what a claim
+ * is typed as.
+ * @param orgs {map of string to string} folded login to provider id
+ * @return {json.Value} the logins as a sorted JSON list
+ */
+export func orgNames(orgs as map of string to string) {
+    def out as json.Value init json.list();
+    for (def name in lists.sort(maps.keys($orgs))) {
+        $out = json.append($out, "", $name);
+    }
+    return $out;
 }
 
 /**
@@ -244,11 +275,12 @@ export func token(cfg as Config, db as flatdb.DB, body as string, now as int) {
     # organisations this account acts for (8.7). A provider that cannot answer
     # returns none, which makes an organisation scope unwritable rather than
     # writable by anybody.
-    def orgs as list of string init [];
+    def orgs as map of string to string init {};
     try {
         $orgs = $cfg.provider.memberships($cfg.providerConfig, $result.accessToken);
     } catch (err) {
-        $orgs = [];
+        def none as map of string to string init {};
+        $orgs = $none;
     }
     return issue($cfg, $db, convert.toInt($who.id), $who.login, $orgs, $now, $now);
 }

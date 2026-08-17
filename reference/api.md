@@ -4,10 +4,10 @@ A read-only JSON API over a `flatdb` file, serving deck metadata and resolving
 version constraints. There is no write path: every change goes through
 [`deckadmin`](cli.md) on the server's filesystem.
 
-The normative contract is [specs-server.md](specs-server.md). Where this page and
+The normative contract is [specs-server.md](/specs/specs-server.html). Where this page and
 that one disagree, the specification wins, or the specification needs changing
 first. The client's own obligations - negotiating a version, fetching at the
-commit, verifying a checksum - are [specs-client.md](specs-client.md).
+commit, verifying a checksum - are [specs-client.md](/specs/specs-client.html).
 
 Every response is `application/json`. Every error body is
 `{"error": "<message>"}`, written for a developer reading it in a terminal.
@@ -36,7 +36,7 @@ GET /.well-known/jennifer-registry
 **The `auth` object appears only when the login surface is configured**, and its
 absence is the answer rather than an omission: this deployment accepts no
 logins, so a client reports that instead of guessing an endpoint. Set
-`JVC_IDENTITY_CLIENTID` and `JVC_TOKEN_KEY` ([cli.md](cli.md)) and the same
+`REGISTRY_IDENTITY_CLIENTID` and `REGISTRY_TOKEN_KEY` ([cli.md](cli.md)) and the same
 document grows an `auth` feature and an `auth` object:
 
 ```json
@@ -51,8 +51,8 @@ document grows an `auth` feature and an `auth` object:
 
 Those URLs are absolute paths used verbatim, which is the one exception to
 prefixing requests with `basePath`. The endpoints behind them are section 8.4 of
-[specs-server.md](specs-server.md), and the flow a client runs is section 4 of
-[specs-client.md](specs-client.md).
+[specs-server.md](/specs/specs-server.html), and the flow a client runs is section 4 of
+[specs-client.md](/specs/specs-client.html).
 
 ## The token exchange
 

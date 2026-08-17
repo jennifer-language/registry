@@ -372,6 +372,41 @@ export func attribute(ev as Event, command as string) {
 }
 
 /**
+ * Which address to record for a request: the one a trusted proxy reported, or
+ * the peer we are actually talking to.
+ *
+ * **The header is only consulted when a deployment names one.** Any client can
+ * send `X-Forwarded-For`, so a registry that reads it unconditionally records
+ * whatever the caller felt like claiming - and an audit log that can be written
+ * by the party it is auditing is worse than one that says `10.0.1.12`, because
+ * it looks trustworthy. Naming a header is the operator asserting that a proxy
+ * in front of this registry sets it and strips any client-supplied copy.
+ *
+ * The **first** entry of a comma-separated list is taken, which is the original
+ * client in the `X-Forwarded-For` convention. That is also the entry a client
+ * can forge if the proxy does not strip it, which is the whole reason the choice
+ * of header belongs to the operator: behind Cloudflare, `CF-Connecting-IP`
+ * carries the same value and cannot be forged, because Cloudflare overwrites it.
+ * @param headerValue {string} the value of the configured header ("" when unset
+ *     or absent)
+ * @param peer {string} the address of the connection itself
+ * @return {string} the address to record
+ */
+export func clientOf(headerValue as string, peer as string) {
+    def raw as string init strings.trim($headerValue);
+    if ($raw == "") {
+        return $peer;
+    }
+    for (def part in strings.split($raw, ",")) {
+        def one as string init strings.trim($part);
+        if (not ($one == "")) {
+            return $one;
+        }
+    }
+    return $peer;
+}
+
+/**
  * A request arrived. Emitted before the handler runs, so it carries no status:
  * `web` has no after-handler hook, and inventing one by wrapping every handler
  * would put the access log in the way of the thing it observes.
@@ -424,17 +459,29 @@ export func loginStarted(provider as string) {
 }
 
 /**
- * A token was issued or refreshed. Takes the account and login only; the tokens
- * themselves are never arguments, so they cannot be logged.
+ * A token was issued or refreshed. Takes the account, login, and the
+ * organisations the token carries; the tokens themselves are never arguments,
+ * so they cannot be logged.
+ *
+ * The organisations are recorded because they are the one part of a login that
+ * can come back **incomplete without failing**. An identity provider discloses
+ * the organisations it is willing to, which on GitHub excludes any that have not
+ * approved this registry, so a member of three can be issued a token naming one
+ * and every later refusal points somewhere else. With the list in the log, the
+ * question "why can this account not claim @acme" is answered by reading the
+ * login that minted the token.
  * @param kind {string} "issued" or "refreshed"
  * @param accountId {string} the subject the token was minted for
  * @param login {string} the display label
+ * @param orgs {string} the organisation logins, comma-separated; "" for none
  * @return {Event} the event
  */
-export func tokenIssued(kind as string, accountId as string, login as string) {
+export func tokenIssued(kind as string, accountId as string, login as string,
+        orgs as string) {
     def f as map of string to string init {
         "subject": $accountId,
-        "login": $login
+        "login": $login,
+        "orgs": $orgs
     };
     return Event{ level: INFO, message: "token " + $kind, fields: $f };
 }
@@ -656,4 +703,33 @@ export func coOwnerRemoved(scope as string, provider as string, subject as strin
         "scope": $scope, "provider": $provider, "subject": $subject
     };
     return Event{ level: WARN, message: "co-owner removed", fields: $f };
+}
+
+/**
+ * A TLS certificate is in place. `issuedAt` is when it was obtained, which is
+ * what the renewal decision is made from, so it is worth having in the log when
+ * somebody asks why a renewal did or did not happen.
+ * @param domains {string} the names the certificate covers
+ * @param issuedAt {int} when it was obtained (Unix seconds)
+ * @return {Event} the event
+ */
+export func certificateReady(domains as string, issuedAt as int) {
+    def f as map of string to string init {
+        "domains": $domains,
+        "issuedAt": convert.toString($issuedAt)
+    };
+    return Event{ level: INFO, message: "certificate ready", fields: $f };
+}
+
+/**
+ * A certificate could not be obtained. Recorded at `error` because the registry
+ * is now serving less than it was configured to serve, which is exactly the kind
+ * of degradation that otherwise goes unnoticed until a browser complains.
+ * @param domains {string} the names that were requested
+ * @param reason {string} what went wrong
+ * @return {Event} the event
+ */
+export func certificateFailed(domains as string, reason as string) {
+    def f as map of string to string init { "domains": $domains, "reason": $reason };
+    return Event{ level: ERROR, message: "certificate unavailable", fields: $f };
 }

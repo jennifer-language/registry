@@ -87,7 +87,10 @@ it is also why the mapping has to be unambiguous.
 
 ### 2.3 The lockfile records the registry
 
-A client **MUST** record, per resolved deck, which registry it came from. Without
+A client **MUST** record, per resolved deck, which registry it came from,
+preferring the `url` the registry advertises in its discovery document
+(`specs-server.md` section 4.1) over the address it happened to dial, and falling
+back to that address when the registry declares none. Without
 it, the same lockfile resolves to different code on a machine with a different
 mapping, which is the exact failure the lockfile exists to prevent.
 

@@ -10,7 +10,8 @@
 # would be a package and an attack surface for one HTTP GET the language can
 # already do.
 #
-# The URL defaults to the port serve.j listens on; JVC_HEALTHURL overrides it.
+# The URL defaults to the port serve listens on; REGISTRY_HEALTHURL overrides it
+# (JVC_HEALTHURL still works, deprecated).
 #
 #     jennifer run bin/healthcheck
 
@@ -22,7 +23,12 @@ def const TIMEOUT_MS as int init 3000;
 def const MAX_BYTES as int init 65536;
 
 def url as string init "http://127.0.0.1:8080/health";
-if (not (os.getEnv("JVC_HEALTHURL") == "")) {
+if (not (os.getEnv("REGISTRY_HEALTHURL") == "")) {
+    $url = os.getEnv("REGISTRY_HEALTHURL");
+} elseif (not (os.getEnv("JVC_HEALTHURL") == "")) {
+    # The pre-rename name. Read without a warning: this probe's output is a
+    # health verdict that something else parses, and a deprecation notice on
+    # stderr every 30 seconds is noise in a container log.
     $url = os.getEnv("JVC_HEALTHURL");
 }
 

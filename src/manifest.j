@@ -11,6 +11,25 @@
  * typed rather than what the repository actually declares, and the scope check
  * would be checking a claim instead of a fact.
  *
+ * The shape is the specification's, and the appendix's worked example is the
+ * canonical instance of it:
+ *
+ *     [package]
+ *     name = "@acme/routeros"
+ *     version = "0.1.0"
+ *     capabilities = ["net"]
+ *
+ *     [engines]
+ *     jennifer = ">=0.24.0"
+ *
+ *     [decks]
+ *     "@acme/net" = "^1.0.0"
+ *
+ * Note that a deck's dependencies live under `[decks]` and become the version
+ * record's `requires`: the manifest is written for a person declaring what their
+ * deck needs, the record is read by a resolver, and the two names differ because
+ * they are read by different audiences.
+ *
  * Parsing is pure - a string in, a `Manifest` out - so every malformed input
  * has a test rather than a comment. Fetching the bytes at a commit is the
  * caller's job, through a `forge.readFile`.
@@ -25,6 +44,7 @@ use toml;
 use strings;
 use convert;
 import "./deckname.j" as deckname;
+import "./keywords.j" as keywords;
 import "semver.j" as semver;
 
 # The file a deck declares itself in, at the root of its repository.
@@ -42,6 +62,9 @@ export def const FILENAME as string init "deck.toml";
  * @field requires {map of string to string} deck name -> version constraint
  * @field engines {map of string to string} engine -> version range
  * @field capabilities {list of string} host capabilities the code needs
+ * @field keywords {list of string} the deck's tags, already normalised: folded,
+ *     filtered against the refused list, deduplicated, and capped at
+ *     `keywords.LIMIT`. Never a reason to reject a manifest.
  */
 export def struct Manifest {
     ok as bool,
@@ -52,7 +75,8 @@ export def struct Manifest {
     license as string,
     requires as map of string to string,
     engines as map of string to string,
-    capabilities as list of string
+    capabilities as list of string,
+    keywords as list of string
 };
 
 # bad builds a refusal. Every field is zeroed, so a caller that ignores `ok`
@@ -62,7 +86,8 @@ func bad(reason as string) {
     def noList as list of string init [];
     return Manifest{
         ok: false, error: $reason, name: "", version: "", description: "",
-        license: "", requires: $noMap, engines: $noMap, capabilities: $noList
+        license: "", requires: $noMap, engines: $noMap, capabilities: $noList,
+        keywords: $noList
     };
 }
 
@@ -131,9 +156,9 @@ export func parse(text as string) {
     } catch (err) {
         return bad(FILENAME + " is not valid TOML: " + $err.message);
     }
-    def name as string init deckname.fold(str($doc, "/name"));
+    def name as string init deckname.fold(str($doc, "/package/name"));
     if ($name == "") {
-        return bad(FILENAME + " has no `name`");
+        return bad(FILENAME + " has no `name` under [package]");
     }
     if (not deckname.isValid($name)) {
         return bad("not a valid deck name in " + FILENAME + ": " + $name);
@@ -142,9 +167,9 @@ export func parse(text as string) {
         return bad("not a registry deck name: " + $name +
             " (a published deck is scoped, as @scope/deck)");
     }
-    def version as string init strings.trim(str($doc, "/version"));
+    def version as string init strings.trim(str($doc, "/package/version"));
     if ($version == "") {
-        return bad(FILENAME + " has no `version`");
+        return bad(FILENAME + " has no `version` under [package]");
     }
     if (not semver.isValid($version)) {
         return bad("not a valid version in " + FILENAME + ": " + $version);
@@ -154,10 +179,14 @@ export func parse(text as string) {
         error: "",
         name: $name,
         version: $version,
-        description: str($doc, "/description"),
-        license: str($doc, "/license"),
-        requires: table($doc, "/requires"),
+        description: str($doc, "/package/description"),
+        license: str($doc, "/package/license"),
+        requires: table($doc, "/decks"),
         engines: table($doc, "/engines"),
-        capabilities: strList($doc, "/capabilities")
+        capabilities: strList($doc, "/package/capabilities"),
+        # Normalised here rather than at the call site so there is one answer to
+        # "what tags does this deck have": a bad keyword costs the publisher that
+        # keyword and never their release, so this cannot fail the parse.
+        keywords: keywords.normalise(strList($doc, "/package/keywords"))
     };
 }

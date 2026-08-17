@@ -17,10 +17,14 @@
 
 use os;
 use io;
+use kv;
+use time;
 use json;
 use fs;
 use convert;
 use strings;
+use httpd;
+use path;
 import "flatdb.j" as flatdb;
 import "web.j" as web;
 import "webapi.j" as webapi;
@@ -42,16 +46,72 @@ import "../src/forge/gitea.j" as giteaForge;
 import "../src/publishview.j" as publishview;
 import "../src/trustpub.j" as trustpub;
 import "../src/citoken.j" as citoken;
+import "../src/config.j" as config;
+import "../src/stats.j" as stats;
+import "../src/deckname.j" as deckname;
+import "../src/certs.j" as certs;
+import "../src/scopeview.j" as scopeview;
+import "../src/policy.j" as policy;
+import "../src/policy/operator.j" as operatorPolicy;
+import "../src/policy/derived.j" as derivedPolicy;
+import "../src/policy/firstcome.j" as firstcomePolicy;
+import "../src/reserved.j" as reserved;
 
-def dbPath as string init "data/decks.json";
-if (not (os.getEnv("JVC_DB") == "")) {
-    $dbPath = os.getEnv("JVC_DB");
+# The configuration: defaults, then config.toml, then the environment, which
+# wins. `config` does the merging as a pure function of the file's text and an
+# environment map, so the precedence rules are tested rather than trusted; this
+# is only the reading.
+def configPath as string init config.DEFAULT_PATH;
+if (not (os.getEnv(config.PATH_ENV) == "")) {
+    $configPath = os.getEnv(config.PATH_ENV);
 }
 
-def addr as string init ":8080";
-if (not (os.getEnv("JVC_ADDR") == "")) {
-    $addr = os.getEnv("JVC_ADDR");
+def configText as string init "";
+if (fs.exists($configPath)) {
+    $configText = fs.readString($configPath);
 }
+
+# Only the variables the registry knows about are collected. Handing the whole
+# environment to a pure function would work, but naming them here means an
+# unrecognised JVC_* setting is a silent no-op rather than a mystery, and the
+# list doubles as the documentation of what can be overridden.
+def envNames as list of string init [
+    "REGISTRY_URL", "REGISTRY_CLIENT_IP_HEADER", "REGISTRY_POLICY", "REGISTRY_ADDR",
+    "REGISTRY_DB", "REGISTRY_LOG",
+    "REGISTRY_LOG_LEVEL", "REGISTRY_LOG_FORMAT",
+    "REGISTRY_LOG_REQUESTS", "REGISTRY_IDENTITY", "REGISTRY_IDENTITY_BASEURL",
+    "REGISTRY_IDENTITY_CLIENTID", "REGISTRY_IDENTITY_SECRET", "REGISTRY_IDENTITY_SCOPES",
+    "REGISTRY_TOKEN_KEY", "REGISTRY_FORGE", "REGISTRY_FORGE_BASEURL", "REGISTRY_FORGE_TOKEN",
+    "REGISTRY_FORGE_HOST", "REGISTRY_TRUSTPUB_AUDIENCE", "REGISTRY_TRUSTPUB_PROVIDER",
+    "REGISTRY_TRUSTPUB_ISSUER", "REGISTRY_TLS", "REGISTRY_TLS_ADDR", "REGISTRY_TLS_DOMAINS",
+    "REGISTRY_TLS_EMAIL", "REGISTRY_TLS_CERTDIR", "REGISTRY_TLS_RENEW_BEFORE_DAYS",
+    "REGISTRY_ACME_DIRECTORY", "REGISTRY_ACME_CHALLENGEDIR", "REGISTRY_ACME_AGREE_TOS"
+];
+def read as config.EnvRead init config.readEnv($envNames);
+for (def old in $read.deprecated) {
+    io.eprintf("warning: %s is deprecated and will stop being read\n", $old);
+}
+def env as map of string to string init $read.values;
+
+def cfg as config.Config;
+try {
+    $cfg = config.applyEnv(config.applyToml(config.defaults(), $configText), $env);
+} catch (err) {
+    io.eprintf("cannot read %s: %s\n", $configPath, $err.message);
+    exit 1;
+}
+
+# A configuration that cannot be served is refused here rather than discovered at
+# the first HTTPS connection. Starting and then failing every request is worse
+# than not starting and saying which key is missing.
+def complaint as string init config.problem($cfg);
+if (not ($complaint == "")) {
+    io.eprintf("configuration: %s\n", $complaint);
+    exit 1;
+}
+
+def dbPath as string init $cfg.dbPath;
+def addr as string init $cfg.addr;
 
 # The operational log. The console half is always on for the server - a service
 # with no output is a service nobody can see - and the file half is the record
@@ -62,28 +122,45 @@ if (not (os.getEnv("JVC_ADDR") == "")) {
 # Everything below is read-only after this point: handlers run concurrently, and
 # a handler that wrote one of these would race with every other handler. Reading
 # them is safe, which is all a handler needs.
-# The file defaults to logfmt: it is read by something else later, whereas the
-# console is read by a person and is always text. `deckadmin` defaults the same
-# way, so one file holds one format no matter which binary wrote the line.
-def logFormat as string init "logfmt";
-if (not (os.getEnv("JVC_LOG_FORMAT") == "")) {
-    $logFormat = os.getEnv("JVC_LOG_FORMAT");
-}
-def logSink as audit.Sink init audit.open(os.getEnv("JVC_LOG_LEVEL"),
-    $logFormat, os.getEnv("JVC_LOG"), true);
+def logSink as audit.Sink init audit.open($cfg.logLevel, $cfg.logFormat,
+    $cfg.logFile, true);
 if (not ($logSink.fileError == "")) {
-    io.eprintf("warning: not logging to %s (%s)\n",
-        os.getEnv("JVC_LOG"), $logSink.fileError);
+    io.eprintf("warning: not logging to %s (%s)\n", $cfg.logFile, $logSink.fileError);
+}
+
+# Whether the data directory can actually be written, checked once, here.
+#
+# Without this the first symptom is a warning about the log and the second is a
+# failed publish minutes or days later, and neither says what is wrong. The cause
+# is almost always the same: the image runs as a fixed uid, and the volume or
+# bind mount behind /app/data belongs to somebody else.
+#
+# It is a warning rather than a refusal to start. A registry that cannot write is
+# still a registry that can serve every deck it already has, and taking the read
+# path down because the write path is broken would turn a publishing outage into
+# a total one.
+def dataDir as string init path.dir($cfg.dbPath);
+if ($dataDir == "") {
+    $dataDir = ".";
+}
+def probe as string init $dataDir + "/.write-probe";
+try {
+    fs.writeString($probe, "");
+    fs.remove($probe);
+} catch (err) {
+    io.eprintf("warning: %s is not writable (%s)\n", $dataDir, $err.message);
+    io.eprintf("  the registry will serve what it has and refuse every write.\n");
+    io.eprintf("  this container runs as a fixed uid; the volume behind %s must\n",
+        $dataDir);
+    io.eprintf("  belong to it. `docker run --rm --entrypoint /bin/sh <image> -c id`\n");
+    io.eprintf("  prints the uid to chown to, or build with UID / GID to match.\n");
 }
 
 # Whether to record every request. Kept as its own switch rather than folded into
 # the level, because an access log is the one thing an operator wants at
 # `info` while still being far too noisy to be the default: one line per request
 # per health probe adds up in a container that is polled every few seconds.
-def logRequests as bool init false;
-if (os.getEnv("JVC_LOG_REQUESTS") == "1" or os.getEnv("JVC_LOG_REQUESTS") == "true") {
-    $logRequests = true;
-}
+def logRequests as bool init $cfg.logRequests;
 
 # Where the static site lives. `web.serveDir` joins the whole request path onto
 # the root it is given, so a request for /reference/api.html resolves to
@@ -94,6 +171,8 @@ def const PUBLIC_ROOT as string init "public";
 def const REFERENCE_ROOT as string init "public/reference";
 def const MANUAL_ROOT as string init "public/manual";
 def const MANUAL_CONFIG as string init "grimoire-manual.toml";
+def const SPECS_ROOT as string init "public/specs";
+def const SPECS_CONFIG as string init "grimoire-specs.toml";
 
 # The token-exchange paths, advertised absolutely in the discovery document and
 # mounted under the versioned API. A client uses the advertised strings verbatim.
@@ -136,21 +215,18 @@ func selectProvider(name as string) {
     return githubIdentity.provider();
 }
 
-def providerName as string init "github";
-if (not (os.getEnv("JVC_IDENTITY") == "")) {
-    $providerName = os.getEnv("JVC_IDENTITY");
-}
+def providerName as string init $cfg.identity;
 
 def auth as authview.Config init authview.Config{
     provider: selectProvider($providerName),
     providerConfig: identity.Config{
         name: $providerName,
-        baseUrl: os.getEnv("JVC_IDENTITY_BASEURL"),
-        clientId: os.getEnv("JVC_IDENTITY_CLIENTID"),
-        clientSecret: os.getEnv("JVC_IDENTITY_SECRET"),
-        scopes: os.getEnv("JVC_IDENTITY_SCOPES")
+        baseUrl: $cfg.identityBaseUrl,
+        clientId: $cfg.identityClientId,
+        clientSecret: $cfg.identitySecret,
+        scopes: $cfg.identityScopes
     },
-    signingKey: convert.bytesFromString(os.getEnv("JVC_TOKEN_KEY"), "utf-8"),
+    signingKey: convert.bytesFromString($cfg.tokenKey, "utf-8"),
     tokenTtl: TOKEN_TTL,
     refreshTtl: REFRESH_TTL
 };
@@ -171,17 +247,31 @@ func selectForge(name as string) {
     return githubForge.forge();
 }
 
-def forgeName as string init "github";
-if (not (os.getEnv("JVC_FORGE") == "")) {
-    $forgeName = os.getEnv("JVC_FORGE");
+# selectPolicy maps the configured name onto its module, the same one-arm
+# pattern as identity and forge. A policy is pure and does no I/O, so this is the
+# only place the deployment's answer to "who may claim a scope" is chosen.
+func selectPolicy(name as string) {
+    match ($name) {
+        when "operator" {
+            return operatorPolicy.policy();
+        }
+        when "firstcome" {
+            return firstcomePolicy.policy();
+        }
+    }
+    return derivedPolicy.policy();
 }
+
+def claimPolicy as policy.Policy init selectPolicy($cfg.policy);
+
+def forgeName as string init $cfg.forge;
 
 def theForge as forge.Forge init selectForge($forgeName);
 def forgeConfig as forge.Config init forge.Config{
     name: $forgeName,
-    baseUrl: os.getEnv("JVC_FORGE_BASEURL"),
-    apiToken: os.getEnv("JVC_FORGE_TOKEN"),
-    host: os.getEnv("JVC_FORGE_HOST")
+    baseUrl: $cfg.forgeBaseUrl,
+    apiToken: $cfg.forgeToken,
+    host: $cfg.forgeHost
 };
 
 # Trusted publishing (8.9). Gated on an audience being configured: without one
@@ -190,13 +280,9 @@ def forgeConfig as forge.Config init forge.Config{
 # is not a secret - it is advertised in the discovery document, because a CI job
 # has to name it when minting its token - it is what stops a token minted for
 # another registry being replayed here.
-def tpAudience as string init os.getEnv("JVC_TRUSTPUB_AUDIENCE");
-def tpProvider as string init trustpub.GITHUB;
-if (not (os.getEnv("JVC_TRUSTPUB_PROVIDER") == "")) {
-    $tpProvider = os.getEnv("JVC_TRUSTPUB_PROVIDER");
-}
-def tpIssuer as string init trustpub.expectedIssuer($tpProvider,
-    os.getEnv("JVC_TRUSTPUB_ISSUER"));
+def tpAudience as string init $cfg.trustpubAudience;
+def tpProvider as string init $cfg.trustpubProvider;
+def tpIssuer as string init trustpub.expectedIssuer($tpProvider, $cfg.trustpubIssuer);
 def tpOn as bool init not (strings.trim($tpAudience) == "") and not ($tpIssuer == "");
 
 # The issuer's key set, fetched once at boot and held for the process. Fetching
@@ -227,6 +313,116 @@ if ($authOn) {
         io.printf("warning: could not ask %s which flow it offers (%s); advertising device\n",
             $providerName, $err.message);
     }
+}
+
+# --- resolution counting -----------------------------------------------------
+#
+# Every metadata lookup is counted so a deck page can say whether anyone is
+# picking it up. What is countable is only ever a *lookup*: the registry indexes
+# and does not host, so a client fetches the code from its repository and we
+# never see an install. `stats.j` carries that distinction and the page says it
+# out loud.
+#
+# The counter is a `kv` store, and that is the load-bearing choice. Handlers run
+# concurrently and a handler must never write this program's top-level state, so
+# a plain map here would be a data race. A `kv.Store` is a handle into a
+# per-interpreter registry with a mutex behind it and an atomic `incr`, shared
+# across value-copies and spawned tasks: it is the one piece of shared mutable
+# state a Jennifer module cannot otherwise hold.
+#
+# Counting in memory and flushing periodically, rather than writing per request:
+# a write takes the registry's write lock, and taking it on every `GET /deck`
+# would serialise the cheap read path behind the expensive write path and make a
+# busy CI fleet contend with itself.
+def hits as kv.Store init kv.open();
+
+# How often the accumulated counts are folded into the store.
+def const FLUSH_SECONDS as int init 60;
+
+# countLookup records one metadata lookup against a deck.
+#
+# Keyed by deck **and hour**, so a flush attributes a lookup to when it happened
+# rather than to when it was written down - otherwise every lookup in the last
+# minute before midnight lands on the wrong day. `kv.incr` does not create a
+# missing key, hence the memcache-shaped add-then-retry: `add` fails if another
+# worker created it first, and the retry then increments what they created.
+func countLookup(name as string) {
+    if (strings.trim($name) == "") {
+        return null;
+    }
+    def key as string init hitKey(deckname.fold($name), stats.hourKey(nowSeconds()));
+    if (kv.incr($hits, $key, 1) == -1) {
+        if (not kv.add($hits, $key, "1", 0)) {
+            kv.incr($hits, $key, 1);
+        }
+    }
+    return null;
+}
+
+# hitKey names the counter for one deck in one hour.
+func hitKey(folded as string, hour as string) {
+    return $folded + " " + $hour;
+}
+
+# nowSeconds is the clock, in one place, so every view is handed a timestamp
+# rather than reading one.
+func nowSeconds() {
+    return time.unix(time.utc());
+}
+
+# flushCounts folds what has accumulated into the registry document.
+#
+# `kv` has no way to enumerate keys, so the deck list drives the sweep instead:
+# for each published deck, the current hour's counter and the previous hour's
+# are checked. Two is enough because the flush interval is far shorter than an
+# hour, so no third bucket can still be accumulating.
+#
+# Each counter is read and then decremented by exactly what was read, rather than
+# deleted. A lookup landing between the two loses nothing: it stays in the
+# counter and is picked up by the next flush.
+func flushCounts() {
+    def now as int init nowSeconds();
+    def hours as list of string init [stats.hourKey($now),
+        stats.hourKey($now - 3600)];
+    def pending as map of string to int init {};
+    def db as flatdb.DB init store.open($dbPath);
+    for (def name in store.listDecks($db)) {
+        for (def hour in $hours) {
+            def key as string init hitKey($name, $hour);
+            def n as int init counterValue($key);
+            if ($n > 0) {
+                $pending[$key] = $n;
+            }
+        }
+    }
+    if (len($pending) == 0) {
+        return null;
+    }
+    # The lock is taken only once something is actually pending, and the store is
+    # re-read inside it for the same reason every other writer does: a document
+    # opened before the lock may already be behind.
+    def held as store.Lock init store.lock($dbPath);
+    defer store.unlock($held);
+    def out as flatdb.DB init store.open($dbPath);
+    for (def key in $pending) {
+        def name as string init strings.substring($key, 0,
+            len($key) - len(stats.hourKey($now)) - 1);
+        def hour as string init strings.substring($key,
+            len($key) - len(stats.hourKey($now)), len($key));
+        $out = store.putStats($out, $name, stats.record(
+            store.getStats($out, $name), $hour, $pending[$key], $now));
+        kv.incr($hits, $key, 0 - $pending[$key]);
+    }
+    store.save($out);
+    return null;
+}
+
+# counterValue reads a counter, treating an absent key as zero.
+func counterValue(key as string) {
+    if (not kv.has($hits, $key)) {
+        return 0;
+    }
+    return convert.toInt(kv.get($hits, $key));
 }
 
 # answer sends a Reply's status + JSON body. Note: a Reply is bound to a typed
@@ -278,7 +474,46 @@ func apiSearch(ctx as web.Context) {
 func siteDeck(ctx as web.Context) {
     def db as flatdb.DB init store.open($dbPath);
     def name as string init "@" + web.param($ctx, "scope") + "/" + web.param($ctx, "deck");
-    def page as webview.Page init webview.deck($db, $name);
+    def page as webview.Page init webview.deck($db, $name, nowSeconds());
+    web.html($ctx, $page.status, $page.body);
+}
+
+/**
+ * GET /browse - every deck. This was the landing page until the landing page
+ * stopped being a list.
+ * @param ctx {web.Context} the request context
+ */
+func siteBrowse(ctx as web.Context) {
+    def page as webview.Page init webview.browse(store.open($dbPath));
+    web.html($ctx, $page.status, $page.body);
+}
+
+/**
+ * GET /tags - the tag index.
+ * @param ctx {web.Context} the request context
+ */
+func siteTags(ctx as web.Context) {
+    def page as webview.Page init webview.tags(store.open($dbPath));
+    web.html($ctx, $page.status, $page.body);
+}
+
+/**
+ * GET /tag/:name - the decks carrying one tag.
+ * @param ctx {web.Context} the request context
+ */
+func siteTag(ctx as web.Context) {
+    def page as webview.Page init webview.tag(store.open($dbPath),
+        web.param($ctx, "name"));
+    web.html($ctx, $page.status, $page.body);
+}
+
+/**
+ * GET /scope/:name - who holds a scope, and what is published under it.
+ * @param ctx {web.Context} the request context
+ */
+func siteScope(ctx as web.Context) {
+    def page as webview.Page init webview.scope(store.open($dbPath),
+        web.param($ctx, "name"));
     web.html($ctx, $page.status, $page.body);
 }
 
@@ -290,7 +525,8 @@ func siteDeck(ctx as web.Context) {
  */
 func siteReference(ctx as web.Context) {
     if (not fs.isDir(REFERENCE_ROOT)) {
-        def page as webview.Page init webview.sectionMissing("Reference", REFERENCE_ROOT, "");
+        def page as webview.Page init webview.sectionMissing("Admin manual",
+            REFERENCE_ROOT, "");
         web.html($ctx, $page.status, $page.body);
         return;
     }
@@ -305,7 +541,22 @@ func siteReference(ctx as web.Context) {
 func siteManual(ctx as web.Context) {
     if (not fs.isDir(MANUAL_ROOT)) {
         def page as webview.Page init
-            webview.sectionMissing("Manual", MANUAL_ROOT, MANUAL_CONFIG);
+            webview.sectionMissing("User manual", MANUAL_ROOT, MANUAL_CONFIG);
+        web.html($ctx, $page.status, $page.body);
+        return;
+    }
+    web.serveDir($ctx, PUBLIC_ROOT);
+}
+
+/**
+ * GET /specs/... - the normative server and client specifications, the third
+ * book grimoire builds into public/specs.
+ * @param ctx {web.Context} the request context
+ */
+func siteSpecs(ctx as web.Context) {
+    if (not fs.isDir(SPECS_ROOT)) {
+        def page as webview.Page init
+            webview.sectionMissing("Specifications", SPECS_ROOT, SPECS_CONFIG);
         web.html($ctx, $page.status, $page.body);
         return;
     }
@@ -334,7 +585,7 @@ func apiDiscovery(ctx as web.Context) {
         $urls["tokenUrl"] = AUTH_TOKEN_PATH;
         $urls["refreshUrl"] = AUTH_REFRESH_PATH;
     }
-    def reply as view.Reply init view.discovery($base, $urls);
+    def reply as view.Reply init view.discovery($base, $cfg.canonicalUrl, $urls);
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
@@ -365,8 +616,13 @@ func answerAuth(ctx as web.Context, stage as string, out as authview.AuthReply) 
     }
     if ($out.status == 200 and json.has($out.body, "/accountId")) {
         def who as string init convert.toString(json.asInt($out.body, "/accountId"));
+        def names as list of string init [];
+        for (def i in 0..json.length($out.body, "/orgs")) {
+            $names[] = json.asString($out.body, "/orgs/" + convert.toString($i));
+        }
+        def orgs as string init strings.join($names, ",");
         audit.write($logSink, audit.tokenIssued($stage, $who,
-            json.asString($out.body, "/login")));
+            json.asString($out.body, "/login"), $orgs));
     } elseif ($out.status == 200) {
         audit.write($logSink, audit.loginStarted($providerName));
     } else {
@@ -457,10 +713,24 @@ func sourceFrom(repository as string, tag as string) {
 # path goes through here so that mapping happens once.
 func callerOf(ctx as web.Context) {
     def nobody as identity.Subject init identity.Subject{
-        provider: "", id: "", login: ""
+        provider: "", id: "", login: "", orgs: {}, orgsCheckedAt: ""
     };
     try {
-        return authview.authenticate($auth, web.header($ctx, "Authorization"));
+        # `authenticate` returns a `token.Identity` - what the registry's own
+        # token says - and every caller wants an `identity.Subject`, which is
+        # what authorisation is expressed in. The conversion belongs here because
+        # this is the only place that knows which provider issued the subject:
+        # the token records an account id, not where the account lives, since a
+        # deployment serves exactly one identity provider.
+        def held as token.Identity init authview.authenticate($auth,
+            web.header($ctx, "Authorization"));
+        return identity.Subject{
+            provider: $providerName,
+            id: convert.toString($held.accountId),
+            login: $held.login,
+            orgs: $held.orgs,
+            orgsCheckedAt: convert.toString($held.orgsCheckedAt)
+        };
     } catch (err) {
         return $nobody;
     }
@@ -642,6 +912,75 @@ func apiUnyank(ctx as web.Context) {
     answerYank($ctx, false);
 }
 
+# answerScope sends a ScopeReply, persists, and records what happened.
+func answerScope(ctx as web.Context, out as scopeview.ScopeReply) {
+    if ($out.changed) {
+        store.save($out.db);
+    }
+    audit.write($logSink, $out.event);
+    webapi.sendJson($ctx, $out.status, $out.body);
+}
+
+# bodyField reads one string field from a JSON request body, or "".
+func bodyField(ctx as web.Context, name as string) {
+    try {
+        def doc as json.Value init json.decode(requestText($ctx));
+        if (json.has($doc, "/" + $name)) {
+            return json.asString($doc, "/" + $name);
+        }
+    } catch (err) {
+        return "";
+    }
+    return "";
+}
+
+/**
+ * POST /claim - claim a scope for the authenticated caller (8.2).
+ * @param ctx {web.Context} the request context
+ */
+func apiClaim(ctx as web.Context) {
+    def who as identity.Subject init callerOf($ctx);
+    if ($who.id == "") {
+        webapi.unauthorized($ctx, "a bearer token is required to claim a scope");
+        return;
+    }
+    def held as store.Lock init lockedStore();
+    defer store.unlock($held);
+    answerScope($ctx, scopeview.claim(store.open($dbPath), $claimPolicy, $who,
+        bodyField($ctx, "scope"), reserved.defaults(),
+        convert.toString(token.now())));
+}
+
+/**
+ * POST /owners - add or remove a co-owner of a scope. `action` is "add" or
+ * "remove"; adding is the default, because that is the safe direction to get
+ * wrong.
+ * @param ctx {web.Context} the request context
+ */
+func apiOwners(ctx as web.Context) {
+    def who as identity.Subject init callerOf($ctx);
+    if ($who.id == "") {
+        webapi.unauthorized($ctx, "a bearer token is required to change owners");
+        return;
+    }
+    def held as store.Lock init lockedStore();
+    defer store.unlock($held);
+    answerScope($ctx, scopeview.owners(store.open($dbPath), $who,
+        bodyField($ctx, "scope"), bodyField($ctx, "subject"),
+        not (bodyField($ctx, "action") == "remove"),
+        convert.toString(token.now())));
+}
+
+/**
+ * GET /scopes - every registered scope and who holds it. Public: the same
+ * mapping is already visible one deck page at a time.
+ * @param ctx {web.Context} the request context
+ */
+func apiScopes(ctx as web.Context) {
+    def out as scopeview.ScopeReply init scopeview.listScopes(store.open($dbPath));
+    webapi.sendJson($ctx, $out.status, $out.body);
+}
+
 /**
  * GET /health - a liveness check.
  * @param ctx {web.Context} the request context
@@ -668,7 +1007,11 @@ func apiListDecks(ctx as web.Context) {
  */
 func apiGetDeck(ctx as web.Context) {
     def db as flatdb.DB init store.open($dbPath);
-    def reply as view.Reply init view.getDeck($db, web.param($ctx, "name"));
+    def name as string init web.param($ctx, "name");
+    def reply as view.Reply init view.getDeck($db, $name);
+    if ($reply.status == 200) {
+        countLookup($name);
+    }
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
@@ -681,7 +1024,13 @@ func apiGetDeck(ctx as web.Context) {
  */
 func apiGetDeckByQuery(ctx as web.Context) {
     def db as flatdb.DB init store.open($dbPath);
-    def reply as view.Reply init view.getDeck($db, web.query($ctx, "name"));
+    def name as string init web.query($ctx, "name");
+    def reply as view.Reply init view.getDeck($db, $name);
+    if ($reply.status == 200) {
+        # Counted only on a hit: a 404 is somebody guessing, and counting it
+        # would let anyone inflate a number for a deck that does not exist.
+        countLookup($name);
+    }
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
@@ -705,6 +1054,9 @@ func apiResolve(ctx as web.Context) {
     def db as flatdb.DB init store.open($dbPath);
     def name as string init web.query($ctx, "name");
     def reply as view.Reply init view.resolve($db, $name, web.query($ctx, "constraint"));
+    if ($reply.status == 200) {
+        countLookup($name);
+    }
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
@@ -749,6 +1101,18 @@ $api = webapi.get($api, "/resolve-graph", apiResolveGraph, webapi.public());
 $api = webapi.feature($api, "resolveGraph");
 $api = webapi.get($api, "/search", apiSearch, webapi.public());
 $api = webapi.feature($api, "search");
+$api = webapi.get($api, "/scopes", apiScopes, webapi.public());
+$api = webapi.feature($api, "scopes");
+
+# Claiming and ownership need a caller, so they are served only where logins are.
+# A registry with no identity configured would otherwise advertise operations
+# that can only ever answer 401.
+if ($authOn) {
+    $api = webapi.post($api, "/claim", apiClaim, webapi.public());
+    $api = webapi.feature($api, "claim");
+    $api = webapi.post($api, "/owners", apiOwners, webapi.public());
+    $api = webapi.feature($api, "owners");
+}
 
 # The write API. Registered whenever *either* way of authorising a publish is
 # configured; the handler refuses the one that is not. A registry with neither
@@ -808,9 +1172,20 @@ func apiGuard(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  * @return {bool} always true; observing a request never refuses it
  */
+# forwardedFor reads the header the deployment named as carrying the real client
+# address, or "" when it named none. Behind Traefik and Cloudflare the connection
+# peer is an overlay address and says nothing useful; in front of nothing, the
+# peer is the truth and a header would be a lie waiting to happen.
+func forwardedFor(ctx as web.Context) {
+    if ($cfg.clientIpHeader == "") {
+        return "";
+    }
+    return web.header($ctx, $cfg.clientIpHeader);
+}
+
 func accessLog(ctx as web.Context) {
     def ev as audit.Event init audit.requestSeen(web.method($ctx), web.path($ctx),
-        web.remoteAddr($ctx));
+        audit.clientOf(forwardedFor($ctx), web.remoteAddr($ctx)));
     if ($logRequests) {
         # Promoted out of debug on request, so an access log does not drag every
         # other debug record along with it.
@@ -818,6 +1193,39 @@ func accessLog(ctx as web.Context) {
     }
     audit.write($logSink, $ev);
     return true;
+}
+
+/**
+ * GET /.well-known/acme-challenge/... - the HTTP-01 challenge responder.
+ *
+ * The CA asks for a token here to prove we control the domain, and the answer is
+ * a file `certs` wrote before telling the CA to look. Served from the plain HTTP
+ * listener because that is where the CA knocks: HTTP-01 is defined on port 80,
+ * and a redirect to HTTPS would be answered with the certificate we do not have
+ * yet.
+ *
+ * Registered whether or not TLS is enabled. The directory is empty when nothing
+ * is pending, so the route answers 404, and having it always present means the
+ * first certificate does not need a restart to become obtainable.
+ * @param ctx {web.Context} the request context
+ */
+func acmeChallenge(ctx as web.Context) {
+    # Not `web.serveDir`: that joins the *whole* request path onto the root, so
+    # it would look for `<dir>/.well-known/acme-challenge/<token>`. The token is
+    # taken from the capture and run through `certs.challengePath`, which is the
+    # same sanitiser that wrote the file - so the name can only ever address
+    # something inside the challenge directory.
+    def token as string init web.param($ctx, "rest");
+    if ($token == "") {
+        webapi.notFound($ctx, "no challenge token");
+        return;
+    }
+    def path as string init certs.challengePath($cfg.tls, $token);
+    if (not fs.exists($path)) {
+        webapi.notFound($ctx, "no such challenge is pending");
+        return;
+    }
+    web.serveFile($ctx, $path);
 }
 
 /**
@@ -863,11 +1271,83 @@ $app = web.get($app, "/.well-known/jennifer-registry", apiDiscovery);
 # no form that writes anything. Deck pages sit under /deck/ rather than /decks/
 # because the latter is the JSON API's, where a two-segment path already means
 # name plus version.
+$app = web.get($app, "/.well-known/acme-challenge/*rest", acmeChallenge);
 $app = web.get($app, "/deck/:scope/:deck", siteDeck);
+$app = web.get($app, "/browse", siteBrowse);
+$app = web.get($app, "/tags", siteTags);
+$app = web.get($app, "/tag/:name", siteTag);
+$app = web.get($app, "/scope/:name", siteScope);
 $app = web.get($app, "/manual/*rest", siteManual);
 $app = web.get($app, "/reference/*rest", siteReference);
+$app = web.get($app, "/specs/*rest", siteSpecs);
 
-io.printf("jvc deck repository listening on http://localhost%s (db: %s, log: %s)\n",
-    $addr, $dbPath, audit.describe($logSink));
+# The flusher. A task rather than a thread of the request path, so counting
+# costs a handler one atomic increment and nothing else.
+#
+# It runs for the life of the process and swallows its own failures: a registry
+# that stopped serving because it could not write a page-view counter would be a
+# poor trade, and the counts are the least important thing this process holds.
+# `flushCounts` takes the write lock only when something is actually pending, so
+# an idle registry never touches the document at all.
+def counter as task of int init spawn {
+    # Deliberately forever: the flusher lives as long as the process does.
+    while (true) { # lint-disable: L105
+        time.sleep(time.fromSeconds(FLUSH_SECONDS));
+        try {
+            flushCounts();
+        } catch (err) { # lint-disable: L103
+            audit.write($logSink, audit.event("warn",
+                "could not flush resolution counts", {"error": $err.message}));
+        }
+    }
+    return 0;
+};
+
+# The HTTPS listener, when one is configured.
+#
+# Ordering is the whole difficulty here. Obtaining a certificate over HTTP-01
+# requires the plain listener to already be answering, because that is where the
+# CA knocks - so the plain listener is started **first**, in a spawned task, and
+# the certificate is obtained after it is up. Doing it the other way round
+# deadlocks on the first run: the CA cannot reach a server that is waiting for a
+# certificate before it starts.
+io.printf("jvc deck repository listening on %s (db: %s, log: %s)\n",
+    config.displayUrl("http", $addr), $dbPath, audit.describe($logSink));
 audit.write($logSink, audit.serverStarted($addr, $dbPath, $providerName, $authOn));
-web.run($app, $addr);
+
+if (not $cfg.tls.enabled) {
+    web.run($app, $addr);
+    exit 0;
+}
+
+if (config.isStaging($cfg.tls.directory)) {
+    io.printf("note: using the ACME staging directory; certificates will not be trusted\n");
+}
+
+def plain as task of int init spawn { web.run($app, $addr); return 0; };
+
+def bundle as certs.Bundle;
+try {
+    $bundle = certs.ensure($cfg.tls, token.now());
+} catch (err) {
+    io.eprintf("could not obtain a certificate for %s: %s\n",
+        strings.join($cfg.tls.domains, ", "), $err.message);
+    audit.write($logSink, audit.certificateFailed(strings.join($cfg.tls.domains, ", "),
+        $err.message));
+    # The plain listener is already serving and stays up: losing HTTPS is bad,
+    # losing the registry entirely because a CA was unreachable is worse.
+    io.eprintf("continuing on plain HTTP only\n");
+    web.run($app, $addr);
+    exit 1;
+}
+
+audit.write($logSink, audit.certificateReady(strings.join($cfg.tls.domains, ", "),
+    $bundle.issuedAt));
+io.printf("jvc deck repository listening on %s (%s)\n",
+    config.displayUrl("https", $cfg.tls.addr),
+    strings.join($cfg.tls.domains, ", "));
+
+def tlsServer as httpd.Server init httpd.listenTLS($cfg.tls.addr,
+    convert.bytesFromString($bundle.cert, "utf-8"),
+    convert.bytesFromString($bundle.key, "utf-8"));
+web.serveOn($app, $tlsServer);

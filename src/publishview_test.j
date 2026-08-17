@@ -31,20 +31,21 @@ func owned() {
 
 func alice() {
     return identity.Subject{ provider: "github", id: "1234567", login: "alice",
-        orgs: [], orgsCheckedAt: "" };
+        orgs: {}, orgsCheckedAt: "" };
 }
 
 func stranger() {
     return identity.Subject{ provider: "github", id: "9999999", login: "mallory",
-        orgs: [], orgsCheckedAt: "" };
+        orgs: {}, orgsCheckedAt: "" };
 }
 
 func manifestText() {
-    return 'name = "@acme/routeros"
+    return '[package]
+name = "@acme/routeros"
 version = "0.1.0"
 description = "MikroTik RouterOS client"
 
-[requires]
+[decks]
 "@acme/net" = "^1.0.0"
 ';
 }
@@ -216,7 +217,8 @@ func testTheBindingIsFoundByTheManifestName() {
     # a repository bound to one deck must not publish to another by naming it;
     # the lookup uses the name read at the commit, not anything in the request
     def src as Source init source();
-    $src.manifestText = 'name = "@acme/other"
+    $src.manifestText = '[package]
+name = "@acme/other"
 version = "0.1.0"
 ';
     def out as PublishReply init byTrustedPublisher(bound(), claims(), AUD, ISS,
