@@ -273,6 +273,67 @@ func testAnUnregisteredScopeIsRefusedForCiToo() {
     testing.assertContains(json.asString($out.body, "/error"), "not registered");
 }
 
+# --- a reserved scope has no delegate ------------------------------------------
+#
+# A scope registered with no subject is held by an operator so that nobody can
+# claim it and nobody can write under it. Each of the three credentials answers
+# to a different authority - a scope binding, a trusted-publisher binding, a
+# token record - so each is checked here separately, and each must refuse.
+
+# reserved returns a store where @acme is registered but bound to nobody.
+func reserved() {
+    return scope.grant(emptyDb(), "acme", "", "", "", NOW).db;
+}
+
+func testAReservedScopeRefusesABearerToken() {
+    def out as PublishReply init byToken(reserved(), alice(), source(), NOW);
+    testing.assertEqual($out.status, 403);
+    testing.assertFalse($out.changed);
+    testing.assertContains(json.asString($out.body, "/error"), "no owner");
+}
+
+func testAReservedScopeRefusesATrustedPublisher() {
+    # this path never consults the namespace: the binding is its whole authority.
+    # So a binding that should not exist would be honoured unless the publish
+    # itself asks whether the scope has an owner.
+    def db as flatdb.DB init store.putBinding(reserved(), trustpub.Binding{
+        provider: trustpub.GITHUB,
+        repositoryId: REPO_ID,
+        repository: "acme/deck-routeros",
+        workflow: "acme/deck-routeros/.github/workflows/publish.yml",
+        refPattern: "refs/tags/*",
+        deck: "@acme/routeros",
+        pending: true,
+        createdAt: NOW
+    });
+    def out as PublishReply init byTrustedPublisher($db, claims(), AUD, ISS,
+        source(), NOW);
+    testing.assertEqual($out.status, 403);
+    testing.assertFalse($out.changed);
+    testing.assertContains(json.asString($out.body, "/error"), "no owner");
+    testing.assertFalse(store.hasVersion($out.db, "@acme/routeros", "0.1.0"));
+}
+
+func testAReservedScopeRefusesACiToken() {
+    def t as citoken.Token init citoken.Token{
+        fingerprint: "abc123", name: "ci", scope: "acme", deck: "",
+        provider: "github", subject: "1234567", createdAt: NOW,
+        expiresAt: "", lastUsedAt: ""
+    };
+    def out as PublishReply init byCiToken(reserved(), $t, source(), NOW);
+    testing.assertEqual($out.status, 403);
+    testing.assertFalse($out.changed);
+    testing.assertContains(json.asString($out.body, "/error"), "no owner");
+}
+
+func testAnOwnedScopeStillPublishes() {
+    # the guard above must refuse *unowned*, not *reserved-looking*: the ordinary
+    # path is what proves it did not simply close the door on everybody
+    testing.assertEqual(byToken(owned(), alice(), source(), NOW).status, 201);
+    testing.assertEqual(byTrustedPublisher(bound(), claims(), AUD, ISS,
+        source(), NOW).status, 201);
+}
+
 # --- yanking over HTTP --------------------------------------------------------
 
 func published() {

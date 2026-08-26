@@ -50,7 +50,7 @@ def const SERVICE_VERSION as string init "0.1.0";
 # saying so is more useful to a client implementer than a version number that
 # looks settled. The specification and the server share the number from 1.0.0
 # onward, so "which spec does this registry implement" has one answer.
-export def const SPEC_VERSION as string init "0.1.0";
+export def const SPEC_VERSION as string init "0.2.0";
 
 /**
  * An HTTP response as pure data: a status code and a JSON body.

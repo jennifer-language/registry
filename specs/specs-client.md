@@ -2,7 +2,6 @@
 
 - **Version:** 0.1.0 (draft)
 - **Date:** 2026-08-15
-- **Audience:** the team building jvc, the Jennifer deck manager
 - **Companion:** [specs-server.md](specs-server.md), the registry half
 
 This is the contract a **client** of a deck registry must fulfil. The key words

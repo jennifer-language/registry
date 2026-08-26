@@ -508,7 +508,7 @@ func testAFailedCommandIsRecorded() {
 # --- trusted publishers -------------------------------------------------------
 
 func trusted() {
-    return dispatch(registered(), ["deckadmin", "trust", "@acme/ansi", "123456789",
+    return dispatch(owned(), ["deckadmin", "trust", "@acme/ansi", "123456789",
         "--repository", "acme/deck-ansi",
         "--workflow", "acme/deck-ansi/.github/workflows/publish.yml"]);
 }
@@ -526,13 +526,13 @@ func testTrustRegistersABinding() {
 
 func testTrustNeedsTheRepositoryId() {
     # the path is renameable and re-registerable, so it cannot be the key
-    def r as AdminResult init dispatch(registered(),
+    def r as AdminResult init dispatch(owned(),
         ["deckadmin", "trust", "@acme/ansi", "", "--repository", "acme/deck-ansi"]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "repository id");
 }
 
-func testTrustNeedsAnOwnedScope() {
+func testTrustNeedsARegisteredScope() {
     # a binding is a standing grant to write under a scope, so it is gated
     # exactly as a publish is
     def r as AdminResult init dispatch(emptyStore(),
@@ -541,8 +541,19 @@ func testTrustNeedsAnOwnedScope() {
     testing.assertContains($r.message, "not registered");
 }
 
-func testTrustRejectsAnUnknownProvider() {
+func testTrustNeedsAnOwnedScope() {
+    # registered is not owned. A reserved scope is held precisely so that nobody
+    # can write under it, and a trusted publisher acts *for* an owner - so with
+    # no owner the binding would be a standing way around the reservation.
     def r as AdminResult init dispatch(registered(),
+        ["deckadmin", "trust", "@acme/ansi", "123456789"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "reserved");
+    testing.assertFalse(store.hasBinding($r.db, "@acme/ansi"));
+}
+
+func testTrustRejectsAnUnknownProvider() {
+    def r as AdminResult init dispatch(owned(),
         ["deckadmin", "trust", "@acme/ansi", "1", "--provider", "jenkins"]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "unknown CI provider");
@@ -553,7 +564,7 @@ func testABindingOnADecklessScopeIsPending() {
     def b as trustpub.Binding init store.getBinding(trusted().db, "@acme/ansi");
     testing.assertTrue($b.pending);
 
-    def db as flatdb.DB init dispatch(registered(),
+    def db as flatdb.DB init dispatch(owned(),
         gitAdd("@acme/ansi", "1.0.0", "https://x/a")).db;
     def after as AdminResult init dispatch($db, ["deckadmin", "trust", "@acme/ansi", "1"]);
     testing.assertFalse(store.getBinding($after.db, "@acme/ansi").pending);
@@ -563,6 +574,31 @@ func testTrustIsRecordedLoudly() {
     def r as AdminResult init trusted();
     testing.assertEqual($r.event.level, audit.WARN);
     testing.assertEqual($r.event.fields["repositoryId"], "123456789");
+}
+
+# --- CI tokens ----------------------------------------------------------------
+
+func testMintingUnderAnOwnedScopeWorks() {
+    def r as AdminResult init dispatch(owned(), ["deckadmin", "mint-token", "acme"]);
+    testing.assertTrue($r.ok);
+    # the secret is shown once and never stored, so the message is the only copy
+    testing.assertContains($r.message, citoken.PREFIX);
+}
+
+func testMintingNeedsAnOwnedScope() {
+    # a CI token is a delegated credential like any other, and a reserved scope
+    # has nobody to delegate for. Refused at the mint rather than at the publish:
+    # a token that cannot ever authorise anything is worse than no token, because
+    # it fails later and somewhere else.
+    def r as AdminResult init dispatch(registered(), ["deckadmin", "mint-token", "acme"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "reserved");
+}
+
+func testMintingNeedsARegisteredScope() {
+    def r as AdminResult init dispatch(emptyStore(), ["deckadmin", "mint-token", "ghost"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "not registered");
 }
 
 func testUntrustRemovesIt() {

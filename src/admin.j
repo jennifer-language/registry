@@ -622,6 +622,15 @@ export func cmdMintToken(db as flatdb.DB, r as args.Result, now as string) {
     if (not store.hasNamespace($db, $scopeName)) {
         return failResult($db, "namespace @" + $scopeName + " is not registered");
     }
+    # Same reason as `cmdTrust`: a CI token is a delegated credential, and a
+    # reserved scope has nobody to delegate for. `publishview.checkDeck` refuses
+    # the publish anyway, so without this the command would mint a secret that
+    # can never authorise anything - a dead credential is worse than a refusal,
+    # because it fails later and somewhere else.
+    if (store.getNamespace($db, $scopeName).subject == "") {
+        return failResult($db, "@" + $scopeName + " is reserved: it is held by " +
+            "an operator and has no owner for a token to act for");
+    }
     def deck as string init deckname.fold(args.asString($r, "deck"));
     if (not ($deck == "")) {
         if (not deckname.isScoped($deck)) {
@@ -783,6 +792,16 @@ export func cmdTrust(db as flatdb.DB, r as args.Result, now as string) {
     if (not store.hasNamespace($db, $scopeName)) {
         return failResult($db, "namespace @" + $scopeName +
             " is not registered; run 'deckadmin register-namespace " + $scopeName + "'");
+    }
+    # Registered is not owned. A scope bound to nobody is reserved, and a
+    # trusted publisher is a standing grant to write under it *on somebody's
+    # behalf* - so with no owner there is nobody to act for, and the binding
+    # would be a way to publish under a name the registry is holding shut.
+    if (store.getNamespace($db, $scopeName).subject == "") {
+        return failResult($db, "@" + $scopeName + " is reserved: it is held by " +
+            "an operator and has no owner for a trusted publisher to act for; " +
+            "grant it first with 'deckadmin register-namespace " + $scopeName +
+            " --owner <id>'");
     }
     def pending as bool init not store.hasDeck($db, $deck);
     def b as trustpub.Binding init trustpub.Binding{

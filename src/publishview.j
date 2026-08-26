@@ -188,6 +188,23 @@ export func checkDeck(db as flatdb.DB, m as manifest.Manifest) {
     if (not store.hasNamespace($db, $scopeName)) {
         return "namespace @" + $scopeName + " is not registered on this registry";
     }
+    # A registered scope bound to nobody is *reserved*: an operator holds the
+    # name so that nobody can claim it and nobody can write under it. Every
+    # publish that reaches this module arrives on a **delegated** credential - a
+    # person's bearer token, a workload's identity token, a CI token - and a
+    # delegation under a scope with no owner is a delegation on nobody's behalf.
+    #
+    # `scope.authorise` already refuses it for the bearer-token path, but the
+    # other two never consult the namespace at all: a trusted publisher is
+    # authorised by its binding and a CI token by its own record, so without
+    # this the invariant would hold only where those credentials are created and
+    # not where they are relied on. It belongs here, in the one check all three
+    # share. The operator's own `deckadmin add` does not come through here, so a
+    # reserved scope stays writable by the operator holding it.
+    if (store.getNamespace($db, $scopeName).subject == "") {
+        return "@" + $scopeName +
+            " is held by an operator and has no owner to publish under it";
+    }
     return "";
 }
 

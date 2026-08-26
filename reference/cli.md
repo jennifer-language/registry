@@ -383,6 +383,12 @@ The **fallback** for non-interactive publishing, where trusted publishing (8.9)
 is unavailable: a laptop, a cron job, a CI system that mints no identity token.
 Prefer `trust` where you can - a credential that does not exist cannot leak.
 
+The scope must already be owned, for the reason `trust` requires it: a token is a
+delegated credential, and a reserved scope has nobody to delegate for. Minting
+one there is refused at the mint rather than at the publish, because a secret
+that can never authorise anything is worse than none - it fails later, and
+somewhere else.
+
 The token is printed **once** and never stored; only its SHA-256 is kept, so a
 lost token is replaced rather than recovered. It expires by default, because a
 token nobody remembers is the one that leaks, and `--days 0` has to be asked for.

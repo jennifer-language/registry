@@ -1,8 +1,7 @@
 # The Jennifer deck registry: server specification
 
-- **Version:** 0.1.0 (draft)
-- **Date:** 2026-08-15
-- **Audience:** the team building the public deck registry
+- **Version:** 0.2.0 (draft)
+- **Date:** 2026-08-26
 - **Companion:** [specs-client.md](specs-client.md), the client half
 
 This is the contract a deck registry must fulfil. The key words **MUST**,
@@ -125,6 +124,15 @@ properly. A registry **MUST NOT** let a co-owner be added to a scope with no
 owner: a reserved name has nobody to co-own with, and accepting one would produce
 a scope nobody holds that somebody can nevertheless write to.
 
+That rule generalises to every **delegated** credential, and a registry **MUST
+NOT** authorise a write under a scope with no owner by any of them - a
+trusted-publisher binding (8.9), a CI token (8.10), or a bearer token. Each
+answers to a different authority: the binding, the token record, and the scope
+record respectively, and only the last of the three consults the scope at all. So
+a registry that checks ownership only where a credential is *created* leaves
+every credential created by another path, or created before the check existed,
+unchecked. The check belongs at the write, where the credential is relied on.
+
 Section 8 specifies how a scope is claimed and what "act for" means. The rest of
 this document only needs the property: a scope resolves to one or more principal
 ids, and those bindings do not change when names do.
@@ -177,10 +185,26 @@ partial    = num [ "." num [ "." num ] ]
 | `^1.2.3` | `>=1.2.3 <2.0.0` |
 | `^0.2.3` | `>=0.2.3 <0.3.0` (zero-aware) |
 | `^0.0.3` | `>=0.0.3 <0.0.4` |
+| `^1.2` / `^1` | `>=1.2.0 <2.0.0` / `>=1.0.0 <2.0.0` |
+| `^0` | `>=0.0.0 <1.0.0` (zero-aware) |
+| `^0.0` | `>=0.0.0 <0.1.0` (zero-aware) |
 | `~1.2.3` / `~1.2` | `>=1.2.0 <1.3.0` |
+| `~1` | `>=1.0.0 <2.0.0` |
 | `>=1.0.0` etc. | the comparator holds |
 
-A prerelease version never satisfies a caret or tilde range.
+A prerelease version never satisfies a caret or tilde range, and a version
+string that is not valid SemVer satisfies nothing at all.
+
+**A partial is completed with zeros, and its ceiling comes from the form rather
+than from how many components were written.** A caret permits changes that do
+not touch the **leftmost non-zero** component, so `^1.2` and `^1` share a
+ceiling of `2.0.0` while `^0` and `^0.0` narrow to `1.0.0` and `0.1.0`. A tilde
+permits patch-level changes when a minor is written and minor-level changes when
+only a major is, so `~1.2` stops at `1.3.0` but `~1` runs to `2.0.0`.
+
+Spelling these out is not decoration: the grammar above admits `^1` and `~1`, so
+a registry resolving server-side has to answer for them, and leaving the answer
+to the reader is what lets two implementations disagree about what `^1` means.
 
 **The registry is not the authority on resolution.** A client resolves the
 dependency graph locally, from per-deck metadata (section 5.1). The server-side
@@ -1952,6 +1976,8 @@ Ownership, where writes are offered (section 8):
       message saying so
 - [ ] a rename leaves the old scope live, bound, and publishable
 - [ ] no mechanism makes one scope resolve as another
+- [ ] no credential authorises a write under a scope with no owner, checked at
+      the write and not only where the credential was created
 - [ ] `repoId` is not treated as a uniqueness key across decks
 
 Non-interactive publishing, where it is offered (section 8.8):
