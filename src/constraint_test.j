@@ -111,3 +111,94 @@ func testBestSkipsInvalidVersions() {
     def vers as list of string init ["bad", "1.2.0", "also-bad", "1.3.0"];
     testing.assertEqual(best($vers, "^1.0.0"), "1.3.0");
 }
+
+# --- prereleases are opt-in (server specification 2.4) ----------------------
+
+# The defect this rule fixes: a prerelease sorts above the release it precedes,
+# so where it matched at all it was *preferred*, and `>=0.1.0` quietly meant
+# "0.1.0 or later, including anything unreleased".
+func testAPrereleaseDoesNotSatisfyAWildcard() {
+    testing.assertFalse(satisfies("0.2.0-dev", "*"));
+    testing.assertFalse(satisfies("0.2.0-dev", "any"));
+    testing.assertFalse(satisfies("0.2.0-dev", ""));
+}
+
+func testAPrereleaseDoesNotSatisfyAComparator() {
+    testing.assertFalse(satisfies("0.2.0-dev", ">=0.1.0"));
+    testing.assertFalse(satisfies("0.2.0-dev", ">0.1.0"));
+    testing.assertFalse(satisfies("0.2.0-dev", "<0.3.0"));
+    testing.assertFalse(satisfies("0.2.0-dev", "<=0.2.0"));
+}
+
+func testAPrereleaseDoesNotSatisfyARange() {
+    testing.assertFalse(satisfies("0.2.0-dev", "^0.1.0"));
+    testing.assertFalse(satisfies("0.2.0-dev", "~0.2.0"));
+    # The one spelling that could opt in through a range is closed too: a range
+    # targets released versions whatever its operand looks like.
+    testing.assertFalse(satisfies("0.2.0-rc.2", "^0.2.0-rc.1"));
+}
+
+# The opt-in has to name the candidate's own core.
+func testAConstraintNamingAPrereleaseReachesThatCore() {
+    testing.assertTrue(satisfies("0.2.0-dev", "=0.2.0-dev"));
+    testing.assertTrue(satisfies("0.2.0-rc.1", ">=0.2.0-dev"));
+    testing.assertTrue(satisfies("0.2.0", ">=0.2.0-dev"));
+    testing.assertFalse(satisfies("0.3.0-alpha", ">=0.2.0-dev"));
+}
+
+# An exact constraint naming the release still excludes its prereleases.
+func testAnExactReleaseDoesNotMatchItsPrereleases() {
+    testing.assertFalse(satisfies("0.2.0-dev", "0.2.0"));
+    testing.assertFalse(satisfies("0.2.0-dev", "=0.2.0"));
+}
+
+func testTheLastReleaseWinsOverAPrerelease() {
+    def vs as list of string init ["0.1.0", "0.2.0-dev"];
+    testing.assertEqual(best($vs, "*"), "0.1.0");
+    testing.assertEqual(best($vs, ">=0.1.0"), "0.1.0");
+    testing.assertEqual(best($vs, "^0.1.0"), "0.1.0");
+    testing.assertEqual(best($vs, "=0.2.0-dev"), "0.2.0-dev");
+}
+
+# Releases are untouched: the gate only ever looks at prerelease candidates.
+func testReleasesAreUnaffected() {
+    testing.assertTrue(satisfies("0.2.0", "*"));
+    testing.assertTrue(satisfies("0.2.0", ">=0.1.0"));
+    testing.assertTrue(satisfies("1.4.9", "^1.2.0"));
+    testing.assertEqual(best(["0.1.0", "0.2.0"], ">=0.1.0"), "0.2.0");
+}
+
+# Ordering is not what changed, and must not: SemVer 11 puts a prerelease below
+# the release it precedes and above the one before it.
+func testOrderingIsUnchanged() {
+    testing.assertEqual(best(["0.1.0", "0.2.0-dev", "0.2.0"], ">=0.2.0-dev"),
+        "0.2.0");
+    testing.assertEqual(best(["0.2.0-dev", "0.2.0-rc.1"], ">=0.2.0-dev"),
+        "0.2.0-rc.1");
+}
+
+# --- the failure message ----------------------------------------------------
+
+func testNewestPrereleasePicksTheHighest() {
+    testing.assertEqual(newestPrerelease(["0.2.0-dev", "0.2.0-rc.1"]),
+        "0.2.0-rc.1");
+    testing.assertEqual(newestPrerelease(["0.1.0", "0.2.0"]), "");
+    testing.assertEqual(newestPrerelease([]), "");
+    testing.assertEqual(newestPrerelease(["nonsense"]), "");
+}
+
+# "no version satisfies *" reads as "this deck does not exist" when every
+# published version happens to be unreleased, so the hint names one.
+func testThePrereleaseHintNamesTheOptIn() {
+    def hint as string init prereleaseHint(["0.2.0-dev", "0.1.0-alpha"]);
+    testing.assertContains($hint, "no stable version yet");
+    testing.assertContains($hint, "0.2.0-dev");
+    testing.assertContains($hint, "=0.2.0-dev");
+}
+
+# A deck with releases that failed the constraint failed for an ordinary
+# reason, and "no stable version yet" would explain a true failure falsely.
+func testNoHintWhenAReleaseExists() {
+    testing.assertEqual(prereleaseHint(["0.1.0", "0.2.0-dev"]), "");
+    testing.assertEqual(prereleaseHint(["0.1.0"]), "");
+}

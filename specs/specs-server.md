@@ -1,7 +1,7 @@
 # The Jennifer deck registry: server specification
 
-- **Version:** 0.2.0 (draft)
-- **Date:** 2026-08-26
+- **Version:** 0.3.0 (draft)
+- **Date:** 2026-09-21
 - **Companion:** [specs-client.md](specs-client.md), the client half
 
 This is the contract a deck registry must fulfil. The key words **MUST**,
@@ -192,8 +192,41 @@ partial    = num [ "." num [ "." num ] ]
 | `~1` | `>=1.0.0 <2.0.0` |
 | `>=1.0.0` etc. | the comparator holds |
 
-A prerelease version never satisfies a caret or tilde range, and a version
-string that is not valid SemVer satisfies nothing at all.
+A version string that is not valid SemVer satisfies nothing at all.
+
+**A prerelease is opt-in, and the opt-in has to name it.** A version carrying a
+prerelease component satisfies a constraint **only when the constraint's own
+version carries a prerelease with the same `major.minor.patch`**. So
+`>=0.2.0-dev` is satisfied by `0.2.0-rc.1` and by `0.2.0`, but not by
+`0.3.0-alpha`; and `*`, `any`, and every comparator written without a
+prerelease are satisfied by no prerelease at all. A caret or tilde range is
+never satisfied by a prerelease, since its version is a partial and carries
+none.
+
+Because a constraint is a **single** expression here, with no compound ranges,
+this needs no per-comparator bookkeeping: there is one version in the
+constraint, and either it carries a prerelease on the candidate's core or it
+does not.
+
+**Ordering is unaffected and MUST NOT change.** `0.1.0 < 0.2.0-dev < 0.2.0` is
+what SemVer section 11 requires and what comparison must keep doing. What
+changes is that ordering stops doubling as a membership test: a prerelease that
+does not satisfy the constraint is not a candidate, so it cannot be the highest
+satisfying version. Without this, a deck tagged `0.2.0-dev` outranks the last
+real release for every consumer who wrote `*` or `>=0.1.0`, silently.
+
+**A registry MAY store prerelease versions**, and publishing one stays legal: a
+beta is a normal version record that consumers reach by naming it. A registry
+**SHOULD NOT** refuse one.
+
+Where every published version of a deck is a prerelease, an unqualified
+constraint is satisfied by none of them and resolution fails. A client
+**SHOULD** report that case distinctly from an unknown deck, naming the newest
+prerelease and the fact that a constraint must name it, because "no version
+satisfies `*`" otherwise reads as "this deck does not exist".
+
+Cargo and npm/node-semver both land here, so the rule a user brings from either
+ecosystem is the rule they get.
 
 **A partial is completed with zeros, and its ceiling comes from the form rather
 than from how many components were written.** A caret permits changes that do
@@ -1971,6 +2004,8 @@ A registry is usable by a client when:
 - [ ] it returns `404` with an `error` body for an unknown one
 - [ ] version records carry `version`, `kind`, `url`
 - [ ] `version` is bare SemVer: `1.0.0` is served, `v1.0.0` is refused (2.3)
+- [ ] a prerelease satisfies only a constraint naming a prerelease on the same
+      `major.minor.patch`, and is never selected by `*` or a bare comparator (2.4)
 - [ ] a `kind: "git"` record carries `ref` and a full 40-character `commit`
 - [ ] a `kind: "tar.gz"` record carries a well-formed `sha256:` `checksum`
 - [ ] `/resolve` and `/resolve-graph`, if offered, carry the pin for each `kind`
