@@ -682,6 +682,13 @@ func apiAuthRefresh(ctx as web.Context) {
 # scope check a check on a fact rather than on a claim.
 func sourceFrom(repository as string, tag as string) {
     def commit as string init $theForge.resolveTag($forgeConfig, $repository, $tag);
+    # Asked before the manifest is read, and carried as a fact for `checkSource`
+    # to judge: every forge reads `?ref=` as a name before an object, so a branch
+    # or tag called `<commit>` would answer the reads below in the commit's
+    # place. `refExists` throws rather than guessing when the forge will not say,
+    # which lands here as a 502 - the right answer for a check that could not be
+    # made.
+    def shadowed as bool init $theForge.refExists($forgeConfig, $repository, $commit);
     def text as string init $theForge.readFile($forgeConfig, $repository, $commit,
         "deck.toml");
     def r as forge.Repo init $theForge.repo($forgeConfig, $repository);
@@ -702,7 +709,8 @@ func sourceFrom(repository as string, tag as string) {
         repoOwnerId: $r.ownerId,
         repoOwner: $r.owner,
         manifestText: $text,
-        readmeText: $readme
+        readmeText: $readme,
+        commitShadowed: $shadowed
     };
 }
 

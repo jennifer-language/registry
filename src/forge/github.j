@@ -190,6 +190,20 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
     return $res.body;
 }
 
+# refExists reports whether a branch or tag of this exact name is present. Both
+# namespaces are asked because either would shadow an object of the same name in
+# a `?ref=` lookup; `/git/ref/{ns}/{name}` is an exact match, unlike
+# `/git/matching-refs`, which matches on prefix and would report a ref named
+# `abc1234def` when asked about `abc1234`.
+func refExists(cfg as forge.Config, url as string, name as string) {
+    def heads as http.Response init get($cfg, repoPath($url) + "/git/ref/heads/" + $name, "");
+    if (forge.refPresence($heads.status)) {
+        return true;
+    }
+    def tags as http.Response init get($cfg, repoPath($url) + "/git/ref/tags/" + $name, "");
+    return forge.refPresence($tags.status);
+}
+
 func permission(cfg as forge.Config, url as string, callerToken as string) {
     if ($callerToken == "" and $cfg.apiToken == "") {
         return forge.unknown("the registry holds no credential this forge accepts");
@@ -225,6 +239,7 @@ export func forge() {
         handles: handles,
         resolveTag: resolveTag,
         readFile: readFile,
+        refExists: refExists,
         permission: permission,
         repo: repo
     };

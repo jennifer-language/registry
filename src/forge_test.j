@@ -60,3 +60,26 @@ func testUnknownIsNotARefusal() {
     testing.assertTrue($g.known);
     testing.assertTrue($g.push);
 }
+
+# --- ref presence -------------------------------------------------------------
+
+func testRefPresenceReadsTheTwoAnswersItTrusts() {
+    testing.assertTrue(refPresence(200));
+    testing.assertFalse(refPresence(404));
+}
+
+func throwOnAServerError() {
+    refPresence(500);
+}
+
+func throwOnAnAuthFailure() {
+    refPresence(403);
+}
+
+func testRefPresenceRefusesToGuess() {
+    # the same rule as `unknown` above, in the place it matters most: this check
+    # exists to find a ref shadowing a commit, so reading "the forge would not
+    # answer" as "there is no such ref" would fail open on its own case
+    testing.assertThrows("throwOnAServerError", "forge");
+    testing.assertThrows("throwOnAnAuthFailure", "forge");
+}

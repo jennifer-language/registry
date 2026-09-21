@@ -26,6 +26,7 @@
  */
 
 use strings;
+use convert;
 
 /**
  * Where a forge lives and how the registry talks to it.
@@ -81,6 +82,9 @@ export def struct Permission {
  * @field handles {func} `func(Config, url) -> bool`: does this instance claim this URL?
  * @field resolveTag {func} `func(Config, url, tag) -> string`: the commit a tag points at
  * @field readFile {func} `func(Config, url, commit, path) -> string`: a file at a commit
+ * @field refExists {func} `func(Config, url, name) -> bool`: is there a branch or
+ *     tag of this name? Used to detect a ref standing in front of the commit it
+ *     is named after (see `refPresence`)
  * @field permission {func} `func(Config, url, callerToken) -> Permission`: may they push?
  * @field repo {func} `func(Config, url) -> Repo`: the immutable identity of a repository
  */
@@ -89,9 +93,37 @@ export def struct Forge {
     handles as func,
     resolveTag as func,
     readFile as func,
+    refExists as func,
     permission as func,
     repo as func
 };
+
+/**
+ * Turn a forge's answer about one ref into presence, or refuse to guess.
+ *
+ * `200` is present and `404` is absent; **anything else throws**, and that is
+ * the whole point of the function. This check exists to find a ref standing in
+ * front of a commit of the same name, so reading an unanswerable question as
+ * "no such ref" would fail open on precisely the case it was written for. It is
+ * the same discipline as `unknown` for permissions (specification 7.1): a check
+ * that could not be made is never a check that passed.
+ * @param status {int} the HTTP status the forge answered with
+ * @return {bool} true when the ref exists, false when it provably does not
+ */
+export func refPresence(status as int) {
+    if ($status == 200) {
+        return true;
+    }
+    if ($status == 404) {
+        return false;
+    }
+    throw Error{
+        kind: "forge",
+        message: "could not tell whether the repository has a ref of that name: " +
+            "the forge answered " + convert.toString($status),
+        file: "", line: 0, col: 0
+    };
+}
 
 /**
  * The answer when a forge cannot say. Kept here so every module words it the

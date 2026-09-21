@@ -338,6 +338,15 @@ func checkPin(kind as string, ref as string, commit as string, checksum as strin
         if (not store.isCommit($commit)) {
             return "not a full 40-character lowercase commit SHA: " + $commit;
         }
+        # The same rule the publish endpoint applies, and for the same reason: a
+        # ref shaped like an object id is stored and served as this version's
+        # `ref`, and a client that resolves a name before an object follows it
+        # instead of the pin. An operator gets the check too, because a record
+        # written here is indistinguishable from one written over HTTP.
+        if (store.isObjectIdLike($ref)) {
+            return "--ref " + $ref + " is shaped like a git object id, which a " +
+                "client can resolve as a commit; use a tag that cannot be read as one";
+        }
         if (not ($checksum == "")) {
             return "--checksum does not apply to a git version; the commit is the pin";
         }

@@ -195,6 +195,24 @@ func testGitAddRejectsAChecksum() {
     testing.assertContains($r.message, "the commit is the pin");
 }
 
+func testAddRefusesARefShapedLikeAnObjectId() {
+    # a record written by an operator is indistinguishable from one written over
+    # HTTP, so the ref rule cannot live only on the endpoint
+    def r as AdminResult init dispatch(registered(),
+        ["deckadmin", "add", "@acme/ansi", "1.0.0", "https://x/a",
+         "--ref", COMMIT, "--commit", COMMIT]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "object id");
+    testing.assertFalse(store.hasVersion($r.db, "@acme/ansi", "1.0.0"));
+}
+
+func testAddStillTakesAnOrdinaryTag() {
+    # the guard refuses a shape, not tags in general
+    def r as AdminResult init dispatch(registered(),
+        gitAdd("@acme/ansi", "1.0.0", "https://x/a"));
+    testing.assertTrue($r.ok);
+}
+
 # --- publishing a tar.gz version --------------------------------------------
 
 func testTarGzAddRecordsChecksum() {

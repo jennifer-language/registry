@@ -253,7 +253,7 @@ endpoints are projections of it.
 | `version` | string | yes | the SemVer version (2.3), never `v`-prefixed, e.g. `1.0.0` |
 | `kind` | string | yes | `"git"` for a repository-hosted deck, `"tar.gz"` for a hosted artifact |
 | `url` | string | yes | the git clone URL (`kind: "git"`), or the artifact URL (`kind: "tar.gz"`) |
-| `ref` | string | git only | the tag the version was published from, commonly `v`-prefixed, e.g. `v1.0.0` |
+| `ref` | string | git only | the tag the version was published from, commonly `v`-prefixed, e.g. `v1.0.0`; never shaped like an object id (3.1) |
 | `commit` | string | git only | the full 40-character commit SHA the tag pointed at **at publish time** |
 | `repoId` | int | no | the host's immutable numeric repository id, recorded at publish (6.4) |
 | `repoOwnerId` | int | no | the numeric id of the account that owned that repository at publish (6.4) |
@@ -286,7 +286,37 @@ Notes that matter:
   serve the unused pin as an empty string rather than omitting it, so a reader
   never has to distinguish "absent" from "not applicable".
 
-### 3.1 The pin is the identity; the URL is a coordinate
+### 3.1 `ref` MUST NOT be shaped like an object id
+
+A registry **MUST** refuse a publish whose `ref` is **7 to 64 hex digits in
+either case**, and **MUST NOT** store one. That is the shape of a git object id,
+abbreviated or whole, and a ref of that shape is ambiguous with the object it
+names.
+
+The consequence is the client's, which is why the registry is the one that has
+to refuse it: a ref and an object id share one syntactic space, and wherever a
+name is resolved before an object - `git fetch <remote> <name>` against the
+advertised refs, or a `?ref=` parameter on a forge API, which resolves a name
+before an object by definition - a ref called `4a3b1c...` answers in place of the
+commit of that id. The fetch then verifies an object hash, correctly, and the
+object is not the pin. GitHub refuses such names at creation; GitLab, Gitea,
+Forgejo, Bitbucket and self-hosted servers do not.
+
+Seven digits is git's shortest abbreviation, so a shorter name cannot be read as
+an id; 64 is the longest object id there is. The rule costs a publisher one tag
+rename in the case where it fires at all, since a real tag is `v1.2.0`.
+
+A registry **SHOULD** additionally refuse a publish when the source repository
+holds a **branch or tag named exactly like the resolved commit**, because a
+registry that reads the manifest at the commit (section 7) through a ref-or-sha
+parameter has read it from that ref instead, and the record it is about to write
+describes a tree that is not at `commit`. This is a **SHOULD** rather than a
+**MUST** because the repository stays mutable after publication: the check
+removes the registry's own exposure and narrows the client's, and only the
+client's own verification closes it
+([specs-client.md](specs-client.md) section 4.1.1).
+
+### 3.2 The pin is the identity; the URL is a coordinate
 
 **`commit` identifies the code. `url` only says where a copy was last seen.**
 
@@ -1979,6 +2009,8 @@ Ownership, where writes are offered (section 8):
 - [ ] no credential authorises a write under a scope with no owner, checked at
       the write and not only where the credential was created
 - [ ] `repoId` is not treated as a uniqueness key across decks
+- [ ] a `ref` shaped like an object id (7 to 64 hex digits, either case) is
+      refused and never stored
 
 Non-interactive publishing, where it is offered (section 8.8):
 

@@ -59,7 +59,8 @@ func source() {
         repoOwnerId: "42",
         repoOwner: "acme",
         manifestText: manifestText(),
-        readmeText: "# routeros\n\nA **client**.\n"
+        readmeText: "# routeros\n\nA **client**.\n",
+        commitShadowed: false
     };
 }
 
@@ -271,6 +272,75 @@ func testAnUnregisteredScopeIsRefusedForCiToo() {
         source(), NOW);
     testing.assertEqual($out.status, 403);
     testing.assertContains(json.asString($out.body, "/error"), "not registered");
+}
+
+# --- names that can be read as object ids -------------------------------------
+#
+# A git name and a git object id share one syntactic space, and a forge's
+# `?ref=` parameter resolves a name before an object. So a ref shaped like an id
+# can stand in front of the commit of that id while the record still reads as
+# pinned. Both halves are refused: the tag we would store, and the commit we
+# just read through.
+
+func testATagShapedLikeACommitIsRefused() {
+    def src as Source init source();
+    $src.tag = COMMIT;
+    def out as PublishReply init byToken(owned(), alice(), $src, NOW);
+    testing.assertEqual($out.status, 400);
+    testing.assertFalse($out.changed);
+    testing.assertContains(json.asString($out.body, "/error"), "object id");
+}
+
+func testAnAbbreviatedHexTagIsRefusedToo() {
+    # seven hex digits is where git starts resolving abbreviations
+    def src as Source init source();
+    $src.tag = "9f2c1d4";
+    testing.assertEqual(byToken(owned(), alice(), $src, NOW).status, 400);
+}
+
+func testAnUppercaseHexTagIsRefused() {
+    # git's hex parsing takes either case, so folding is not optional
+    def src as Source init source();
+    $src.tag = "9F2C1D4E5A6B";
+    testing.assertEqual(byToken(owned(), alice(), $src, NOW).status, 400);
+}
+
+func testAnOrdinaryTagIsUntouched() {
+    # the guard must refuse a shape, not tags in general
+    testing.assertEqual(byToken(owned(), alice(), source(), NOW).status, 201);
+}
+
+func testAShadowedCommitIsRefused() {
+    # the manifest in hand was read through `?ref=<commit>`, so a ref of that
+    # name answered instead of the object and these bytes are the wrong ones
+    def src as Source init source();
+    $src.commitShadowed = true;
+    def out as PublishReply init byToken(owned(), alice(), $src, NOW);
+    testing.assertEqual($out.status, 400);
+    testing.assertFalse($out.changed);
+    testing.assertContains(json.asString($out.body, "/error"), "shadows the commit");
+    testing.assertFalse(store.hasVersion($out.db, "@acme/routeros", "0.1.0"));
+}
+
+func testAShadowedCommitIsRefusedFromCiToo() {
+    # the shadow is a property of the repository, not of the credential, so it
+    # must not be reachable by publishing from a workflow instead
+    def src as Source init source();
+    $src.commitShadowed = true;
+    def out as PublishReply init byTrustedPublisher(bound(), claims(), AUD, ISS,
+        $src, NOW);
+    testing.assertEqual($out.status, 400);
+    testing.assertFalse(store.hasVersion($out.db, "@acme/routeros", "0.1.0"));
+}
+
+func testTheNameShapeIsCheckedBeforeTheForgeOutput() {
+    # a 400 about the request beats a 400 about what the forge returned: the
+    # publisher can only act on the first one
+    def src as Source init source();
+    $src.tag = COMMIT;
+    $src.commit = "not-a-sha";
+    testing.assertContains(json.asString(byToken(owned(), alice(), $src, NOW).body,
+        "/error"), "object id");
 }
 
 # --- a reserved scope has no delegate ------------------------------------------

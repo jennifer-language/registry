@@ -73,6 +73,13 @@ def const COMMIT_LEN as int init 40;
 def const SHA256_LEN as int init 64;
 def const CHECKSUM_PREFIX as string init "sha256:";
 
+# The shortest hex run git will read as an abbreviated object id, and the
+# longest object id there is (SHA-256, for repositories using it). A name of
+# this shape can be mistaken for an object, which is what `isObjectIdLike`
+# exists to refuse.
+def const ABBREV_MIN as int init 7;
+def const OBJECT_ID_MAX as int init 64;
+
 # isLowerHex reports whether s is exactly n lowercase hex digits.
 func isLowerHex(s as string, n as int) {
     if (not (len($s) == $n)) {
@@ -95,6 +102,43 @@ func isLowerHex(s as string, n as int) {
  */
 export func isCommit(s as string) {
     return isLowerHex($s, COMMIT_LEN);
+}
+
+/**
+ * Report whether a string could be read as a git **object id** rather than as
+ * the name it is: 7 to 64 hex digits, in either case.
+ *
+ * This is the shape a `ref` must never have. A git name and a git object id
+ * share one syntactic space, and where a forge or a client resolves a name
+ * before an object - which the ref-or-sha `?ref=` parameter on every forge API
+ * does by definition, and which `git fetch <remote> <name>` does on the wire -
+ * a ref called `4a3b...` **stands in front of the commit of that id**. 
+ * GitHub refuses such names at creation; GitLab,
+ * Gitea, Forgejo and self-hosted servers do not, so the registry refuses them
+ * on the way in rather than relying on the forge to have done it.
+ *
+ * Both cases are rejected because git's hex parsing accepts either, so
+ * `4A3B...` is exactly as ambiguous as `4a3b...`. The floor is 7 because that
+ * is git's shortest abbreviation; below it a name cannot be read as an id. The
+ * ceiling is 64 because that is the longest object id that exists.
+ *
+ * A real tag does not look like this: `v1.2.0`, `release-3`, `1.2.0`. The cost
+ * of a false positive is that a publisher renames a tag once; the cost of a
+ * false negative is a pin that points at content nobody reviewed.
+ * @param s {string} the candidate ref name
+ * @return {bool} true when the name could be read as an object id
+ */
+export func isObjectIdLike(s as string) {
+    if (len($s) < ABBREV_MIN or len($s) > OBJECT_ID_MAX) {
+        return false;
+    }
+    def lowered as string init strings.lower($s);
+    for (def ch in strings.chars($lowered)) {
+        if (strings.indexOf(HEXDIGITS, $ch) < 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /**

@@ -26,9 +26,6 @@ that version.
 | [Server specification](/specs/specs-server.html) | the normative contract this project implements - in the [specifications](/specs/) book |
 | [Client specification](/specs/specs-client.html) | what a client must do - in the [specifications](/specs/) book |
 
-Working on the code itself is documented in `CLAUDE.md` at the repository root,
-which is not part of this site.
-
 ## In one minute
 
 ```sh

@@ -208,6 +208,23 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
     return $res.body;
 }
 
+# refExists reports whether a branch or tag of this exact name is present. Both
+# namespaces are asked because either would shadow an object of the same name in
+# a `?ref=` lookup, and GitLab permits a name shaped like an object id where
+# GitHub refuses one.
+func refExists(cfg as forge.Config, url as string, name as string) {
+    def raw as bytes init convert.bytesFromString($name, "utf-8");
+    def encoded as string init encoding.toText($raw, "uri-percent");
+    def branch as http.Response init get($cfg, "/projects/" + projectId($url) +
+        "/repository/branches/" + $encoded, "");
+    if (forge.refPresence($branch.status)) {
+        return true;
+    }
+    def tag as http.Response init get($cfg, "/projects/" + projectId($url) +
+        "/repository/tags/" + $encoded, "");
+    return forge.refPresence($tag.status);
+}
+
 func permission(cfg as forge.Config, url as string, callerToken as string) {
     if ($callerToken == "" and $cfg.apiToken == "") {
         return forge.unknown("the registry holds no credential this forge accepts");
@@ -243,6 +260,7 @@ export func forge() {
         handles: handles,
         resolveTag: resolveTag,
         readFile: readFile,
+        refExists: refExists,
         permission: permission,
         repo: repo
     };

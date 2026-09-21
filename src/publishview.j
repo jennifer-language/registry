@@ -57,6 +57,9 @@ import "./citoken.j" as citoken;
  * @field manifestText {string} the bytes of `deck.toml` at that commit
  * @field readmeText {string} the bytes of `README.md` at that commit ("" when
  *     the repository has none; a deck without one is not an error)
+ * @field commitShadowed {bool} true when the repository also holds a **branch or
+ *     tag named exactly like the resolved commit**, which means the manifest
+ *     above cannot be trusted to have come from the commit (see `checkSource`)
  */
 export def struct Source {
     repository as string,
@@ -66,7 +69,8 @@ export def struct Source {
     repoOwnerId as string,
     repoOwner as string,
     manifestText as string,
-    readmeText as string
+    readmeText as string,
+    commitShadowed as bool
 };
 
 /**
@@ -114,15 +118,34 @@ export func checkSource(src as Source) {
     if (strings.trim($src.tag) == "") {
         return "missing `tag`";
     }
+    # A tag shaped like an object id is refused before anything is resolved. The
+    # registry would otherwise store it and serve it to every client as `ref`,
+    # and a client that looks a name up before an object gets whatever that ref
+    # points at while the record still reads as pinned.
+    if (store.isObjectIdLike($src.tag)) {
+        return "the tag " + $src.tag + " is shaped like a git object id, " +
+            "which a client can resolve as a commit; publish from a tag that " +
+            "cannot be read as one, such as v" + $src.tag;
+    }
     if (not store.isCommit($src.commit)) {
         return "the tag did not resolve to a full commit SHA: " + $src.commit;
+    }
+    # The manifest above was read through the forge's ref-or-sha parameter, which
+    # resolves a **name** before an object. So a branch or tag named after the
+    # resolved commit stands in front of it, and everything read "at the commit"
+    # came from wherever that ref points instead - while the record still says
+    # `commit`. Refused rather than worked around, because at this point the
+    # bytes in hand are already the wrong ones.
+    if ($src.commitShadowed) {
+        return "the repository has a branch or tag named " + $src.commit +
+            ", which shadows the commit of that id; delete it and publish again";
     }
     return "";
 }
 
 # storeVersion writes the version the manifest describes, pinned to the commit
 # the tag resolved to. Always KIND_GIT: a publish names a repository and a tag,
-# and the commit is the integrity boundary (3.1).
+# and the commit is the integrity boundary (3.2).
 func storeVersion(db as flatdb.DB, m as manifest.Manifest, src as Source, now as string) {
     def ver as store.DeckVersion init store.DeckVersion{
         version: $m.version,

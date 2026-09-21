@@ -70,7 +70,6 @@ Two books, two audiences.
 | [reference/api.md](reference/api.md) | the HTTP API |
 | [reference/specs-server.md](reference/specs-server.md) | the server specification, the normative contract for this project |
 | [reference/specs-client.md](reference/specs-client.md) | the client specification, headed for the jvc repository |
-| [CLAUDE.md](CLAUDE.md) | working on this repository: layout, conventions, architecture, roadmap |
 
 Both are built with [Grimoire](https://github.com/jennifer-language/grimoire) and
 served by `serve`. Each book is its own config, because grimoire builds one

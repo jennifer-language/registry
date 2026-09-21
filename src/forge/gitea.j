@@ -173,6 +173,19 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
     return $res.body;
 }
 
+# refExists reports whether a branch or tag of this exact name is present. Both
+# namespaces are asked because either would shadow an object of the same name in
+# a `?ref=` lookup, and Gitea and Forgejo both permit a name shaped like an
+# object id where GitHub refuses one.
+func refExists(cfg as forge.Config, url as string, name as string) {
+    def branch as http.Response init get($cfg, repoPath($url) + "/branches/" + $name, "");
+    if (forge.refPresence($branch.status)) {
+        return true;
+    }
+    def tag as http.Response init get($cfg, repoPath($url) + "/tags/" + $name, "");
+    return forge.refPresence($tag.status);
+}
+
 func permission(cfg as forge.Config, url as string, callerToken as string) {
     if ($callerToken == "" and $cfg.apiToken == "") {
         return forge.unknown("the registry holds no credential this forge accepts");
@@ -208,6 +221,7 @@ export func forge() {
         handles: handles,
         resolveTag: resolveTag,
         readFile: readFile,
+        refExists: refExists,
         permission: permission,
         repo: repo
     };

@@ -177,6 +177,40 @@ A client **MUST** fetch the repository at the recorded `commit`, not at the
   is needed, and none is recorded: `checksum` is meaningless for this kind and
   **MUST NOT** be treated as an integrity signal.
 
+That second point holds **only if the client asked for an object and then
+checked what it got**, and the next subsection says why that is not the same
+sentence.
+
+#### 4.1.1 A name is not an object
+
+A git ref and a git object id occupy **one syntactic space**: nothing stops a
+branch or tag being called `4a3b1c...`, and where a name is resolved before an
+object, a ref of that name **stands in front of the commit of that id**. Git
+then verifies the hash of the object it was given, correctly and reassuringly,
+and that object is not the pin.
+
+So, in addition to fetching at the commit:
+
+- A client **MUST**, after fetching and before using any of the tree, determine
+  the **object id of what it actually obtained** and **MUST** abort unless it is
+  equal to `commit`. Fetching "at the commit" is an intention; this is the check.
+- A client **MUST NOT** rely on a name-based lookup resolving to the object when
+  a ref of that name exists. `git fetch <remote> <commit>` matches the remote's
+  advertised refs first, and a `?ref=`-style parameter on a forge API resolves a
+  name before an object **by definition**. Address the object: peel explicitly
+  (`<commit>^{commit}`), and treat git's "refname is ambiguous" warning as an
+  error rather than as noise.
+- A client **SHOULD** refuse a version record whose `ref` is itself shaped like
+  an object id, rather than displaying it. A registry conforming to
+  [specs-server.md](specs-server.md) section 3 will not serve one, so such a
+  record means the registry is not conforming or the response was tampered with.
+
+A registry cannot make this safe on the client's behalf. It can refuse to store
+the ambiguity (which section 3 of the server specification now requires) and it
+can refuse to publish from a repository where the shadow already exists, but the
+repository is mutable after publication and the fetch happens on the client. The
+comparison above is the only place the class actually dies.
+
 The `ref` is for display and provenance. A client **MAY** show it, and **MAY**
 warn when the remote's tag no longer points at the recorded commit, since that
 usually means somebody rewrote history by mistake.
@@ -490,6 +524,10 @@ A client is conformant when:
 - [ ] it refuses an operation whose feature is not advertised, by name
 - [ ] it resolves from `GET /deck?name=`, addressing scoped names as a query parameter
 - [ ] a `kind: "git"` deck is fetched **at the commit**, never at the ref
+- [ ] the object id of what was fetched is compared to `commit` before the tree
+      is used, and a mismatch aborts
+- [ ] a ref named like an object id does not satisfy a fetch for that object, and
+      an ambiguous-refname warning is treated as an error
 - [ ] a `kind: "tar.gz"` deck's checksum is verified **before unpacking**
 - [ ] an absent `kind` is treated as `"tar.gz"`
 - [ ] a fetch that cannot produce the recorded commit fails, with no fallback

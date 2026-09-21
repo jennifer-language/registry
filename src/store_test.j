@@ -492,3 +492,50 @@ func testUnlockingTwiceIsHarmless() {
     unlock($held);
     testing.assertEqual(lockHolder(lockPath()), "");
 }
+
+# --- object-id-shaped names ---------------------------------------------------
+#
+# A ref of this shape is the Plugin4Shell class: a name that stands in front of
+# the object of the same id wherever a name is resolved first.
+
+func testAFullCommitShaIsObjectIdLike() {
+    testing.assertTrue(isObjectIdLike(SAMPLE_COMMIT));
+}
+
+func testAnAbbreviatedShaIsObjectIdLike() {
+    # git resolves from seven hex digits up, so the whole range is ambiguous
+    testing.assertTrue(isObjectIdLike("9f2c1d4"));
+    testing.assertTrue(isObjectIdLike("9f2c1d4e5a6b"));
+}
+
+func testUppercaseHexIsObjectIdLikeToo() {
+    # git's hex parsing takes either case, so folding is not optional here
+    testing.assertTrue(isObjectIdLike("9F2C1D4E5A6B7C8D9E0F1A2B3C4D5E6F70819293"));
+    testing.assertTrue(isObjectIdLike("9F2c1D4"));
+}
+
+func testASha256ObjectIdIsObjectIdLike() {
+    # a repository on SHA-256 has 64-character ids, and the ceiling is there for
+    # exactly that
+    def id as string init SAMPLE_COMMIT + SAMPLE_COMMIT;
+    testing.assertTrue(isObjectIdLike(strings.substring($id, 0, 64)));
+}
+
+func testShortHexIsNotObjectIdLike() {
+    # below git's abbreviation floor a name cannot be read as an id, and refusing
+    # it would cost real tags for nothing
+    testing.assertFalse(isObjectIdLike("cafe"));
+    testing.assertFalse(isObjectIdLike("abc123"));
+    testing.assertFalse(isObjectIdLike(""));
+}
+
+func testARealTagIsNotObjectIdLike() {
+    testing.assertFalse(isObjectIdLike("v1.2.0"));
+    testing.assertFalse(isObjectIdLike("1.2.0"));
+    testing.assertFalse(isObjectIdLike("release-3"));
+    testing.assertFalse(isObjectIdLike("deadbeefs"));
+}
+
+func testTooLongToBeAnObjectIdIsNotObjectIdLike() {
+    testing.assertFalse(isObjectIdLike(SAMPLE_COMMIT + SAMPLE_COMMIT));
+}

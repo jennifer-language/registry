@@ -580,6 +580,18 @@ jennifer run bin/deckadmin add @acme/routeros 0.1.0 \
 An abbreviated SHA is rejected: a version is pinned to the whole hash, and a
 short prefix can turn ambiguous as a repository grows.
 
+**A `--ref` shaped like an object id is rejected too** - 7 to 64 hex digits, in
+either case. A git ref and a git object id share one syntactic space, so a tag
+called `4a3b1c...` is ambiguous with the commit of that id, and wherever a name
+is resolved before an object it answers in the commit's place. The fetch then
+verifies an object hash quite correctly, and the object is not the pin; The
+endpoint refuses such a ref as well, and for the same reason: a record written
+here is indistinguishable from one written over HTTP. The qualification above
+about the commit being the integrity boundary depends on the client asking for
+the object and checking what it got, which
+[the client specification](/specs/specs-client.html) section 4.1.1 now requires
+of it.
+
 **`tar.gz`, for an uploaded artifact.** Pass `--checksum` instead. Those bytes
 are stable because somebody uploaded them, so the digest is meaningful and is
 verified before unpacking.
