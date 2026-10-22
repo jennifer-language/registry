@@ -3,22 +3,18 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
 # pragma-jennifer-version: >=0.25.0
 #
-# deckadmin - maintain the jvc deck repository's flatdb store: insert, update,
-# remove, and list deck versions. A thin entry point over the `admin` module
-# (which holds the grammar, the logic, and its tests). The store path defaults
-# to data/decks.json, overridable with the REGISTRY_DB environment variable. Run
-# the repo root:
+# deckadmin: the registry's operator CLI. A thin entry point over the `admin`
+# module, which holds the grammar, the logic and its tests. The store path
+# defaults to data/decks.json (REGISTRY_DB). Run from the repo root:
 #
 #     jennifer run bin/deckadmin add @acme/tool 1.3.0 <url> --ref v1.3.0 --commit <sha>
 #     jennifer run bin/deckadmin list
 #     jennifer run bin/deckadmin --help
 #
-# The command handlers below are one-line shims. They exist here, rather than in
-# `admin`, because `args.dispatch` calls them with only the parsed result, so
-# they need the store and the timestamp from this program's own scope - and a
-# module top level cannot hold mutable state. A `func` value keeps its home
-# context when the module calls it, so each shim still resolves `admin` and the
-# globals declared here.
+# The command handlers below are one-line shims kept here, not in `admin`:
+# `args.dispatch` passes only the parsed result, so they take the store and
+# timestamp from program scope (a module top level is declarations-only). A
+# `func` value keeps its home context, so each shim resolves these globals.
 
 use os;
 use io;
@@ -32,9 +28,8 @@ import "../src/admin.j" as admin;
 import "../src/audit.j" as audit;
 import "../src/config.j" as config;
 
-# Read through `config.readEnv` so the deprecated `JVC_*` names keep working here
-# exactly as they do in the server. Three programs disagreeing about whether the
-# old names still work is how a deployment ends up half-migrated.
+# Read through `config.readEnv` so the deprecated `JVC_*` names work here as they
+# do in the server.
 def env as config.EnvRead init config.readEnv([
     "REGISTRY_DB",
     "REGISTRY_LOG",
@@ -214,8 +209,8 @@ func onRevoke(r as args.Result) {
     return admin.cmdRevoke($db, $r, $now);
 }
 
-# A parse failure (an unknown flag, a missing positional, a bad value) is a
-# catchable error rather than an exit, so it is reported like any other failure.
+# A parse failure (unknown flag, missing positional, bad value) throws and is
+# reported like any other failure.
 def parsed as args.Result;
 try {
     $parsed = admin.parse(os.ARGS);
@@ -235,11 +230,9 @@ if ($parsed.command == "") {
     exit 1;
 }
 
-# The operational log. Opened after parsing, because the command line is half of
-# where it is configured, and before dispatch, so a command that fails still
-# records the attempt. An unwritable path is reported here and then stops
-# mattering: maintaining the registry is more important than logging that it was
-# maintained.
+# The operational log. Opened after parsing, since flags configure it, and before
+# dispatch, so a failed command is still recorded. An unwritable log path only
+# warns.
 def logCfg as admin.LogOptions init admin.logOptions(
     $parsed,
     envOr($env.values, "REGISTRY_LOG"),
@@ -254,31 +247,23 @@ if (not ($sink.fileError == "")) {
     io.eprintf("warning: not logging to %s (%s)\n", $logCfg.path, $sink.fileError);
 }
 
-# `keywords` is answered before any of that. It is the one command that reads no
-# registry and writes none: it reports a word list compiled into the binary. So
-# it must not take the write lock, must not require a writable data directory,
-# and must not fail on a host that has no registry at all - which is exactly the
-# situation an operator is in when they are working out what to add to the list.
+# `keywords` is answered before the lock: it reads a compiled-in word list and
+# no registry, so it needs neither the lock nor a writable data directory.
 if ($parsed.command == "keywords") {
     def listing as admin.AdminResult init admin.cmdKeywords($db, $parsed, $now);
     io.printf("%s\n", $listing.message);
     exit 0;
 }
 
-# The write lock, taken around the read *and* the write. Both halves matter:
-# `flatdb` has no locking, so two `deckadmin` runs - or one alongside a publish
-# on the server - would otherwise each read the whole document, edit their own
-# copy, and write it back, and the second write would silently drop the first
-# one's change. Measured before this existed: six concurrent adds left one deck.
+# The write lock covers the read and the write: `flatdb` does not lock, so
+# concurrent writers (other runs, or the server) would each overwrite the
+# other's edit. Without it, six concurrent adds left one deck.
 #
-# The store is re-opened here, inside the lock. The copy read at startup was read
-# without it and may already be behind, and editing a stale copy loses exactly
-# what the lock is meant to protect.
+# The store is re-opened inside the lock, since the copy read at startup may be
+# stale.
 #
-# Released by `defer`, which at a program's top level runs at exit - including on
-# `exit 1` and on an uncaught throw. That matters here: a command that fails
-# mid-dispatch releases the lock on the way out rather than leaving it for the
-# stale window to break.
+# `defer` at top level runs at exit, including `exit 1` and an uncaught throw, so
+# a failing command still releases the lock.
 def lockHeld as store.Lock init store.lock($dbPath);
 defer store.unlock($lockHeld);
 $db = store.open($dbPath);
@@ -306,9 +291,8 @@ def result as admin.AdminResult init args.dispatch(
         "revoke": onRevoke
     });
 
-# The store is saved before the event is written. If the process dies between
-# the two, the log under-reports a change that happened, which is recoverable by
-# reading the store; the other order would claim a change that did not.
+# Save before logging: a crash in between under-reports a change rather than
+# logging one that did not happen.
 if ($result.changed) {
     store.save($result.db);
 }

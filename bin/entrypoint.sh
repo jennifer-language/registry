@@ -5,23 +5,14 @@
 # Fix the data directory's ownership, but only when started as root.
 #
 # The image runs as an unprivileged user, and a volume mounted over /app/data
-# arrives with whatever ownership the host gave it. The container cannot chown
-# its way out of that, because chown needs root and the whole point of the
-# USER line is that it does not have it. So the common symptom is a registry
-# that starts, serves, and refuses every write.
+# keeps the host's ownership, which that user cannot chown. The symptom is a
+# registry that serves and refuses every write.
 #
-# This script closes that gap **without changing the default posture**:
-#
-#   * started unprivileged, which is what the image does on its own, it changes
-#     nothing and hands straight over to the interpreter;
-#   * started as root - `user: "0:0"` in a compose or stack file - it takes the
-#     ownership of /app/data and then drops to the unprivileged user before
-#     exec'ing, so the registry itself never runs with privileges it does not
-#     need.
-#
-# Opting in is therefore one line in a deployment, and opting out is the
-# default. A registry that quietly ran as root to spare an operator a chown
-# would be a poor trade.
+#   * Started unprivileged (the image default): changes nothing and execs the
+#     interpreter.
+#   * Started as root (`user: "0:0"` in a compose or stack file): chowns
+#     /app/data, then drops to the unprivileged user before exec'ing, so the
+#     registry never runs as root.
 set -eu
 
 DATA_DIR="${REGISTRY_DATA_DIR:-/app/data}"
@@ -29,11 +20,9 @@ TARGET_UID="${REGISTRY_RUN_UID:-10001}"
 TARGET_GID="${REGISTRY_RUN_GID:-999}"
 
 if [ "$(id -u)" = "0" ]; then
-    # Only touch what is actually wrong. A recursive chown over a large data
-    # directory on every restart is a slow no-op, and on a mount that cannot be
-    # chowned at all (NFS with root_squash, a read-only volume) failing here
-    # would turn a working read-only registry into a container that will not
-    # start. Hence the guard and the `|| true`.
+    # Chown only when the owner is wrong, to skip a slow recursive no-op. A failed
+    # chown (NFS root_squash, read-only volume) is not fatal, so a read-only
+    # registry still starts.
     if [ -d "$DATA_DIR" ]; then
         current="$(stat -c '%u:%g' "$DATA_DIR" 2>/dev/null || echo 'unknown')"
         if [ "$current" != "${TARGET_UID}:${TARGET_GID}" ]; then

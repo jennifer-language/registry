@@ -4,20 +4,18 @@
 # pragma-jennifer-capability: net
 
 /**
- * Gitea as a forge, which also covers **Forgejo**: Forgejo is a Gitea fork and
- * its API is compatible, so one module serves both (specification 12.3).
+ * Gitea as a forge, also covering Forgejo, a Gitea fork with a compatible API
+ * (specification 12.3).
  *
- * Gitea's API is deliberately GitHub-shaped, so the payloads here are nearly the
- * same: `permissions.push` on the repository, `owner.id` for provenance. What
- * differs is the base path (`/api/v1`) and that there is no hosted default,
- * because a Gitea instance is always somebody's own.
+ * The payloads are GitHub-shaped: `permissions.push` on the repository,
+ * `owner.id` for provenance. The differences are the base path (`/api/v1`) and
+ * that there is no hosted default.
  *
- * > **Verified against live codeberg.org** (a Forgejo instance) on 2026-08-16:
+ * > Verified against live codeberg.org (a Forgejo instance) on 2026-08-16:
  * > `repo` returns the repository and owner ids, `resolveTag` resolves a tag to
- * > its commit, and `readFile` reads a path at a commit. That the same module
- * > serves Gitea and Forgejo is therefore tested, not assumed. **`permission` is
- * > still unverified**, along with the minimum token scope that returns a
- * > populated `permissions`.
+ * > its commit, and `readFile` reads a path at a commit. **`permission` is
+ * > unverified**, as is the minimum token scope that returns a populated
+ * > `permissions`.
  * @module gitea
  * @example
  * import "./gitea.j" as gitea;
@@ -40,8 +38,7 @@ func jsonHeaders() {
     return $h;
 }
 
-# requireBase refuses an unset base rather than guessing: there is no hosted
-# Gitea a deployment would plausibly mean.
+# requireBase refuses an unset base: there is no hosted Gitea to default to.
 func requireBase(cfg as forge.Config) {
     if (strings.trim($cfg.baseUrl) == "") {
         throw Error{
@@ -61,7 +58,7 @@ func requireBase(cfg as forge.Config) {
 
 /**
  * Whether this instance claims a URL. Pure. An instance with no configured host
- * claims nothing, because guessing would let it answer for a stranger's server.
+ * claims nothing, so it cannot answer for a stranger's server.
  * @param cfg {forge.Config} the forge configuration
  * @param url {string} the repository URL
  * @return {bool} true when this forge should handle it
@@ -181,10 +178,9 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
     return $res.body;
 }
 
-# refExists reports whether a branch or tag of this exact name is present. Both
-# namespaces are asked because either would shadow an object of the same name in
-# a `?ref=` lookup, and Gitea and Forgejo both permit a name shaped like an
-# object id where GitHub refuses one.
+# refExists reports whether a branch or tag of this exact name is present; either
+# would shadow an object of the same name in a `?ref=` lookup, and Gitea and
+# Forgejo permit ref names shaped like object ids.
 func refExists(cfg as forge.Config, url as string, name as string) {
     def branch as http.Response init get($cfg, repoPath($url) + "/branches/" + $name, "");
     if (forge.refPresence($branch.status)) {
@@ -194,8 +190,7 @@ func refExists(cfg as forge.Config, url as string, name as string) {
     return forge.refPresence($tag.status);
 }
 
-# fileExists answers from a listing of the file's directory; see the GitHub
-# module for why a listing and not the file.
+# fileExists answers from a listing of the file's directory (see forge/github.j).
 func fileExists(cfg as forge.Config, url as string, commit as string, path as string) {
     def parts as list of string init forge.splitPath($path);
     def res as http.Response init get(
@@ -221,8 +216,8 @@ func permission(cfg as forge.Config, url as string, callerToken as string) {
 }
 
 # permissionFor asks, with the registry's own token, what a named account may do
-# in this repository (12.5, the service-account route). Anything but a role the
-# forge states is unknown, and unknown is never permission.
+# in this repository (12.5, the service-account route). Anything but a stated
+# role is unknown.
 func permissionFor(cfg as forge.Config, url as string, username as string) {
     def problem as string init forge.askProblem($cfg, $username);
     if (not ($problem == "")) {

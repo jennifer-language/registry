@@ -34,7 +34,6 @@ func testHostedFallsBackToGitlabCom() {
 }
 
 func testSelfHostedDiffersOnlyInTheBase() {
-    # the reason there is one module rather than two
     testing.assertEqual(endpointFor(selfHosted(), "user"), "https://gl.corp.test/api/v4/user");
     testing.assertEqual(endpointFor(selfHosted(), "token"), "https://gl.corp.test/oauth/token");
 }
@@ -52,9 +51,7 @@ func testScopeDefaultUsesGitlabsSpelling() {
 }
 
 func testTheProviderCanBeBuilt() {
-    # every name in the vtable must exist: a missing one stopped the server from
-    # booting with this provider. Lint flags it since 0.24.0-dev+113 (L108); no
-    # test that calls a function directly can, only building the struct
+    # every name in the vtable must exist, or the server fails to boot
     def p as identity.Provider init provider();
     testing.assertEqual(len($p.memberships(hosted(), "any-token")), 0);
 }

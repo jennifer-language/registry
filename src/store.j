@@ -3,31 +3,30 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * The deck-registry store: the server side of jvc, backing the deck repository
- * over a `flatdb` JSON document. A registry holds many decks; each deck holds
- * many published versions; each version records where its code lives, how to
- * pin it, a description, and when it was published. The document schema is:
+ * The deck-registry store over a `flatdb` JSON document. A registry holds many
+ * decks; each deck holds many published versions; each version records where
+ * its code lives, how to pin it, a description, and when it was published. The
+ * deck schema is:
  *
  *     { "decks": { "<name>": {
- *         "name": "...", "description": "...",
+ *         "name": "...", "description": "...", "readme": "...",
  *         "versions": { "<version>": {
  *             "version": "...", "kind": "git" | "tar.gz", "url": "...",
  *             "ref": "...", "commit": "...", "checksum": "...",
  *             "requires": { ... }, "engines": { ... }, "capabilities": [ ... ],
+ *             "keywords": [ ... ], "license": "...", "yanked": false,
  *             "description": "...", "publishedAt": "..." } } } } }
  *
- * A version is delivered one of two ways, told apart by `kind`. A `"git"`
- * version lives in a repository and is pinned by `commit`, the SHA its `ref`
- * tag pointed at when it was published; git verifies object hashes on fetch, so
- * the commit is the integrity boundary and `checksum` is meaningless. A
- * `"tar.gz"` version is an uploaded artifact pinned by `checksum`, and the
- * reverse holds. A record with no `kind` predates the field and reads as
- * `"tar.gz"`.
+ * Beside `decks`, created on first write: `namespaces`, `refreshTokens`,
+ * `forgeTokens`, `publishers`, `ciTokens` and `stats`.
  *
- * This module owns reading and editing that document (the HTTP surface lives in
- * `apiview` / `bin/serve`, the maintenance CLI in `admin` / `bin/deckadmin`).
- * Version resolution reuses the `constraint` module. Writers return a fresh DB
- * (flatdb value semantics); call `store.save` to persist.
+ * `kind` selects the delivery. A `"git"` version is pinned by `commit`, the SHA
+ * its `ref` tag pointed at when published; git verifies object hashes on fetch,
+ * so the commit is the integrity boundary and `checksum` is unused. A
+ * `"tar.gz"` version is an uploaded artifact pinned by `checksum`, and `ref` /
+ * `commit` are unused. A record with no `kind` reads as `"tar.gz"`.
+ *
+ * Writers return a fresh DB (flatdb value semantics); `store.save` persists.
  * @module store
  * @example
  * import "./store.j" as store;
@@ -48,8 +47,8 @@ import "./citoken.j" as citoken;
 
 # ptrEscape / ptrUnescape encode a name as one JSON Pointer reference token
 # (RFC 6901: "~" -> "~0", "/" -> "~1"), so a scoped deck name such as
-# "@jennifer/routeros" is a single key rather than a nested "/decks/@jennifer/
-# routeros" path. Escaping happens in the pointer builders; listing unescapes.
+# "@jennifer/routeros" is a single key. The pointer builders escape; listing
+# unescapes.
 func ptrEscape(token as string) {
     def out as string init strings.replace($token, "~", "~0");
     return strings.replace($out, "/", "~1");
@@ -71,10 +70,8 @@ def const COMMIT_LEN as int init 40;
 def const SHA256_LEN as int init 64;
 def const CHECKSUM_PREFIX as string init "sha256:";
 
-# The shortest hex run git will read as an abbreviated object id, and the
-# longest object id there is (SHA-256, for repositories using it). A name of
-# this shape can be mistaken for an object, which is what `isObjectIdLike`
-# exists to refuse.
+# The shortest hex run git reads as an abbreviated object id, and the longest
+# object id (SHA-256). Bounds for `isObjectIdLike`.
 def const ABBREV_MIN as int init 7;
 def const OBJECT_ID_MAX as int init 64;
 
@@ -93,8 +90,8 @@ func isLowerHex(s as string, n as int) {
 
 /**
  * Report whether a string is a full git commit SHA: exactly 40 lowercase hex
- * digits. An abbreviated SHA is rejected deliberately - a version is pinned to
- * the whole hash, and a short prefix can turn ambiguous as a repository grows.
+ * digits. An abbreviated SHA is rejected because a short prefix can become
+ * ambiguous as a repository grows.
  * @param s {string} the candidate SHA
  * @return {bool} true when s is a full commit SHA
  */
@@ -103,26 +100,17 @@ export func isCommit(s as string) {
 }
 
 /**
- * Report whether a string could be read as a git **object id** rather than as
- * the name it is: 7 to 64 hex digits, in either case.
+ * Report whether a string could be read as a git object id: 7 to 64 hex
+ * digits, in either case. A `ref` must never have this shape.
  *
- * This is the shape a `ref` must never have. A git name and a git object id
- * share one syntactic space, and where a forge or a client resolves a name
- * before an object - which the ref-or-sha `?ref=` parameter on every forge API
- * does by definition, and which `git fetch <remote> <name>` does on the wire -
- * a ref called `4a3b...` **stands in front of the commit of that id**. 
- * GitHub refuses such names at creation; GitLab,
- * Gitea, Forgejo and self-hosted servers do not, so the registry refuses them
- * on the way in rather than relying on the forge to have done it.
+ * Where a name resolves before an object (the `?ref=` parameter on every forge
+ * API, `git fetch <remote> <name>`), a ref called `4a3b...` shadows the commit
+ * of that id. GitHub refuses such names at creation; GitLab, Gitea, Forgejo and
+ * self-hosted servers do not, so the registry refuses them on the way in.
  *
- * Both cases are rejected because git's hex parsing accepts either, so
- * `4A3B...` is exactly as ambiguous as `4a3b...`. The floor is 7 because that
- * is git's shortest abbreviation; below it a name cannot be read as an id. The
- * ceiling is 64 because that is the longest object id that exists.
- *
- * A real tag does not look like this: `v1.2.0`, `release-3`, `1.2.0`. The cost
- * of a false positive is that a publisher renames a tag once; the cost of a
- * false negative is a pin that points at content nobody reviewed.
+ * Both cases are rejected because git's hex parsing accepts either. 7 is git's
+ * shortest abbreviation; 64 is the longest object id. A false positive costs a
+ * publisher one tag rename.
  * @param s {string} the candidate ref name
  * @return {bool} true when the name could be read as an object id
  */
@@ -155,12 +143,8 @@ export func isChecksum(s as string) {
 
 /**
  * One published deck version's record, as stored under a deck's `versions`
- * table and returned to a client.
- *
- * The pin depends on `kind`: a `"git"` version carries `ref` and `commit` and
- * leaves `checksum` empty, a `"tar.gz"` version carries `checksum` and leaves
- * `ref` / `commit` empty. The unused fields are stored empty rather than
- * omitted, so a reader never has to distinguish "absent" from "not applicable".
+ * table and returned to a client. The pin fields unused by `kind` are stored
+ * empty, never omitted.
  * @field version {string} the version string (SemVer)
  * @field kind {string} the delivery kind, KIND_GIT or KIND_TARGZ
  * @field url {string} the git clone URL (git) or the artifact URL (tar.gz)
@@ -172,12 +156,11 @@ export func isChecksum(s as string) {
  * @field capabilities {list of string} host capabilities its code needs (net / exec / sql)
  * @field description {string} a one-line summary of this version ("" when absent)
  * @field publishedAt {string} when the version was published (Unix seconds as text)
- * @field yanked {bool} true when the version is withdrawn from new resolutions
- *     but still fetchable, so an existing lockfile keeps installing
+ * @field yanked {bool} true when withdrawn from new resolutions but still
+ *     fetchable
  * @field license {string} the SPDX identifier from the manifest ("" when absent)
- * @field keywords {list of string} the deck's tags, already normalised by
- *     `keywords.normalise` at publish time. Absent reads as empty, which is what
- *     makes the field additive over versions published before it existed.
+ * @field keywords {list of string} the deck's tags, normalised by
+ *     `keywords.normalise` at publish time; absent reads as empty
  */
 export def struct DeckVersion {
     version as string,
@@ -221,10 +204,9 @@ export def struct Resolution {
     description as string
 };
 
-# Every pointer builder folds the deck name first, which is what makes the whole
-# store case-insensitive: `@Netflix/Foo` and `@netflix/foo` address one record,
-# and a name is recorded in exactly one form (specification 2.1). Folding here
-# rather than at each call site means no caller can forget.
+# Every pointer builder folds the deck name first, so the store is
+# case-insensitive: `@Netflix/Foo` and `@netflix/foo` address one record
+# (specification 2.1).
 #
 # deckPtr is the JSON Pointer of a deck record.
 func deckPtr(name as string) {
@@ -343,9 +325,8 @@ export func listVersions(db as flatdb.DB, name as string) {
 
 # plainCore reads a version that is only MAJOR.MINOR.PATCH (no prerelease, no
 # build, no leading zero, no number too long to hold) as its three numbers, and
-# anything else as none. Nearly every published version has that shape, and
-# comparing three ints costs a fraction of a SemVer parse, which was most of
-# the time every listing took.
+# anything else as none. Comparing three ints is much cheaper than a SemVer
+# parse, which dominated listing time.
 func plainCore(v as string) {
     def none as list of int init [];
     def parts as list of string init strings.split($v, ".");
@@ -423,15 +404,12 @@ func rankOf(parsed as list of semver.Version, p as semver.Version) {
 }
 
 /**
- * List a deck's published versions, **highest first**, by SemVer precedence
- * rather than document order - so `[0]` is the latest release and a deck page
- * leads with it. A version string that is not usable SemVer sorts last, in
- * document order, so a malformed record stays visible rather than being dropped
- * or crashing the comparison.
+ * List a deck's published versions, highest first by SemVer precedence, so
+ * `[0]` is the latest release. A version that is not usable SemVer sorts last,
+ * in document order, so a malformed record stays visible.
  *
- * Each version is checked and parsed once, then an insertion sort orders the
- * parsed values: version lists are short, and parsing inside the comparison
- * made this the most expensive step of every listing.
+ * Each version is parsed once, then insertion-sorted; parsing inside the
+ * comparison was the most expensive step of every listing.
  * @param db {flatdb.DB} the store to read
  * @param name {string} the deck name
  * @return {list of string} the version strings, highest first
@@ -446,8 +424,7 @@ export func listVersionsDescending(db as flatdb.DB, name as string) {
         return $plain;
     }
     # `isUsableVersion`, not `semver.isValid`: a valid version with a number too
-    # large to hold would throw inside `compare`, and one such record would make
-    # every listing of its deck fail.
+    # large to hold throws inside `compare` and would fail every listing.
     def usable as list of string init [];
     def parsed as list of semver.Version init [];
     def unusable as list of string init [];
@@ -484,9 +461,8 @@ export func listVersionsDescending(db as flatdb.DB, name as string) {
 /**
  * The published version that `version` is the same release as, or "". SemVer
  * ignores build metadata in precedence, so `1.0.0+a` and `1.0.0+b` are one
- * version; stored as two records, they were two commits behind one number, and
- * which a client got depended on the order it read them in. Every write path
- * asks this before adding a version.
+ * version; stored as two records they would be two commits behind one number.
+ * Every write path asks this before adding a version.
  * @param db {flatdb.DB} the store to read
  * @param name {string} the deck name
  * @param version {string} the version about to be written
@@ -537,8 +513,7 @@ export func getVersionJson(db as flatdb.DB, name as string, version as string) {
 
 /**
  * Read one published version's whole record as a `DeckVersion`. Absent optional
- * fields read as empty and an absent `kind` reads as KIND_TARGZ, so a record
- * written before a field existed still yields a complete value. The caller
+ * fields read as empty and an absent `kind` reads as KIND_TARGZ. The caller
  * should check `hasVersion` first.
  * @param db {flatdb.DB} the store to read
  * @param name {string} the deck name
@@ -585,8 +560,7 @@ export func putVersion(db as flatdb.DB, name as string, description as string, v
         $rec = json.set($rec, "/versions", json.map());
         $out = flatdb.set($out, deckPtr($name), $rec);
     } elseif (len($description) > 0) {
-        # flatdb.set needs a json.Value, so edit the record's description via
-        # json.set (which coerces the native string) and write the record back.
+        # flatdb.set needs a json.Value; json.set coerces the native string.
         def rec as json.Value init flatdb.get($out, deckPtr($name));
         $rec = json.set($rec, "/description", $description);
         $out = flatdb.set($out, deckPtr($name), $rec);
@@ -643,10 +617,8 @@ export func removeVersion(db as flatdb.DB, name as string, version as string) {
 /**
  * Remove a whole deck (all its versions), and its trusted-publisher binding,
  * returning a fresh DB. Errors if the deck does not exist (guard with
- * `hasDeck`).
- *
- * The binding goes with it: left behind, it let the bound repository publish
- * the name again, as a first publish, with nobody having said it still may.
+ * `hasDeck`). A binding left behind would let the bound repository publish the
+ * name again as a first publish.
  * @param db {flatdb.DB} the store to edit
  * @param name {string} the deck name
  * @return {flatdb.DB} a fresh store without that deck
@@ -662,9 +634,8 @@ export func removeDeck(db as flatdb.DB, name as string) {
 
 /**
  * Drop every credential delegated under a scope: its CI tokens, and the
- * trusted-publisher bindings of the decks under it. What a scope reassignment
- * does, since each was authorised by the owner it is being taken from: left in
- * place, the old owner's pipelines kept publishing under the new owner's name.
+ * trusted-publisher bindings of the decks under it. Used on scope reassignment,
+ * so the old owner's pipelines cannot publish under the new owner's name.
  * @param db {flatdb.DB} the store to edit
  * @param scope {string} the scope, without its "@"
  * @return {flatdb.DB} a fresh store without them
@@ -700,9 +671,8 @@ func notFound(name as string) {
     };
 }
 
-# recordString reads an optional string field off a version record, yielding ""
-# when the field is absent - which is how a record written before a field
-# existed reads, and how the pin unused by a record's kind is stored.
+# recordString reads an optional string field off a record, yielding "" when
+# the field is absent.
 func recordString(rec as json.Value, field as string) {
     if (json.has($rec, $field)) {
         return json.asString($rec, $field);
@@ -714,9 +684,8 @@ func recordString(rec as json.Value, field as string) {
 export def const SCOPE_USER as string init "user";
 export def const SCOPE_ORG as string init "org";
 
-# scopeKindOf normalises a kind, defaulting anything unrecognised to "user".
-# Defaulting to the *narrower* kind matters: a typo must not turn a personal
-# scope into one that anybody in some organisation can write to.
+# scopeKindOf normalises a kind, defaulting anything unrecognised to the
+# narrower "user", so a typo cannot open a personal scope to an organisation.
 func scopeKindOf(kind as string) {
     if ($kind == SCOPE_ORG) {
         return SCOPE_ORG;
@@ -724,8 +693,7 @@ func scopeKindOf(kind as string) {
     return SCOPE_USER;
 }
 
-# recordKindOfScope reads a namespace record's kind. Absent reads as "user",
-# which is what every record written before the field existed actually was.
+# recordKindOfScope reads a namespace record's kind. Absent reads as "user".
 func recordKindOfScope(rec as json.Value) {
     if (not json.has($rec, "/kind")) {
         return SCOPE_USER;
@@ -733,8 +701,7 @@ func recordKindOfScope(rec as json.Value) {
     return scopeKindOf(json.asString($rec, "/kind"));
 }
 
-# recordStrings reads an optional array of strings. Absent reads as empty, which
-# is what makes a list field additive over records written before it existed.
+# recordStrings reads an optional array of strings. Absent reads as empty.
 func recordStrings(rec as json.Value, field as string) {
     def out as list of string init [];
     if (not json.has($rec, $field)) {
@@ -761,9 +728,7 @@ func recordMap(rec as json.Value, field as string) {
     return $out;
 }
 
-# recordBool reads an optional boolean field. Absent reads as false, which is
-# what makes `yanked` additive: every record written before the field existed is
-# a live version, which is exactly what it was.
+# recordBool reads an optional boolean field. Absent reads as false.
 func recordBool(rec as json.Value, field as string) {
     if (json.has($rec, $field)) {
         return json.asBool($rec, $field);
@@ -772,8 +737,7 @@ func recordBool(rec as json.Value, field as string) {
 }
 
 # recordKind reads a version record's delivery kind. An absent or empty `kind`
-# reads as KIND_TARGZ, per the specification's compatibility rule for records
-# written before the field existed.
+# reads as KIND_TARGZ (the specification's compatibility rule).
 func recordKind(rec as json.Value) {
     def k as string init recordString($rec, "/kind");
     if ($k == "") {
@@ -825,11 +789,8 @@ export func versionEngines(db as flatdb.DB, name as string, version as string) {
 }
 
 /**
- * Return a published version's keywords, as normalised at publish time.
- *
- * Absent reads as empty, which is what makes the field additive: every version
- * published before keywords existed is a version with no tags, which is exactly
- * what it was.
+ * Return a published version's keywords, as normalised at publish time. Absent
+ * reads as empty.
  * @param db {flatdb.DB} the store to read
  * @param name {string} the deck name
  * @param version {string} the version string
@@ -872,11 +833,9 @@ export func versionCapabilities(db as flatdb.DB, name as string, version as stri
 
 # --- namespace registry -----------------------------------------------------
 
-# namespacePtr is the JSON Pointer of a registered namespace record. Folded, for
-# the same reason deck pointers are, and escaped like them: unescaped,
-# `acme/subject` pointed inside the `acme` record, so `hasNamespace` said yes to
-# a scope that does not exist. A valid scope has nothing to escape, so the
-# records already stored are where they were.
+# namespacePtr is the JSON Pointer of a registered namespace record, folded and
+# escaped like deck pointers. Unescaped, `acme/subject` would point inside the
+# `acme` record and `hasNamespace` would accept a scope that does not exist.
 func namespacePtr(scope as string) {
     return "/namespaces/" + ptrEscape(deckname.fold($scope));
 }
@@ -907,26 +866,22 @@ export func listNamespaces(db as flatdb.DB) {
 }
 
 /**
- * Who owns a scope. **Ownership binds to the identity provider's stable subject
- * identifier, never to a login** (specification 8.1): a login released by a
- * rename becomes claimable by somebody else, and binding to one would hand them
- * an established scope.
+ * Who owns a scope. Ownership binds to the identity provider's stable subject
+ * identifier, never to a login (specification 8.1), since a login released by
+ * a rename can be claimed by somebody else.
  *
- * An empty `subject` means the scope is **operator-held**: registered, so nobody
- * may claim it, but bound to no principal, so nobody may write under it either.
- * That is the state a reservation is in, and the state a scope falls back to
- * when its owner is removed.
+ * An empty `subject` means the scope is operator-held: registered, so nobody
+ * may claim it, and bound to no principal, so nobody may write under it. A
+ * reservation is in this state, as is a scope whose owner was removed.
  * @field scope {string} the folded scope name
  * @field provider {string} the identity provider that issued the subject ("" when unowned)
  * @field subject {string} the provider's stable subject identifier ("" when unowned)
  * @field login {string} the owner's username, a display label refreshed on each login
  * @field registeredAt {string} when the scope was registered (Unix seconds as text)
  * @field kind {string} `"user"` when `subject` is a person, `"org"` when it is an
- *     organisation the provider can be asked about (8.7). Absent reads as
- *     `"user"`, which is what every record written before this field was.
+ *     organisation the provider can be asked about (8.7); absent reads as `"user"`
  * @field coOwners {list of string} additional principals that may write under
- *     this scope, as subject ids under the same `provider`. Empty for a scope
- *     with one owner, which is every scope written before co-ownership existed.
+ *     this scope, as subject ids under the same `provider`; empty for one owner
  */
 export def struct Namespace {
     scope as string,
@@ -942,9 +897,8 @@ export def struct Namespace {
  * Register or re-register a namespace scope, returning a fresh DB. The scope
  * name in `ns` is folded before it is written.
  *
- * Re-registering replaces the record, which is how an operator reassigns a scope
- * after a dispute or a departure (specification 10). There is no separate
- * transfer verb, because a transfer *is* a re-registration to a new principal.
+ * Re-registering replaces the record; that is how an operator reassigns a scope
+ * after a dispute or a departure (specification 10).
  * @param db {flatdb.DB} the store to edit
  * @param ns {Namespace} the scope and its owner
  * @return {flatdb.DB} a fresh store with the scope registered
@@ -970,9 +924,9 @@ export func registerNamespace(db as flatdb.DB, ns as Namespace) {
 }
 
 /**
- * Read a namespace record. Absent fields read as empty, so a record written
- * before ownership existed yields an operator-held scope rather than an error.
- * Guard with `hasNamespace` first.
+ * Read a namespace record. Absent fields read as empty, so a record without
+ * ownership fields yields an operator-held scope. Guard with `hasNamespace`
+ * first.
  * @param db {flatdb.DB} the store to read
  * @param scope {string} the scope name
  * @return {Namespace} the record
@@ -992,15 +946,12 @@ export func getNamespace(db as flatdb.DB, scope as string) {
 }
 
 /**
- * Report whether a principal owns a scope.
- *
- * **This is the question every write under a scope asks** (specification 2.2),
- * and it is answered from the recorded binding rather than from anything the
- * provider says now: a rename does not move a scope, and the person who later
- * takes a released username does not inherit one.
+ * Report whether a principal owns a scope. Every write under a scope asks this
+ * (specification 2.2). It reads only the recorded binding, so a rename does not
+ * move a scope and a released username does not inherit one.
  *
  * An unowned scope answers false for everybody, including a caller with empty
- * credentials, so an operator-held scope cannot be written to by accident.
+ * credentials.
  * @param db {flatdb.DB} the store to read
  * @param scope {string} the scope name
  * @param provider {string} the identity provider that authenticated the caller
@@ -1021,10 +972,9 @@ export func ownsNamespace(db as flatdb.DB, scope as string, provider as string, 
     if ($ns.subject == $subject) {
         return true;
     }
-    # A co-owner writes under the scope exactly as the owner does. They are held
-    # as bare subject ids under the same provider, and no login is stored beside
-    # them: the id is what authorises, a login is decoration, and a second copy
-    # of a display label is a second thing to go stale after a rename.
+    # A co-owner writes as the owner does. Co-owners are bare subject ids under
+    # the same provider, with no login stored, since a login would go stale on
+    # rename.
     for (def other in $ns.coOwners) {
         if ($other == $subject) {
             return true;
@@ -1048,7 +998,7 @@ export func removeNamespace(db as flatdb.DB, scope as string) {
 # --- refresh tokens ---------------------------------------------------------
 
 # refreshPtr is the JSON Pointer of one refresh-token record, keyed by the
-# token's fingerprint rather than the token itself.
+# token's fingerprint.
 func refreshPtr(fingerprint as string) {
     return "/refreshTokens/" + $fingerprint;
 }
@@ -1056,10 +1006,14 @@ func refreshPtr(fingerprint as string) {
 /**
  * A stored refresh token: who it belongs to and when it stops working. The
  * token itself is never stored, only its fingerprint (the map key), so a leaked
- * database cannot be replayed as a set of live credentials.
- * @field accountId {int} the numeric GitHub account id this token authenticates
- * @field login {string} the GitHub login, a display label refreshed on each use
+ * database holds no live credentials.
+ * @field accountId {int} the numeric account id this token authenticates
+ * @field login {string} the provider login, a display label refreshed on each use
  * @field expiresAt {int} when the token stops working (Unix seconds)
+ * @field orgs {map of string to string} folded organisation login to provider id,
+ *     as captured at login
+ * @field orgsCheckedAt {int} when `orgs` was read at login (Unix seconds); absent
+ *     reads as 0
  */
 export def struct Refresh {
     accountId as int,
@@ -1141,10 +1095,9 @@ export func deleteRefresh(db as flatdb.DB, fingerprint as string) {
 }
 
 /**
- * How many refresh tokens an account currently holds. Asked before a revoke, so
- * the operational log can record what was actually dropped: "revoked 3" and
- * "revoked 0" are different events, and the second one usually means the
- * operator has the wrong account id.
+ * How many refresh tokens an account currently holds. Asked before a revoke so
+ * the operational log records how many were dropped; "revoked 0" usually means
+ * the wrong account id.
  * @param db {flatdb.DB} the store to read
  * @param accountId {int} the numeric account id
  * @return {int} the number of live refresh tokens held by that account
@@ -1163,16 +1116,14 @@ export func countRefresh(db as flatdb.DB, accountId as int) {
 }
 
 /**
- * Forget every refresh token belonging to an account, returning a fresh DB.
- * This is the operator path the specification requires for invalidating an
- * identity's outstanding tokens (section 8.5).
+ * Forget every refresh token belonging to an account, and its sealed forge
+ * credential, returning a fresh DB. The operator path of specification 8.5.
  * @param db {flatdb.DB} the store to edit
- * @param accountId {int} the numeric GitHub account id to revoke
+ * @param accountId {int} the numeric account id to revoke
  * @return {flatdb.DB} a fresh store without that account's tokens
  */
 export func revokeAccount(db as flatdb.DB, accountId as int) {
-    # The sealed forge credential goes with the session: a revoked account must
-    # not leave behind a token the registry could still act with.
+    # A revoked account must not leave a forge token the registry could act with.
     def out as flatdb.DB init deleteForgeToken($db, $accountId);
     if (not flatdb.has($out, "/refreshTokens")) {
         return $out;
@@ -1190,12 +1141,11 @@ func forgeTokenPtr(accountId as int) {
 }
 
 /**
- * Record an account's forge credential, **sealed**, returning a fresh DB.
+ * Record an account's forge credential, sealed, returning a fresh DB.
  *
- * Kept only where identity and forge are one service, and only to ask the forge
- * whether this account may push to a repository it publishes from
- * (specification 7.1, route A). One per account: a later login replaces it, so
- * the registry holds the newest credential the provider issued and no history.
+ * Kept only under `login` source authority, where identity and forge are one
+ * service, to ask the forge whether this account may push to a repository
+ * (specification 7.1, route A). One per account; a later login replaces it.
  * @param db {flatdb.DB} the store to edit
  * @param accountId {int} the numeric account id
  * @param sealed {string} the credential as `forgecred.seal` produced it
@@ -1214,8 +1164,7 @@ export func putForgeToken(db as flatdb.DB, accountId as int, sealed as string, s
 }
 
 /**
- * An account's sealed forge credential, or "" when none is on record - an
- * account that has not logged in since credentials were kept, or one revoked.
+ * An account's sealed forge credential, or "" when none is on record.
  * @param db {flatdb.DB} the store to read
  * @param accountId {int} the numeric account id
  * @return {string} the sealed credential, or ""
@@ -1274,8 +1223,8 @@ export func resolve(db as flatdb.DB, name as string, constraintExpr as string) {
     if (not hasDeck($db, $name)) {
         return notFound($name);
     }
-    # Live versions only: a yank withdraws a version from *new* resolutions while
-    # leaving it fetchable for a lockfile that already pins it (specification 9).
+    # Live versions only: a yanked version stays fetchable for a lockfile but is
+    # never chosen by a new resolution (specification 9).
     def picked as string init constraint.best(listLiveVersions($db, $name), $constraintExpr);
     if ($picked == "") {
         return notFound($name);
@@ -1296,25 +1245,22 @@ export func resolve(db as flatdb.DB, name as string, constraintExpr as string) {
 
 # --- trusted publisher bindings ---------------------------------------------
 
-# bindingPtr is the JSON Pointer of a deck's trusted-publisher binding. Keyed on
-# the folded deck name, so a binding registered for @Acme/Tool is found for
-# @acme/tool.
+# bindingPtr is the JSON Pointer of a deck's trusted-publisher binding, keyed on
+# the folded deck name.
 func bindingPtr(deck as string) {
     return "/publishers/" + ptrEscape(deckname.fold($deck));
 }
 
 /**
  * Record a trusted-publisher binding, returning a fresh DB. One binding per
- * deck: re-registering replaces, which is how a repository migration is done.
+ * deck; re-registering replaces it (how a repository migration is done).
  * @param db {flatdb.DB} the store to edit
  * @param b {trustpub.Binding} the binding to record
  * @return {flatdb.DB} a fresh store carrying it
  */
 export func putBinding(db as flatdb.DB, b as trustpub.Binding) {
-    # The root is created on first write, as every other table here is. That is
-    # also the whole migration story for this schema addition: a document written
-    # before trusted publishing existed simply has no `/publishers`, and every
-    # reader below treats that as "no bindings" rather than as an error.
+    # The root is created on first write; readers treat a missing `/publishers`
+    # as no bindings.
     def out as flatdb.DB init $db;
     if (not flatdb.has($out, "/publishers")) {
         $out = flatdb.set($out, "/publishers", json.map());
@@ -1377,8 +1323,8 @@ export func getBinding(db as flatdb.DB, deck as string) {
 }
 
 /**
- * Forget a deck's trusted-publisher binding, returning a fresh DB. This is how a
- * compromised or retired repository is cut off.
+ * Forget a deck's trusted-publisher binding, returning a fresh DB. Cuts off a
+ * compromised or retired repository.
  * @param db {flatdb.DB} the store to edit
  * @param deck {string} the deck name
  * @return {flatdb.DB} a fresh store without it
@@ -1405,12 +1351,8 @@ export func listBindings(db as flatdb.DB) {
 
 /**
  * Withdraw a version from new resolutions, or restore it, returning a fresh DB.
- *
- * **Yanking is not deletion** (specification 9). The record stays, the code stays
- * fetchable, and an existing lockfile that pins this version keeps installing;
- * what changes is that a fresh resolution will not choose it. That is the whole
- * point: deleting a version breaks everyone who already depends on it, which
- * punishes the wrong people for the publisher's mistake.
+ * Yanking is not deletion (specification 9): the record stays, the code stays
+ * fetchable, and a lockfile that pins the version keeps installing.
  * @param db {flatdb.DB} the store to edit
  * @param name {string} the deck name
  * @param version {string} the version to withdraw or restore
@@ -1433,8 +1375,8 @@ export func setYanked(db as flatdb.DB, name as string, version as string, yanked
  * @return {bool} true when the version is withdrawn
  */
 export func isYanked(db as flatdb.DB, name as string, version as string) {
-    # The one flag, read where it lives. Building the whole record to read it
-    # cost a third of every listing, since a listing asks this of every version.
+    # Read the flag directly; building the whole record cost a third of every
+    # listing.
     def ptr as string init versionPtr($name, $version) + "/yanked";
     if (not flatdb.has($db, $ptr)) {
         return false;
@@ -1443,9 +1385,9 @@ export func isYanked(db as flatdb.DB, name as string, version as string) {
 }
 
 /**
- * Every live (not yanked) version of a deck, in stored order. This is what a
- * resolution chooses from; `listVersions` still returns everything, because a
- * deck page and a lockfile-pinned fetch both need to see a yanked version.
+ * Every live (not yanked) version of a deck, in stored order: what a resolution
+ * chooses from. `listVersions` returns yanked versions too, for deck pages and
+ * lockfile-pinned fetches.
  * @param db {flatdb.DB} the store to read
  * @param name {string} the deck name
  * @return {list of string} the version strings that are not yanked
@@ -1463,8 +1405,7 @@ export func listLiveVersions(db as flatdb.DB, name as string) {
 # --- CI tokens ---------------------------------------------------------------
 
 # ciTokenPtr is the JSON Pointer of a CI token record, keyed on the token's
-# SHA-256. The token itself is never a key, and never stored: a leaked database
-# is a list of hashes, the same decision refresh tokens take.
+# SHA-256. As with refresh tokens, the token itself is never stored.
 func ciTokenPtr(fingerprint as string) {
     return "/ciTokens/" + ptrEscape($fingerprint);
 }
@@ -1494,8 +1435,8 @@ export func putCiToken(db as flatdb.DB, t as citoken.Token) {
 
 /**
  * Read a CI token record by fingerprint. An unknown fingerprint yields a zero
- * `Token`, whose empty `fingerprint` `citoken.check` refuses, so a caller that
- * forgets to guard fails closed.
+ * `Token`, whose empty `fingerprint` `citoken.check` refuses, so an unguarded
+ * caller fails closed.
  * @param db {flatdb.DB} the store to read
  * @param fingerprint {string} the token's SHA-256
  * @return {citoken.Token} the record, or a zero value
@@ -1529,8 +1470,7 @@ export func getCiToken(db as flatdb.DB, fingerprint as string) {
 }
 
 /**
- * Forget one CI token, returning a fresh DB. Individually revocable is the
- * point: a suspected leak costs one pipeline, not every pipeline.
+ * Forget one CI token, returning a fresh DB. A no-op when it is unknown.
  * @param db {flatdb.DB} the store to edit
  * @param fingerprint {string} the token to drop
  * @return {flatdb.DB} a fresh store without it
@@ -1557,8 +1497,7 @@ export func listCiTokens(db as flatdb.DB) {
 
 /**
  * Stamp a CI token as used, returning a fresh DB. Recorded so an unused token
- * can be found and removed, which is the only way a standing credential gets
- * retired before it leaks.
+ * can be found and removed.
  * @param db {flatdb.DB} the store to edit
  * @param fingerprint {string} the token that authorised a write
  * @param now {string} the time (Unix seconds as text)
@@ -1574,16 +1513,11 @@ export func touchCiToken(db as flatdb.DB, fingerprint as string, now as string) 
 }
 
 /**
- * Record a deck's README, returning a fresh DB.
+ * Record a deck's README, returning a fresh DB. A no-op when the deck is absent.
  *
- * Held on the **deck** rather than the version, and overwritten by each publish,
- * so the page shows what the most recent release says about the deck. A per
- * version copy would mean storing the same text many times over to answer a
- * question nobody asks: readers want to know what this deck is now.
- *
- * **Stored verbatim, as the untrusted publisher input it is.** Nothing here
- * renders it; `webview` escapes before rendering, because a README that could
- * inject markup would be running a publisher's script on every visitor.
+ * Held on the deck, not the version, and overwritten by each publish that
+ * carries one, so the page shows the most recent README published. Stored verbatim as untrusted
+ * publisher input; `webview` escapes it before rendering.
  * @param db {flatdb.DB} the store to edit
  * @param name {string} the deck name
  * @param readme {string} the file's contents ("" clears it)
@@ -1614,15 +1548,12 @@ export func getReadme(db as flatdb.DB, name as string) {
 /**
  * Add a co-owner to a scope, returning a fresh DB.
  *
- * A co-owner writes under the scope exactly as the owner does. What they are
- * **not** is a second holder of the scope's identity: the record still names one
- * `subject` as the principal it was granted to, and reassigning that is
- * `registerNamespace`. This is the difference between "let my colleague publish"
- * and "hand the scope over".
+ * A co-owner writes under the scope as the owner does, but the record still
+ * names one `subject` as the principal it was granted to; reassigning that is
+ * `registerNamespace`.
  *
- * Idempotent, and it refuses an unowned scope: a reserved name has no owner to
- * co-own with, and quietly accepting one would leave a scope nobody holds that
- * somebody can nevertheless write to.
+ * Idempotent. An unowned (reserved) scope is left unchanged, so nobody can
+ * write under a scope nobody holds.
  * @param db {flatdb.DB} the store to edit
  * @param scope {string} the scope
  * @param subject {string} the principal to add, under the scope's own provider
@@ -1639,8 +1570,7 @@ export func addCoOwner(db as flatdb.DB, scope as string, subject as string) {
             return $db;
         }
     }
-    # A list field of a struct cannot be appended to in place; build the list,
-    # then assign it back.
+    # A struct's list field cannot be appended to in place.
     def owners as list of string init $ns.coOwners;
     $owners[] = $subject;
     def out as Namespace init $ns;
@@ -1651,10 +1581,8 @@ export func addCoOwner(db as flatdb.DB, scope as string, subject as string) {
 /**
  * Remove a co-owner from a scope, returning a fresh DB.
  *
- * The scope's own `subject` cannot be removed this way. Losing the last owner
- * would leave a scope with decks under it and nobody able to yank them, so
- * handing the scope on is `registerNamespace` and is deliberately a different
- * verb.
+ * The scope's own `subject` cannot be removed this way, since that would leave
+ * decks nobody can yank; handing the scope on is `registerNamespace`.
  * @param db {flatdb.DB} the store to edit
  * @param scope {string} the scope
  * @param subject {string} the principal to remove
@@ -1682,8 +1610,7 @@ export func removeCoOwner(db as flatdb.DB, scope as string, subject as string) {
 
 /**
  * Every principal that may write under a scope: the owner first, then any
- * co-owners. Empty when the scope is reserved, which is what makes a reserved
- * scope unwritable rather than merely unclaimed.
+ * co-owners. Empty when the scope is unregistered or reserved.
  * @param db {flatdb.DB} the store to read
  * @param scope {string} the scope
  * @return {list of string} the subject ids
@@ -1707,7 +1634,7 @@ export func ownersOf(db as flatdb.DB, scope as string) {
 # --- the write lock ----------------------------------------------------------
 
 /**
- * A held write lock. Release it with `unlock`, ideally through `defer` so it is
+ * A held write lock. Release it with `unlock`, through `defer` so it is
  * released however the block exits.
  * @field path {string} the lock's own path
  * @field holder {string} what was written into it, for diagnosing a stuck lock
@@ -1717,8 +1644,7 @@ export def struct Lock {
     holder as string
 };
 
-# lockPathFor is the lock beside the database, so the two travel together and a
-# bind-mounted data directory carries both. `flatdb.lock` names it the same way.
+# lockPathFor is the lock beside the database, named as `flatdb.lock` names it.
 func lockPathFor(dbPath as string) {
     return $dbPath + ".lock";
 }
@@ -1735,24 +1661,18 @@ func holderOf(path as string) {
 /**
  * Take the registry's write lock, waiting for it if somebody else holds it.
  *
- * `flatdb.save` replaces the document crash-atomically, so a reader never sees a
- * torn file - but two writers that each read, edit, and write back will still
- * lose one of the two edits, and nothing in the write path notices. That is the
- * loss this prevents, and it is not a rare race: `deckadmin` run while the
- * server is up, or two publishes arriving together, is enough.
+ * `flatdb.save` is crash-atomic but does not lock, so two writers that each
+ * read, edit, and write back lose one edit. `deckadmin` run while the server is
+ * up, or two concurrent publishes, is enough.
  *
- * **This is `flatdb.lock`**, an exclusive file beside the database whose
- * content is the holder label (`cat` it to diagnose a stuck lock). A lock older
- * than 120 s is taken to be abandoned by a killed writer and broken, one waiter
- * at a time and only while it still holds the holder judged stale, so a lock a
- * faster waiter has just re-taken is never removed. A lock that cannot be
- * created at all (read-only mount, missing directory, wrong uid) fails at once
- * with the reason, rather than as contention after the wait. The registry kept
- * its own symlink lock until the library's break was safe (0.24.0-dev+113).
+ * This is `flatdb.lock`: an exclusive file beside the database whose content is
+ * the holder label (`cat` it to diagnose a stuck lock). A lock older than 120 s
+ * is treated as abandoned and broken, one waiter at a time and only while it
+ * still holds the holder judged stale. A lock that cannot be created at all
+ * (read-only mount, missing directory, wrong uid) fails at once with the reason.
  *
- * **Holding the lock is only half of it.** The document must be *read* inside
- * the lock as well as written, or the read happened before somebody else's write
- * and the edit is computed against a stale copy.
+ * The document must be read inside the lock as well as written, or the edit is
+ * computed against a stale copy.
  * @param dbPath {string} the database path this lock guards
  * @return {Lock} the held lock
  * @throws {Error} kind "store" when the lock could not be taken: held past the
@@ -1783,9 +1703,8 @@ export func lockHolder(dbPath as string) {
 }
 
 /**
- * Release a write lock. Safe to call on a lock somebody else has already broken:
- * a release that finds a different holder leaves it alone rather than freeing
- * somebody else's lock.
+ * Release a write lock. A release that finds a different holder (the lock was
+ * broken and re-taken) leaves it alone.
  * @param held {Lock} the lock returned by `lock`
  */
 export func unlock(held as Lock) {
@@ -1795,22 +1714,16 @@ export func unlock(held as Lock) {
 
 # --- lookup counts -----------------------------------------------------------
 
-# statsPtr is the JSON Pointer of a deck's lookup-count record. Kept in its own
-# top-level table rather than inside the deck's record so that counting writes
-# and publishing writes touch different subtrees: a flush that lands while an
-# operator is editing a deck then merges cleanly instead of racing over one
-# object. It also keeps `getDeckJson` free of a member that changes constantly,
-# which matters because that value is what the API serves.
+# statsPtr is the JSON Pointer of a deck's lookup-count record. A separate
+# top-level table, so counting and publishing writes touch different subtrees
+# and `getDeckJson`, which the API serves, carries no constantly changing member.
 func statsPtr(name as string) {
     return "/stats/" + ptrEscape(deckname.fold($name));
 }
 
 /**
  * A deck's lookup-count record, or an empty object when it has never been
- * looked up.
- *
- * Empty rather than absent is what lets `stats.summarise` answer with zeroes for
- * a deck nobody has resolved yet, so a page has nothing to special-case.
+ * looked up, so `stats.summarise` answers with zeroes.
  * @param db {flatdb.DB} the store
  * @param name {string} the deck name
  * @return {json.Value} the record, possibly empty
@@ -1838,11 +1751,8 @@ export func putStats(db as flatdb.DB, name as string, rec as json.Value) {
 }
 
 /**
- * A deck's live versions, newest first.
- *
- * `listLiveVersions` answers in document order, which is the right shape for a
- * resolver choosing by constraint and the wrong one for a page that wants "the
- * current release". This is the ordered form.
+ * A deck's live versions, newest first: the ordered form of `listLiveVersions`,
+ * for pages.
  * @param db {flatdb.DB} the store
  * @param name {string} the deck name
  * @return {list of string} the unyanked versions, highest first

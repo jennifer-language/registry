@@ -38,8 +38,7 @@ func throwsWithoutABase() {
 }
 
 func testAnUnsetBaseIsAnErrorNotAGuess() {
-    # there is no hosted Gitea to fall back to, and guessing would point the
-    # registry at a stranger's server
+    # a guessed base would point the registry at a stranger's server
     testing.assertThrows("throwsWithoutABase", "identity");
 }
 
@@ -58,9 +57,7 @@ func testPollUsesTheSharedVocabulary() {
 }
 
 func testTheProviderCanBeBuilt() {
-    # every name in the vtable must exist: a missing one stopped the server from
-    # booting with this provider. Lint flags it since 0.24.0-dev+113 (L108); no
-    # test that calls a function directly can, only building the struct
+    # every name in the vtable must exist, or the server fails to boot
     def p as identity.Provider init provider();
     testing.assertEqual(len($p.memberships(cfg(), "any-token")), 0);
 }

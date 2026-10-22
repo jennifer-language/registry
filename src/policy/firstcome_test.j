@@ -37,7 +37,6 @@ func testReservedIsStillRefused() {
 }
 
 func testStanceRecordsRatherThanRefusing() {
-    # a first-come registry has decided its users are trusted; refusing every
-    # forge it cannot query would make it unusable
+    # its users are trusted; refusing every unqueryable forge makes it unusable
     testing.assertEqual(policy().sourceStance(), "record");
 }

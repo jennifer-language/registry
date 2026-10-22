@@ -5,18 +5,14 @@
 /**
  * A caller's forge credential, sealed for storage.
  *
- * Where identity and forge are one service, the token a login yields is the only
- * credential that can ask the forge whether that person may push to a
- * repository, which is how a publish establishes source authority
- * (specification 7.1, route A). So it is kept - but never in the clear. It is
- * sealed with AES-256-GCM under a key derived from the registry's signing key,
- * so a copied database alone is a list of ciphertexts, and tampering with one
- * fails authentication instead of producing a different token.
+ * Where identity and forge are one service, the login token is the credential
+ * that asks the forge whether a person may push (specification 7.1, route A).
+ * It is stored sealed with AES-256-GCM, so a copied database alone yields only
+ * ciphertexts and a tampered record fails authentication.
  *
- * The key is derived rather than reused: HKDF with a purpose label gives this
- * use its own key, so a weakness in how one is used cannot carry over to the
- * other. Rotating the signing key makes every sealed credential unreadable,
- * which is the right failure: those accounts are asked to log in again.
+ * The key is derived from the signing key with HKDF and a purpose label, so the
+ * two uses do not share a key. Rotating the signing key makes every sealed
+ * credential unreadable, and those accounts must log in again.
  * @module forgecred
  * @example
  * import "./forgecred.j" as forgecred;
@@ -28,8 +24,7 @@ use crypto;
 use convert;
 use encoding;
 
-# Names this key's purpose. Changing it makes every stored credential unreadable,
-# which is how a future change of format would retire the old ones.
+# Names this key's purpose. Changing it makes every stored credential unreadable.
 def const KEY_LABEL as string init "jvc-registry forge-credential v1";
 
 # sealingKey derives the AES-256 key for this purpose from the signing key.

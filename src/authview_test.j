@@ -6,10 +6,7 @@
 #
 #     jennifer test src/authview_test.j
 #
-# Everything except the two GitHub calls inside `token` is a pure function of
-# its arguments and the store, so issuing, rotating, and refreshing are all
-# exercised here without a socket. `now` is a parameter, so a token is placed
-# either side of its expiry by passing a different one.
+# Everything except the provider calls is tested here without a socket.
 
 use testing;
 use json;
@@ -70,7 +67,7 @@ func offConfig() {
 func testEnabledNeedsBothHalves() {
     testing.assertTrue(enabled(config()));
     testing.assertFalse(enabled(offConfig()));
-    # a client id with no signing key cannot verify anything afterwards
+    # a client id alone is not enough
     def half as Config init config();
     def none as bytes;
     $half.signingKey = $none;
@@ -91,15 +88,13 @@ func testBodyFieldReadsAField() {
 }
 
 func testBodyFieldTreatsMissingAndMalformedAlike() {
-    # both mean "the request was not usable", so both answer ""
     testing.assertEqual(bodyField('{"other": "abc"}', "deviceCode"), "");
     testing.assertEqual(bodyField("not json at all", "deviceCode"), "");
     testing.assertEqual(bodyField("", "deviceCode"), "");
 }
 
 func testAnEarlyAnswerNeedsNoStore() {
-    # the network half runs without the write lock, so an answer it can give on
-    # its own must not depend on, or hand back, the registry
+    # the network half runs without the write lock and must not touch the registry
     def got as Login init login(config(), '{}');
     testing.assertFalse($got.ok);
     testing.assertEqual($got.reply.status, 400);
@@ -144,8 +139,7 @@ func identified(accessToken as string) {
 }
 
 func testTheForgeTokenIsKeptSealed() {
-    # kept so a publish can ask the forge about this account (7.1 route A), and
-    # never in the clear
+    # kept for 7.1 route A, never in the clear
     def out as AuthReply init issueLogin(config(), emptyDb(), identified("gho_secret"), nowish());
     def sealed as string init store.getForgeToken($out.db, ACCOUNT);
     testing.assertNotEqual($sealed, "");
@@ -159,8 +153,7 @@ func testTheForgeTokenIsNeverInTheReply() {
 }
 
 func testWithoutRouteANoForgeTokenIsKept() {
-    # where identity and forge differ the forge would not accept it, so holding
-    # it would be risk for nothing
+    # where identity and forge differ the forge would not accept it
     def c as Config init config();
     $c.keepForgeToken = false;
     def out as AuthReply init issueLogin($c, emptyDb(), identified("gho_secret"), nowish());
@@ -177,7 +170,6 @@ func testMissingFieldsAre400() {
 
 func testPollStatesMapToStatusCodes() {
     def db as flatdb.DB init emptyDb();
-    # the outcome rides on the status code so a client branches without prose
     testing.assertEqual(stateReply($db, "pending").status, 202);
     testing.assertEqual(stateReply($db, "slowDown").status, 429);
     testing.assertEqual(stateReply($db, "denied").status, 403);
@@ -191,8 +183,7 @@ func testPendingCarriesAStatusBody() {
 }
 
 func testAnUnknownStateIsTerminalNotPending() {
-    # waiting cannot recover from an error we do not recognise, and treating it
-    # as pending would spin a client until its code expired
+    # treating it as pending would spin a client until its code expired
     testing.assertEqual(stateReply(emptyDb(), "something-new").status, 403);
 }
 
@@ -214,10 +205,7 @@ func testIssueReturnsAUsableTokenPair() {
 }
 
 func testTheLoginAnswersWithTheOrganisationsItSaw() {
-    # The point of reporting them: a member of three organisations whose provider
-    # discloses one gets a token that silently covers one, and every later
-    # refusal blames the scope name. Named here, the shortfall is visible at the
-    # moment of login instead.
+    # makes an organisation the provider did not disclose visible at login
     def out as AuthReply init issue(
         config(),
         emptyDb(),
@@ -227,22 +215,19 @@ func testTheLoginAnswersWithTheOrganisationsItSaw() {
         0,
         nowish());
     testing.assertEqual(json.length($out.body, "/orgs"), 2);
-    # sorted, so a client prints them in a stable order rather than a map's
+    # sorted, for a stable order
     testing.assertEqual(json.asString($out.body, "/orgs/0"), "acme");
     testing.assertEqual(json.asString($out.body, "/orgs/1"), "viverto");
 }
 
 func testTheOrganisationListNamesLoginsNotIds() {
-    # An id is what ownership binds to and a login is what a claim is typed as,
-    # so publishing the ids would be both useless to the caller and the one part
-    # worth not handing out.
+    # a claim is typed as a login, so ids are not returned
     def out as json.Value init orgNames({"viverto": "42"});
     testing.assertEqual(json.asString($out, "/0"), "viverto");
 }
 
 func testAnAccountInNoOrganisationsGetsAnEmptyList() {
-    # present and empty, not absent: a client can say "none" rather than having
-    # to distinguish a registry that does not report them at all
+    # present and empty, so a client can tell it from a registry that omits it
     def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", {}, 0, nowish());
     testing.assertTrue(json.has($out.body, "/orgs"));
     testing.assertEqual(json.length($out.body, "/orgs"), 0);
@@ -284,7 +269,7 @@ func testRefreshReturnsANewPair() {
     def out as AuthReply init refresh(config(), $first.db, refreshBody($given), nowish());
     testing.assertEqual($out.status, 200);
     testing.assertEqual(json.asInt($out.body, "/accountId"), ACCOUNT);
-    # the identity survives the exchange without another trip to GitHub
+    # the identity survives without another provider call
     testing.assertEqual(json.asString($out.body, "/login"), "alice");
 }
 
@@ -300,8 +285,7 @@ func testRefreshRotatesTheToken() {
 }
 
 func testASpentRefreshTokenCannotBeReplayed() {
-    # this is the whole point of rotating: a captured token works once, and the
-    # theft shows up as an unexpected logout rather than as silent access
+    # rotation: a captured token works once
     def first as AuthReply init loggedIn(emptyDb());
     def given as string init json.asString($first.body, "/refreshToken");
     def used as AuthReply init refresh(config(), $first.db, refreshBody($given), nowish());
@@ -361,8 +345,7 @@ func testAuthenticateRejectsAWrongScheme() {
 }
 
 func testALoginEndsAfterThirtyDaysHoweverOftenItIsRefreshed() {
-    # memberships and the login are captured at login; an endless refresh chain
-    # carried them forever
+    # login-time memberships must not ride an endless refresh chain
     def reply as AuthReply init loggedIn(emptyDb());
     def start as int init nowish();
     # refreshed every ten days, well inside each refresh token's own lifetime

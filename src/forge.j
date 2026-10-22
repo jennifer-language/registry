@@ -3,21 +3,19 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * The forge interface (specification 12.3): what is in this repository, and who
- * may push to it?
+ * The forge interface (specification 12.3): repository contents and push
+ * permission.
  *
- * A deployment configures **one or more** forges, matched against a version
- * record's `url`, which is what lets one registry accept an internal Forgejo and
- * public GitHub in a single dependency graph. Each module under `forge/` exports
- * a `forge()` returning a `Forge` - a struct of `func` values.
+ * Specification 12.4 allows one or more forges, matched against a version
+ * record's `url`; this registry wires exactly one (`config.forge`), and
+ * `handles` refuses a URL it does not claim. Each module under `forge/` exports
+ * a `forge()` returning a `Forge`, a struct of `func` values.
  *
- * The shared types live here for the same reason as in `identity.j`: a struct is
- * identified by `(module, name)`.
+ * The shared types live here because a struct is identified by `(module, name)`.
  *
- * This module is pure. Each forge module keeps its URL parsing and its
- * permission interpretation separate from its one HTTP call, so those can be
- * tested without a socket, which matters here because the API shapes are taken
- * from documentation rather than from a live instance.
+ * This module is pure. Each forge module keeps URL parsing and permission
+ * interpretation separate from its HTTP call, so those are tested without a
+ * socket; the API shapes are taken from documentation, not a live instance.
  * @module forge
  * @example
  * import "./forge/gitea.j" as gitea;
@@ -61,9 +59,8 @@ export def struct Repo {
 
 /**
  * Whether the caller may publish from a repository.
- * @field known {bool} false when the forge could not answer at all, which is
- *     **not** the same as a refusal: specification 7.1 requires an unanswerable
- *     check to be treated as unverified, never as granted
+ * @field known {bool} false when the forge could not answer; specification 7.1
+ *     requires an unanswerable check to be treated as unverified, never as granted
  * @field push {bool} true when the caller may push
  * @field reason {string} why, phrased for the person who will read it
  */
@@ -76,10 +73,9 @@ export def struct Permission {
 /**
  * A forge, as a set of func values.
  *
- * **Every function takes the `Config` as its first argument**, for the same
- * reason as in `identity.j`: Jennifer has no closures, so a forge cannot be built
- * around a configuration it remembers. `forge()` takes nothing and returns a
- * vtable; the caller holds the pair.
+ * Every function takes the `Config` as its first argument, since Jennifer has no
+ * closures. `forge()` takes nothing and returns a vtable; the caller holds the
+ * pair.
  * @field name {string} the forge name
  * @field handles {func} `func(Config, url) -> bool`: does this instance claim this URL?
  * @field resolveTag {func} `func(Config, url, tag) -> string`: the commit a tag points at
@@ -88,8 +84,9 @@ export def struct Permission {
  *     tag of this name? Used to detect a ref standing in front of the commit it
  *     is named after (see `refPresence`)
  * @field fileExists {func} `func(Config, url, commit, path) -> bool`: is there a
- *     file at this path at that commit? Answered from a listing of its directory,
- *     never by fetching the file; throws when the forge will not say
+ *     file at this path at that commit? Never fetches the content: GitHub and
+ *     Gitea read a listing of its directory, GitLab asks with a `HEAD`; throws
+ *     when the forge will not say
  * @field permission {func} `func(Config, url, callerToken) -> Permission`: may they push?
  *     Asked with the caller's own token, where identity and forge are one service
  * @field permissionFor {func} `func(Config, url, username) -> Permission`: may this
@@ -112,12 +109,9 @@ export def struct Forge {
 /**
  * Turn a forge's answer about one ref into presence, or refuse to guess.
  *
- * `200` is present and `404` is absent; **anything else throws**, and that is
- * the whole point of the function. This check exists to find a ref standing in
- * front of a commit of the same name, so reading an unanswerable question as
- * "no such ref" would fail open on precisely the case it was written for. It is
- * the same discipline as `unknown` for permissions (specification 7.1): a check
- * that could not be made is never a check that passed.
+ * `200` is present and `404` is absent; anything else throws. The check finds a
+ * ref shadowing a commit of the same name, so reading an unanswerable question
+ * as "no such ref" would fail open (same rule as `unknown`, specification 7.1).
  * @param status {int} the HTTP status the forge answered with
  * @return {bool} true when the ref exists, false when it provably does not
  */
@@ -139,8 +133,7 @@ export func refPresence(status as int) {
 }
 
 /**
- * The answer when a forge cannot say. Kept here so every module words it the
- * same way, and so the distinction from a refusal is impossible to lose.
+ * The answer when a forge cannot say; distinct from a refusal.
  * @param reason {string} why the check could not be made
  * @return {Permission} an unknown permission
  */
@@ -168,8 +161,8 @@ export func refused(reason as string) {
 
 /**
  * The host part of a URL, lowercased, with any userinfo and port removed.
- * Returns "" when the URL has no recognisable host, which is how a `file://` or
- * a plain path falls through to "no forge handles this".
+ * Returns "" when the URL has no recognisable host (`file://`, a plain path), so
+ * no forge handles it.
  * @param url {string} the repository URL
  * @return {string} the hostname, or ""
  */
@@ -199,7 +192,7 @@ export func hostOf(url as string) {
  * The `owner/name` path of a repository URL, with any `.git` suffix and
  * surrounding slashes removed. Returns "" when the URL does not carry one.
  *
- * Deeper paths are preserved, because GitLab nests groups: a URL of
+ * Deeper paths are preserved for GitLab's nested groups:
  * `https://gitlab.com/group/sub/project.git` yields `group/sub/project`.
  * @param url {string} the repository URL
  * @return {string} the repository path, or ""
@@ -228,13 +221,11 @@ export func pathOf(url as string) {
 /**
  * Why a repository URL cannot be published from, or "" when it can. Pure.
  *
- * Every forge adapter builds its API calls from its own configured base URL and
- * `pathOf(url)`, and ignores the rest of the URL - while the URL itself is what
- * gets recorded and handed to every client that installs. So anything in it the
- * adapters do not read is a place for the two to disagree: a userinfo, query or
- * fragment, or a path whose segments mean something other than they say
- * (`..`, an encoded `/`). Those are refused here, before any request is made.
- * The host is not judged here; whether a forge claims it is `Forge.handles`.
+ * Adapters build API calls from the configured base URL and `pathOf(url)` only,
+ * while the whole URL is recorded and handed to clients. Anything the adapters
+ * do not read would let the two disagree, so userinfo, query, fragment and
+ * misleading path segments (`..`, an encoded `/`) are refused before any request.
+ * The host is judged by `Forge.handles`.
  * @param url {string} the repository URL from the request
  * @return {string} the complaint, or ""
  */
@@ -265,12 +256,11 @@ export func repositoryProblem(url as string) {
 
 /**
  * Why a repository URL does not address the forge the way the forge is
- * configured, or "". Every read goes to the configured API, but the URL itself
- * is what the registry records and every client clones from, so a scheme or a
- * port the forge does not serve on (`http://github.com/...`,
- * `https://github.com:8080/...`) would send clients somewhere nobody checked.
- * Plain http and an explicit port are accepted only where the configured base
- * URL uses them, which is a self-hosted forge's business.
+ * configured, or "". Reads go to the configured API but clients clone from the
+ * recorded URL, so a scheme or port the forge does not serve on
+ * (`http://github.com/...`, `https://github.com:8080/...`) would send clients
+ * somewhere unchecked. Plain http and an explicit port are accepted only where
+ * the configured base URL uses them.
  * @param url {string} the repository URL, already past `repositoryProblem`
  * @param baseUrl {string} the forge's configured base URL ("" for the hosted one)
  * @return {string} the complaint, or "" when the URL is acceptable
@@ -295,10 +285,9 @@ export func originProblem(url as string, baseUrl as string) {
 
 /**
  * Whether a string is safe to place as one segment of a forge API path: letters,
- * digits, `.`, `_`, `-`, and not a dot segment. Pure. Repository owners and
- * names, and the usernames `permissionFor` asks about, are all spelled this way
- * on every supported forge; `%` is refused with the rest, so an encoded `/` or
- * `..` cannot reach a forge that decodes before routing.
+ * digits, `.`, `_`, `-`, and not a dot segment. Pure. Owners, repository names
+ * and usernames fit this on every supported forge; `%` is refused so an encoded
+ * `/` or `..` cannot reach a forge that decodes before routing.
  * @param seg {string} the candidate segment
  * @return {bool} true when it can be placed in a path as it is
  */
@@ -334,9 +323,9 @@ export func splitPath(p as string) {
  * return one: a JSON list of objects carrying `name` and `type`. Pure.
  *
  * Only entries of type `kind` count (`file` on GitHub and Gitea, `blob` on
- * GitLab), so a directory or a submodule named like the entry module is not
- * mistaken for it. Anything that is not a list - a single file's metadata, which
- * is what a forge returns when the "directory" is a file - lists nothing.
+ * GitLab), so a directory or submodule of the same name is not mistaken for a
+ * file. A non-list (a forge's answer when the "directory" is a file) lists
+ * nothing.
  * @param listing {json.Value} the decoded response
  * @param kind {string} the type an ordinary file carries on this forge
  * @return {list of string} the file names
@@ -359,11 +348,11 @@ export func fileNames(listing as json.Value, kind as string) {
 /**
  * Why a tag cannot be published, or "" when it can. Pure.
  *
- * The tag is placed into forge API paths, so it must not be able to change which
- * path it addresses. Git's own ref-name rules already refuse most of what would
- * (`..`, whitespace, control characters, `?`, `[`, `\`); `%` and `#` are legal
- * in a git ref but would be decoded or cut off on the way to a forge, so they
- * are refused too. A `/` inside a tag stays allowed, since git permits it.
+ * The tag is placed into forge API paths and must not change which path it
+ * addresses. Git's ref-name rules refuse most of that (`..`, whitespace, control
+ * characters, `?`, `[`, `\`); `%` and `#` are legal in git but would be decoded
+ * or cut off on the way to a forge, so they are refused too. An inner `/` is
+ * allowed.
  * @param tag {string} the tag named in the request
  * @return {string} the complaint, or ""
  */
@@ -391,9 +380,8 @@ export func tagProblem(tag as string) {
  * Read a forge's name for a collaborator's role as a push permission. Pure.
  *
  * GitHub's legacy `permission` field and Gitea's both answer with a role name.
- * Every role that may push is named here and so is every role that may not;
- * anything else is **unknown**, never granted, so a role a forge adds later is
- * refused until somebody decides what it means.
+ * Roles are listed explicitly both ways; anything else is unknown, so a role a
+ * forge adds later is refused until someone classifies it.
  * @param role {string} the role, such as `write` or `read`
  * @return {Permission} granted, refused, or unknown
  */
@@ -425,7 +413,7 @@ export func collaboratorPermissionFrom(doc as json.Value) {
 
 /**
  * Why a forge account cannot be asked about, or "" when it can. Pure. Shared by
- * every adapter's `permissionFor`, so the refusals read the same everywhere.
+ * every adapter's `permissionFor`.
  * @param cfg {Config} the forge configuration
  * @param username {string} the account to ask about
  * @return {string} the reason, or ""

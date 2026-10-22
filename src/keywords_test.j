@@ -3,7 +3,9 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * White-box overlay for `keywords.j`.
+ * White-box overlay for `keywords.j`. Run with:
+ *
+ *     jennifer test src/keywords_test.j
  * @module keywords_test
  */
 
@@ -11,10 +13,7 @@ use testing;
 use lists;
 use strings;
 
-# The refused terms are base64 here for the same reason they are base64 in the
-# module: a test file is a public file, and a crawler reading a list of these
-# words does not care that the surrounding function is named "assert". `term`
-# decodes one so an assertion still says what it means.
+# Refused terms stay base64 here, as in the module; `term` decodes one.
 func term(encoded as string) {
     return decodeAll([$encoded])[0];
 }
@@ -67,8 +66,7 @@ func testTheChildAbuseGroupMatchesInsideALongerWord() {
 }
 
 func testOrdinaryWordsContainingABlockedSubstringSurvive() {
-    # the substring pass is deliberately limited to the abuse group; applying it
-    # to "sex" would refuse "sexagesimal" and to "cp" would refuse half of unix
+    # the substring pass covers the abuse group only
     testing.assertFalse(isBlocked("sexagesimal"));
     testing.assertFalse(isBlocked("cpp"));
     testing.assertFalse(isBlocked("cpu"));
@@ -98,8 +96,7 @@ func testKeywordsAreFoldedAndDeduplicated() {
 }
 
 func testThePublishersOrderIsKept() {
-    # which five survive is the publisher's choice, so the order they wrote is
-    # the order that decides
+    # the publisher's order decides which five survive
     def out as list of string init normalise(["zebra", "apple", "mango"]);
     testing.assertEqual($out[0], "zebra");
     testing.assertEqual($out[2], "mango");
@@ -120,8 +117,7 @@ func testOnlyTheFirstFiveAreUsed() {
 }
 
 func testBlockedKeywordsDoNotConsumeTheBudget() {
-    # the ordering that matters: filtering runs before the cap, so padding the
-    # list with refused terms cannot push a real keyword out of the five
+    # filtering runs before the cap, so refused padding cannot displace a keyword
     def padding as list of string init lists.concat(abuse(), adult());
     def out as list of string init normalise([
         $padding[0],
@@ -153,8 +149,7 @@ func testNormalisingNeverThrowsOnRubbish() {
 }
 
 func testTheAbuseListIsNotEmptyAndIsIncludedInBlocked() {
-    # a refactor that dropped a group from blocked() would silently reopen it,
-    # and nothing else in the suite would fail
+    # guards against a group being dropped from blocked()
     testing.assertTrue(len(abuse()) > 0);
     for (def one in abuse()) {
         testing.assertTrue(lists.contains(blocked(), $one));

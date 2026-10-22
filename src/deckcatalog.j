@@ -3,14 +3,12 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * The adapter between the registry store and the shared resolver: it reads decks
- * out of a `flatdb`-backed `store` and adds them to a `catalog`, which is the
- * only thing `cli/resolver.j` knows how to read.
+ * Adapter from the registry store to the shared resolver: reads decks from a
+ * `flatdb`-backed `store` into a `catalog`, the resolver's only input.
  *
- * The server resolves through exactly the same resolver the CLI does. It fills
- * the catalog **lazily**, seeding only the decks the resolver asks for, so a
- * `/resolve-graph` call costs one store read per deck in the graph rather than a
- * walk of the whole registry.
+ * The server uses the same resolver as the CLI. Only decks reachable from the
+ * roots are read, so a `/resolve-graph` call costs one store read per deck in
+ * the graph, not a walk of the registry.
  * @module deckcatalog
  * @example
  * import "./deckcatalog.j" as deckcatalog;
@@ -25,17 +23,16 @@ import "./catalog.j" as catalog;
 import "./resolver.j" as resolver;
 import "./deckname.j" as deckname;
 
-# The most decks one resolution may draw in. Without a bound, one anonymous
-# request decides how much of the registry the server walks and re-resolves: a
-# chain of decks published under a single scope made one `/resolve-graph` cost
-# minutes of CPU. The resolver needs a round per level of a chain, so the worst
-# case grows with this; at 256 it is about a second. A real dependency graph is
-# a small fraction of it, and a wide one settles in a few rounds whatever its size.
+# The most decks one resolution may draw in. Unbounded, a chain of decks under
+# one scope made a single anonymous `/resolve-graph` cost minutes of CPU. The
+# resolver needs a round per chain level, so at 256 the worst case is about a
+# second; a wide graph settles in a few rounds whatever its size.
 export def const MAX_GRAPH_DECKS as int init 256;
 
 /**
- * The outcome of a server-side transitive resolution. Re-exported from the
- * shared resolver so `apiview` does not need to import both modules.
+ * The outcome of a server-side transitive resolution. A copy of
+ * `resolver.GraphResult`'s shape, so `apiview` does not need to import the
+ * resolver.
  * @field ok {bool} true when the whole graph resolved
  * @field resolved {list of catalog.Candidate} the locked set (empty on failure)
  * @field missing {list of string} decks absent from the registry (empty on success)
@@ -50,15 +47,13 @@ export def struct GraphResult {
 
 /**
  * The catalog candidates for every version of a deck, or none when the store
- * does not hold it. A yanked version is passed with `yanked` set, and the
- * resolver never chooses one (`catalog.selectableVersions`); passing it at all
- * is what lets the resolver say a deck exists but has nothing selectable,
- * rather than that it does not exist. A lockfile that pins a yanked version
- * installs from its recorded pin and never asks the catalog.
+ * does not hold it. Yanked versions are included with `yanked` set; the
+ * resolver never chooses them (`catalog.selectableVersions`) but can then
+ * report the deck as unsatisfiable rather than missing. A lockfile pinning a
+ * yanked version installs from its pin without the catalog.
  *
- * Dependency names are folded as they are read. Records written before publish
- * folded them could spell one deck two ways, which the resolver would treat as
- * two decks and resolve at two versions.
+ * Dependency names are folded as read: older records may spell one deck two
+ * ways, which would resolve as two decks at two versions.
  * @param db {flatdb.DB} the registry to read
  * @param name {string} the deck name, folded
  * @return {list of catalog.Candidate} one candidate per version
@@ -94,11 +89,12 @@ func candidatesOf(db as flatdb.DB, name as string) {
 }
 
 /**
- * Add every live version of a deck to a catalog.
+ * Add every version of a deck to a catalog, yanked ones with `yanked` set (see
+ * `candidatesOf`).
  * @param db {flatdb.DB} the registry to read
  * @param cat {catalog.Catalog} the catalog to extend
  * @param name {string} the deck name
- * @return {catalog.Catalog} the catalog with that deck's live versions added
+ * @return {catalog.Catalog} the catalog with that deck's versions added
  */
 export func addDeck(db as flatdb.DB, cat as catalog.Catalog, name as string) {
     def entries as list of catalog.Candidate init $cat.entries;
@@ -118,12 +114,9 @@ func failure(message as string) {
 /**
  * Resolve root requirements against the store, transitively.
  *
- * Everything the roots can reach - through **any** live version, since which
- * version is chosen is not known yet - is gathered in one breadth-first pass and
- * the resolver runs once over it. It used to grow the catalog a level at a time
- * and re-run the whole resolver after each, which made a deep graph cost its
- * depth times a full resolution, every round of which re-copied the catalog.
- * The pass stops at `MAX_GRAPH_DECKS`.
+ * Everything the roots reach through any version is gathered in one
+ * breadth-first pass, then the resolver runs once over it. The pass stops at
+ * `MAX_GRAPH_DECKS`.
  * @param db {flatdb.DB} the registry to read
  * @param roots {map of string to string} deck name to constraint
  * @return {GraphResult} the version-locked set, or why there is none

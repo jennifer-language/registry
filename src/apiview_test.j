@@ -4,7 +4,7 @@
 #
 # White-box tests for apiview.j. Run with:
 #
-#     JENNIFER_SYSMODDIR=../jennifer-lang/modules jennifer test server/apiview_test.j
+#     jennifer test src/apiview_test.j
 
 use testing;
 
@@ -81,10 +81,7 @@ func testDiscoveryKeepsTheRouteDerivedBase() {
 }
 
 func testDiscoveryOmitsAuthWhenNoneIsConfigured() {
-    # The specification makes `auth` optional and gives its absence a meaning:
-    # this registry accepts no logins. Advertising a provider with no endpoints
-    # behind it would leave a client knowing identity is GitHub and still having
-    # nowhere to send the exchange.
+    # An absent `auth` means "accepts no logins" (specification).
     def reply as Reply init discovery(discoveryBase(), "", noAuth());
     testing.assertFalse(json.has($reply.body, "/auth"));
 }
@@ -98,8 +95,7 @@ func testDiscoveryAdvertisesTheAuthEndpointsWhenConfigured() {
         "refreshUrl": "/v1/auth/refresh"
     };
     def reply as Reply init discovery(discoveryBase(), "", $urls);
-    # whatever the caller supplied: this module never learns which provider is
-    # configured, which is what lets a new one need no change here
+    # copied from the caller, whichever provider is configured
     testing.assertEqual(json.asString($reply.body, "/auth/provider"), "gitea");
     testing.assertEqual(json.asString($reply.body, "/auth/flow"), "device");
     # the paths are absolute and used verbatim, not joined to a base path
@@ -245,8 +241,7 @@ func testAServedVersionIsNotAMismatch() {
 }
 
 func testAnUnservedVersionIsA400NamingTheSupportedOnes() {
-    # a bare 404 here is indistinguishable from a missing deck, which sends the
-    # user looking for a typo instead of a version mismatch
+    # a 404 would be indistinguishable from a missing deck
     def served as list of int init [1];
     def reply as Reply init unsupportedVersion("/v2/deck", $served);
     testing.assertEqual($reply.status, 400);
@@ -266,9 +261,7 @@ func testTheCanonicalUrlIsAdvertisedWhenConfigured() {
 }
 
 func testAnUndeclaredCanonicalUrlIsOmitted() {
-    # Absence means "I do not know what I am called", which is the honest answer
-    # for a registry that has not been told. A guess would end up recorded in
-    # somebody's lockfile as this registry's identity.
+    # A guessed URL would be recorded in lockfiles as the registry's identity.
     testing.assertFalse(json.has(discovery(discoveryBase(), "", noAuth()).body, "/url"));
     testing.assertFalse(json.has(discovery(discoveryBase(), "   ", noAuth()).body, "/url"));
 }
@@ -283,7 +276,7 @@ func testTheCanonicalUrlDoesNotDisturbTheRestOfTheDocument() {
 # --- what a resolution request may ask ------------------------------------------
 
 func testAConstraintOutsideTheGrammarIsA400() {
-    # it matches nothing, and a 404 would read as "no such version"
+    # a 404 would read as "no such version"
     def db as flatdb.DB init emptyStore();
     testing.assertEqual(resolve($db, "alpha", "~>1.2").status, 400);
     testing.assertEqual(resolve($db, "alpha", "^99999999999999999999").status, 400);

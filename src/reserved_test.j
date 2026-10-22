@@ -6,16 +6,13 @@
 #
 #     jennifer test src/reserved_test.j
 #
-# A reserved list is data, so what is worth testing is that the data is sound:
-# that every entry could actually be claimed if it were not held, that the list
-# does not repeat itself, and that the deliberate omissions are still omitted.
+# Every entry is a valid scope, none repeats, and the omitted brands stay omitted.
 
 use testing;
 use lists;
 
 func testEveryReservedNameIsAValidScope() {
-    # a reserved name the grammar rejects protects nothing, and hides the typo
-    # that produced it
+    # a reserved name the grammar rejects protects nothing and hides a typo
     def bad as list of string init invalidAmong(defaults());
     testing.assertEqual(len($bad), 0);
 }
@@ -47,12 +44,8 @@ func testTheObviousDangerousNamesAreHeld() {
 }
 
 func testBrandsAreDeliberatelyNotHeld() {
-    # Not an oversight: under the derived policy the official registry runs,
-    # @microsoft is claimable only by the GitHub account called microsoft, so the
-    # provider has already settled it. A brand list has no edge and would promise
-    # an adjudication nobody here performs. If this ever changes, change the
-    # module docblock too - this test exists so the decision is not reversed by
-    # accident.
+    # Guards the decision in the module docblock against accidental reversal;
+    # change both together.
     def all as list of string init defaults();
     for (def brand in ["microsoft", "google", "apple", "amazon", "meta"]) {
         testing.assertFalse(lists.contains($all, $brand));

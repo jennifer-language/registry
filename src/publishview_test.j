@@ -6,10 +6,8 @@
 #
 #     jennifer test src/publishview_test.j
 #
-# This is the write path. The tests assert the *order* of its checks as much as
-# their outcomes: a publish that is refused for the wrong reason tells a
-# publisher to fix the wrong thing, and one that is refused too late has already
-# revealed something about a deck the caller has no rights to.
+# The tests assert the order of the checks as well as their outcomes: a late
+# refusal can reveal something about a deck the caller has no rights to.
 
 use testing;
 use json;
@@ -99,8 +97,7 @@ func testTheRecordIsPinnedToTheCommit() {
 }
 
 func testTheRecordComesFromTheManifestNotTheRequest() {
-    # the request names a repository and a tag; everything about the deck is read
-    # at the commit, which is what stops a publisher naming somebody's scope
+    # the deck is read at the commit, so a publisher cannot name somebody's scope
     def out as PublishReply init byToken(owned(), alice(), source(), NOW);
     def v as store.DeckVersion init store.getVersionRecord($out.db, "@acme/routeros", "0.1.0");
     testing.assertEqual($v.description, "MikroTik RouterOS client");
@@ -122,8 +119,7 @@ func testAnUnregisteredScopeIsRefusedBeforeAuthorisation() {
 }
 
 func testRepublishingAVersionIsRefused() {
-    # immutability is absolute: a lockfile that resolved this once must resolve
-    # to the same code forever
+    # a published version is immutable (specification 9)
     def db as flatdb.DB init byToken(owned(), alice(), source(), NOW).db;
     def out as PublishReply init byToken($db, alice(), source(), NOW);
     testing.assertEqual($out.status, 409);
@@ -146,8 +142,7 @@ func testAMalformedManifestIsA400() {
 }
 
 func testATagThatDisagreesWithTheManifestIsRefused() {
-    # a mislabelled release would carry a `ref` and a `version` that disagree for
-    # as long as the record exists (7, step 6)
+    # `ref` and `version` must not disagree (7, step 6)
     def src as Source init source();
     $src.tag = "v0.2.0";
     def out as PublishReply init byToken(owned(), alice(), $src, NOW);
@@ -189,8 +184,7 @@ func testTheEntryPathComesFromTheManifestName() {
 }
 
 func testAnUnresolvedTagIsRefused() {
-    # an abbreviated or empty SHA would be stored as the pin and handed to every
-    # client that installs the version
+    # an abbreviated or empty SHA must not become the pin
     def src as Source init source();
     $src.commit = "9f2c1d4";
     def out as PublishReply init byToken(owned(), alice(), $src, NOW);
@@ -271,8 +265,7 @@ func testADeckWithNoBindingIsRefused() {
 }
 
 func testTheBindingIsFoundByTheManifestName() {
-    # a repository bound to one deck must not publish to another by naming it;
-    # the lookup uses the name read at the commit, not anything in the request
+    # the binding is looked up by the name read at the commit
     def src as Source init source();
     $src.manifestText = '[package]
 name = "@acme/other"
@@ -298,9 +291,7 @@ func testABranchBuildIsRefused() {
 }
 
 func testTheTokenAndTheSourceMustBeTheSameRepository() {
-    # a build in a repository the caller controls must not publish code from one
-    # they do not: the token says where the build ran, the forge says what this
-    # URL is, and they have to agree
+    # the token's repository and the forge's must agree
     def src as Source init source();
     $src.repoId = "777777";
     def out as PublishReply init byTrustedPublisher(bound(), claims(), AUD, ISS, $src, NOW);
@@ -309,8 +300,7 @@ func testTheTokenAndTheSourceMustBeTheSameRepository() {
 }
 
 func testAForgeThatNamesNoRepositoryIsRefused() {
-    # every adapter returns an empty id when the payload lacks one; the check
-    # must not read that as agreement
+    # an empty forge id is not agreement
     def src as Source init source();
     $src.repoId = "";
     def out as PublishReply init byTrustedPublisher(bound(), claims(), AUD, ISS, $src, NOW);
@@ -344,11 +334,9 @@ func testAnUnregisteredScopeIsRefusedForCiToo() {
 
 # --- names that can be read as object ids -------------------------------------
 #
-# A git name and a git object id share one syntactic space, and a forge's
-# `?ref=` parameter resolves a name before an object. So a ref shaped like an id
-# can stand in front of the commit of that id while the record still reads as
-# pinned. Both halves are refused: the tag we would store, and the commit we
-# just read through.
+# A forge's `?ref=` resolves a name before an object, so a ref shaped like an id
+# can shadow that commit. Both the stored tag and the commit read through are
+# checked.
 
 func testATagShapedLikeACommitIsRefused() {
     def src as Source init source();
@@ -367,7 +355,7 @@ func testAnAbbreviatedHexTagIsRefusedToo() {
 }
 
 func testAnUppercaseHexTagIsRefused() {
-    # git's hex parsing takes either case, so folding is not optional
+    # git's hex parsing takes either case
     def src as Source init source();
     $src.tag = "9F2C1D4E5A6B";
     testing.assertEqual(byToken(owned(), alice(), $src, NOW).status, 400);
@@ -379,8 +367,7 @@ func testAnOrdinaryTagIsUntouched() {
 }
 
 func testAShadowedCommitIsRefused() {
-    # the manifest in hand was read through `?ref=<commit>`, so a ref of that
-    # name answered instead of the object and these bytes are the wrong ones
+    # read through `?ref=<commit>`, a ref of that name answered instead
     def src as Source init source();
     $src.commitShadowed = true;
     def out as PublishReply init byToken(owned(), alice(), $src, NOW);
@@ -391,8 +378,7 @@ func testAShadowedCommitIsRefused() {
 }
 
 func testAShadowedCommitIsRefusedFromCiToo() {
-    # the shadow is a property of the repository, not of the credential, so it
-    # must not be reachable by publishing from a workflow instead
+    # the shadow check applies to trusted publishing too
     def src as Source init source();
     $src.commitShadowed = true;
     def out as PublishReply init byTrustedPublisher(bound(), claims(), AUD, ISS, $src, NOW);
@@ -401,8 +387,7 @@ func testAShadowedCommitIsRefusedFromCiToo() {
 }
 
 func testTheNameShapeIsCheckedBeforeTheForgeOutput() {
-    # a 400 about the request beats a 400 about what the forge returned: the
-    # publisher can only act on the first one
+    # the request's 400 is reported before the forge's
     def src as Source init source();
     $src.tag = COMMIT;
     $src.commit = "not-a-sha";
@@ -413,10 +398,8 @@ func testTheNameShapeIsCheckedBeforeTheForgeOutput() {
 
 # --- a reserved scope has no delegate ------------------------------------------
 #
-# A scope registered with no subject is held by an operator so that nobody can
-# claim it and nobody can write under it. Each of the three credentials answers
-# to a different authority - a scope binding, a trusted-publisher binding, a
-# token record - so each is checked here separately, and each must refuse.
+# A scope with no subject is reserved. Each of the three credentials answers to
+# a different record, so each is checked separately.
 
 # reserved returns a store where @acme is registered but bound to nobody.
 func reserved() {
@@ -431,9 +414,7 @@ func testAReservedScopeRefusesABearerToken() {
 }
 
 func testAReservedScopeRefusesATrustedPublisher() {
-    # this path never consults the namespace: the binding is its whole authority.
-    # So a binding that should not exist would be honoured unless the publish
-    # itself asks whether the scope has an owner.
+    # this path never consults the namespace, so the publish must check the owner
     def db as flatdb.DB init store.putBinding(
         reserved(),
         trustpub.Binding{
@@ -472,8 +453,7 @@ func testAReservedScopeRefusesACiToken() {
 }
 
 func testAnOwnedScopeStillPublishes() {
-    # the guard above must refuse *unowned*, not *reserved-looking*: the ordinary
-    # path is what proves it did not simply close the door on everybody
+    # an owned scope still publishes through the same guard
     testing.assertEqual(byToken(owned(), alice(), source(), NOW).status, 201);
     testing.assertEqual(byTrustedPublisher(bound(), claims(), AUD, ISS, source(), NOW).status, 201);
 }
@@ -520,8 +500,7 @@ func testAStrangerCannotYank() {
 }
 
 func testAuthorisationComesBeforeExistence() {
-    # a caller with no rights to a scope must not learn which versions it holds
-    # by watching 404 against 403
+    # a stranger must not learn which versions exist by watching 404 vs 403
     def out as PublishReply init setYanked(
         published(),
         stranger(),
@@ -579,8 +558,7 @@ func withCiToken() {
 }
 
 func testARevokedCiTokenDoesNotPublish() {
-    # the record was looked up before the forge calls; revoked by the time the
-    # lock is held, it must not publish
+    # revoked during the forge calls, it must not publish
     def out as PublishReply init byCiToken(owned(), ciToken(), source(), NOW);
     testing.assertEqual($out.status, 401);
     testing.assertFalse($out.changed);

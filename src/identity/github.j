@@ -7,16 +7,12 @@
  * GitHub as an identity provider: the OAuth 2.0 device authorization grant
  * (RFC 8628), which the public registry runs (specification 12.7).
  *
- * **The registry drives the flow; the client never talks to GitHub and never
- * holds a GitHub token.** That keeps the OAuth application, its id, and its
- * scopes here, and keeps clients free of per-registry configuration.
+ * The registry drives the flow; the client never talks to GitHub or holds a
+ * GitHub token, so the OAuth application and its scopes stay here. The device
+ * grant needs no client secret.
  *
- * The device grant needs no client secret, which is the point of it: there is
- * nothing to leak, because the grant is designed for clients that cannot keep a
- * secret.
- *
- * `subjectFrom` is separated from the request that feeds it, so the parsing is
- * covered by the overlay without a socket.
+ * Parsing (`subjectFrom` and friends) is separate from the requests, so it is
+ * tested without a socket.
  * @module github
  * @example
  * import "./github.j" as github;
@@ -40,26 +36,18 @@ def const API_BASE as string init "https://api.github.com";
 def const TIMEOUT_MS as int init 10000;
 def const MAX_BYTES as int init 65536;
 
-# The narrowest scopes that work (specification 8.6): the account's stable id and
-# login, and organisation membership for a later org surface. No `repo` scope:
-# decks are public, so contents and permissions are readable without it.
+# The narrowest scopes that work (specification 8.6): the account's id and login,
+# and organisation membership. No `repo` scope, since decks are public.
 def const DEFAULT_SCOPES as string init "read:user read:org";
 
-# How hard to try when GitHub answers with a 5xx, and how long to wait between
-# attempts. Small numbers: this runs inside a request a person is waiting on.
+# Retries on a GitHub 5xx and the delay between them; small, because a person is
+# waiting on the request.
 def const RETRY_TRIES as int init 3;
 def const RETRY_DELAY_MS as int init 400;
 
-# getRetrying issues a GET and retries a **5xx** a couple of times.
-#
-# This exists because of where the call sits. A device code is single use: by the
-# time the registry resolves the account, the person has already approved at
-# GitHub and their code is spent. Failing there on a transient 503 costs them the
-# whole flow and they have to start again - so a blip that lasts a second should
-# not be the end of it.
-#
-# Only 5xx is retried. A 401 or 403 is a real answer and repeating it would just
-# be a slower failure, and a louder one from the point of view of GitHub.
+# getRetrying issues a GET and retries a 5xx a couple of times. The device code
+# is already spent when the account is read, so a transient 503 would otherwise
+# cost the person the whole flow. A 4xx is a real answer and is not retried.
 func getRetrying(url as string, headers as map of string to string) {
     def res as http.Response init http.requestWith(
         "GET",
@@ -83,8 +71,8 @@ func formField(name as string, value as string) {
     return $name + "=" + encoding.toText($raw, "uri-form");
 }
 
-# jsonHeaders asks GitHub for JSON; the OAuth endpoints answer form-urlencoded
-# by default, for historical reasons.
+# jsonHeaders asks GitHub for JSON; the OAuth endpoints default to
+# form-urlencoded.
 func jsonHeaders() {
     def h as map of string to string init {};
     $h["Accept"] = "application/json";
@@ -100,12 +88,10 @@ func optInt(doc as json.Value, field as string, fallback as int) {
 }
 
 /**
- * Build a `Subject` from GitHub's `/user` payload. Pure, so the mapping that
- * decides **what scope ownership binds to** is testable without a socket.
+ * Build a `Subject` from GitHub's `/user` payload. Pure.
  *
- * `id` is GitHub's numeric account id, carried as text because a subject is
- * opaque at this interface; `login` is a display label and is never
- * authoritative (specification 8.1).
+ * `id` is GitHub's numeric account id as text; `login` is a display label and
+ * never authoritative (specification 8.1).
  * @param doc {json.Value} the decoded `/user` response
  * @return {identity.Subject} the caller
  * @throws {Error} when the payload carries no id
@@ -180,19 +166,16 @@ export func pollFrom(doc as json.Value) {
 
 /**
  * The organisation ids an account may act for, read from GitHub's memberships
- * payload. **Pure**, so the two exclusions below have tests rather than comments.
+ * payload. Pure.
  *
- * Two states are not membership, and 8.7 makes both non-negotiable:
+ * Two cases are excluded (8.7):
  *
- * - **`state: "pending"`** is an invitation nobody accepted. Treating it as
- *   membership would let anyone who can get themselves invited publish under an
- *   organisation's name before a human agreed to it.
- * - **`role: "billing_manager"`** is a finance role with no relationship to
- *   code. It can see invoices; it has no business shipping a release.
+ * - `state: "pending"` is an unaccepted invitation; counting it would let
+ *   anyone who gets invited publish under the organisation's name.
+ * - `role: "billing_manager"` is a finance role with no access to code.
  *
- * Everything else - `admin` and `member` - counts, which is this deployment's
- * answer to 8.7's open question. It is the practical end of the range: requiring
- * `admin` would exclude most of the engineers who actually publish.
+ * `admin` and `member` both count, this deployment's answer to 8.7's open
+ * question; requiring `admin` would exclude most engineers who publish.
  * @param doc {json.Value} the decoded `/user/memberships/orgs` response
  * @return {map of string to string} folded organisation login -> numeric id
  */
@@ -223,8 +206,8 @@ export func membershipsFrom(doc as json.Value) {
         if (not json.has($doc, $at + "/organization/login")) {
             continue;
         }
-        # Keyed by the folded login, because that is how a claim names it, and
-        # valued by the id, because that is what ownership binds to.
+        # Keyed by folded login (how a claim names it), valued by id (what
+        # ownership binds to).
         def login as string init json.asString($doc, $at + "/organization/login");
         $out[strings.lower($login)] = convert.toString(json.asInt($doc, $at + "/organization/id"));
     }
@@ -234,7 +217,7 @@ export func membershipsFrom(doc as json.Value) {
 /**
  * The endpoints this provider uses, given a configured base.
  * @param cfg {identity.Config} the provider configuration
- * @param which {string} "device", "token", or "user"
+ * @param which {string} "device", "token", "memberships", or "user" (the default)
  * @return {string} the absolute URL
  */
 export func endpointFor(cfg as identity.Config, which as string) {
@@ -245,9 +228,8 @@ export func endpointFor(cfg as identity.Config, which as string) {
         }
     }
     if ($which == "memberships") {
-        # `active` only, from the API rather than filtered here as well: fewer
-        # rows over the wire, and the pure filter above still rejects anything
-        # that slips through.
+        # Filtered to `active` by the API too, for fewer rows; `membershipsFrom`
+        # still checks.
         return identity.endpoint(
             $cfg.baseUrl,
             API_BASE,
@@ -302,8 +284,7 @@ func pollOnce(cfg as identity.Config, deviceCode as string) {
     return pollFrom(post(endpointFor($cfg, "token"), $body));
 }
 
-# authorize is unused: this provider runs the device flow, so a client never
-# needs an authorization URL of its own.
+# authorize is unused: this provider runs the device flow.
 func authorize(cfg as identity.Config, state as string, challenge as string) {
     return "";
 }
@@ -320,9 +301,8 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
     $h["User-Agent"] = "jennifer-registry";
     def res as http.Response init getRetrying(endpointFor($cfg, "user"), $h);
     if ($res.status >= 500) {
-        # Not a rejection: GitHub could not answer. Worth saying so in those
-        # words, because "rejected the token" sends whoever reads it looking at
-        # the token, the client id, and the scopes - none of which are at fault.
+        # GitHub could not answer; say so, so nobody goes checking the token,
+        # client id or scopes.
         throw Error{
             kind: "identity",
             message: "the GitHub API is unavailable (HTTP " +
@@ -347,12 +327,9 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
 }
 
 # membershipsOf asks which organisations the token's owner actively belongs to.
-# The one network call; the decision about which rows count is `membershipsFrom`.
-# A failure is **not** fatal to a login: an account with no organisation
-# memberships and an account whose memberships could not be read look the same
-# from here, and refusing the login would make an org-scope feature break plain
-# user logins. The cost is that a transient failure silently yields no orgs,
-# which shows up as "you may not write under @acme" rather than as an outage.
+# `membershipsFrom` decides which rows count. A failure yields no orgs instead
+# of failing the login, so plain user logins never depend on this call; a
+# transient failure then shows as "you may not write under @acme".
 func membershipsOf(cfg as identity.Config, accessToken as string) {
     def h as map of string to string init jsonHeaders();
     $h["Authorization"] = "Bearer " + $accessToken;

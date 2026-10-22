@@ -6,10 +6,8 @@
 #
 #     jennifer test src/citoken_test.j
 #
-# A CI token is a standing secret, which 8.10 permits only because it is
-# narrower, expiring, and revocable. These tests are those three properties: if
-# one of them silently stops holding, the token quietly becomes a copy of its
-# owner and nothing else here would notice.
+# 8.10 permits a CI token because it is narrower, expiring, and revocable; these
+# tests cover those three properties.
 
 use testing;
 
@@ -43,7 +41,7 @@ func testAScopedTokenWritesAnyDeckUnderThatScope() {
 }
 
 func testAScopedTokenWritesNothingElse() {
-    # the whole point: not a copy of the minting user
+    # not a copy of the minting user
     testing.assertFalse(covers(scoped(), "@other/tool"));
 }
 
@@ -81,7 +79,7 @@ func testAnEmptyExpiryNeverExpires() {
 
 func testExpiryOf() {
     testing.assertEqual(expiryOf(NOW, 3600), "1700003600");
-    # 0 means never, and a caller has to ask for it explicitly
+    # 0 means never, only when asked for explicitly
     testing.assertEqual(expiryOf(NOW, 0), "");
     testing.assertEqual(expiryOf(NOW, -1), "");
 }
@@ -121,8 +119,7 @@ func testAnExpiredTokenIsRefused() {
 }
 
 func testExpiryIsReportedBeforeScope() {
-    # an expired token should say so, not complain about a deck it would never
-    # have been allowed to write anyway
+    # an expired token reports expiry before the deck check
     def t as Token init scoped();
     $t.expiresAt = "1600000000";
     testing.assertContains(check($t, "@other/tool", NOW).reason, "expired");
@@ -150,7 +147,6 @@ func testTheShapeCheck() {
 }
 
 func testThePrefixIsScannable() {
-    # a recognisable prefix is what lets a secret scanner spot one in a public
-    # repository before it is abused
+    # a recognisable prefix lets secret scanners find a leaked token
     testing.assertTrue(strings.startsWith(PREFIX, "jvc"));
 }

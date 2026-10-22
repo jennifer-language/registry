@@ -3,19 +3,16 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * The deck-repository HTTP responses, as pure data. Each function maps a
- * registry (`store`) plus request inputs to a `Reply` - an HTTP status and a
- * `json.Value` body - with no dependency on the web engine, so the response
- * logic is unit-testable without booting a server. The thin handler layer in
- * `bin/serve` calls these and hands the result to `web.sendJson`. The endpoints
- * are the minimum the CLI needs: an index, a health check, a deck listing, a
- * deck record, a version record, and the resolve query the CLI uses to turn a
- * name + constraint into a fetch URL.
+ * The registry's JSON responses as pure data. Each function maps a registry
+ * (`store`) plus request inputs to a `Reply` (HTTP status and `json.Value`
+ * body), with no dependency on the web engine. `bin/serve` hands the result to
+ * `webapi.sendJson`. The endpoints: index, health, deck listing, deck record,
+ * version record, search, discovery, and the resolve queries.
  * @module apiview
  * @example
  * import "./apiview.j" as apiview;
  * def reply as apiview.Reply init apiview.resolve($db, "ansi", "^1.2.0");
- * # web.sendJson($ctx, reply.status, reply.body);
+ * # webapi.sendJson($ctx, $reply.status, $reply.body);
  */
 
 use json;
@@ -29,8 +26,7 @@ import "./deckcatalog.j" as deckcatalog;
 import "./constraint.j" as constraint;
 import "./deckname.j" as deckname;
 
-# The most roots one `/resolve-graph` request may name. A real project lists a
-# handful of direct dependencies; the bound is there so one anonymous request
+# The most roots one `/resolve-graph` request may name, so one anonymous request
 # cannot ask for the whole registry.
 export def const MAX_GRAPH_ROOTS as int init 64;
 
@@ -42,22 +38,14 @@ func ptrEscape(token as string) {
 }
 
 # The service name and version reported by the index endpoint. SERVICE_NAME is
-# also the `registry` label in the discovery document, so it is exported for the
-# entry script to pass to `webapi.discovery`.
+# exported because it is also the discovery document's `registry` label.
 export def const SERVICE_NAME as string init "jennifer-registry";
 def const SERVICE_VERSION as string init "0.1.0";
 
-# The registry specification version this server implements. This tracks
-# specs/specs-server.md, not the API major: a *document* can change shape
-# without breaking an endpoint, and `apis[].version` is what carries the API
-# major.
-#
-# It is a full SemVer string and it stays **below 1.0.0 until the registry is
-# tagged 1.0.0**, at which point the specification is tagged 1.0.0 with it. That
-# is what a leading zero is for: the document is still being reshaped, and
-# saying so is more useful to a client implementer than a version number that
-# looks settled. The specification and the server share the number from 1.0.0
-# onward, so "which spec does this registry implement" has one answer.
+# The version of specs/specs-server.md this server implements, a SemVer string.
+# It is separate from the API major (`apis[].version`): the document can change
+# shape without breaking an endpoint. It stays below 1.0.0 until the registry is
+# tagged 1.0.0; both are then tagged 1.0.0 together and move in step.
 export def const SPEC_VERSION as string init "0.1.0";
 
 /**
@@ -87,7 +75,7 @@ func stringList(items as list of string) {
 }
 
 /**
- * The index response: service identity plus the routes the repository exposes.
+ * The index response: service identity plus the core read routes.
  * @return {Reply} a 200 reply describing the service
  */
 export func index() {
@@ -109,37 +97,25 @@ export func index() {
 }
 
 /**
- * The discovery document: which API versions this registry serves and which
- * optional operations it offers, so a client can verify compatibility before it
- * calls anything. Served at the fixed, unversioned
- * `/.well-known/jennifer-registry`, which is the one path a client may
- * hard-code; everything else hangs off the base paths advertised here.
+ * The discovery document: the API versions and optional operations this
+ * registry serves. Served at the fixed, unversioned
+ * `/.well-known/jennifer-registry`, the one path a client may hard-code.
  *
- * `base` is the document `webapi.discovery` derives from the route table, so the
- * advertised versions and features cannot drift from what is actually served.
- * Taking the base as an argument rather than building it keeps this module free
- * of any dependency on the web engine.
+ * `base` is the document `webapi.discovery` derives from the route table, so
+ * the advertised versions and features match what is served; taking it as an
+ * argument keeps this module independent of the web engine.
  *
- * The `auth` members are **whatever the caller supplies** - `provider`, `flow`,
- * and the endpoint URLs - so this module never learns which identity provider is
- * configured and a new one needs no change here.
+ * The `auth` members (`provider`, `flow`, endpoint URLs) are copied from the
+ * caller, so a new identity provider needs no change here. An empty `authUrls`
+ * emits no `auth` object, which the specification defines as "accepts no
+ * logins"; a provider without its endpoints would leave a client nowhere to
+ * send the exchange.
  *
- * **An empty `authUrls` emits no `auth` object, and that is a meaningful
- * answer.** The specification makes the object optional and gives its absence a
- * meaning: this registry accepts no logins, so a client says so plainly instead
- * of guessing an endpoint. Advertising a provider without the endpoints behind
- * it would be the exact ambiguity discovery exists to prevent - a client would
- * learn that identity is GitHub and still have nowhere to send the exchange.
- *
- * The URLs are absolute paths used verbatim, which is the one exception to
- * prefixing requests with a version's base path (specification 4.1).
- * **`url` is what the registry calls itself**, and is omitted when a deployment
- * has not declared one. A registry usually cannot work its own address out: it
- * sees a listen address and a `Host` header, both of which describe how *this*
- * request arrived rather than what the registry is called. Behind a proxy, in a
- * container, or on a private network, those are routinely not the public name.
- * So it is configured, and its absence means "I do not know", which is honest -
- * a guess would be recorded in somebody's lockfile as this registry's identity.
+ * The URLs are absolute paths used verbatim, the one exception to prefixing
+ * requests with a version's base path (specification 4.1). `url` is the
+ * registry's configured public name, omitted when none is declared: the listen
+ * address and `Host` header describe how a request arrived, not the public
+ * name, and a guess would be recorded in lockfiles as the registry's identity.
  * @param base {json.Value} the document from `webapi.discovery`
  * @param canonicalUrl {string} the registry's public base URL ("" to omit)
  * @param authUrls {map of string to string} the `auth` members: `provider`,
@@ -189,12 +165,11 @@ export func listDecks(db as flatdb.DB) {
 
 /**
  * The search response: decks whose name or description matches `query`, best
- * first. An **empty query lists every deck**, so this is also the machine-
- * readable form of the landing page. No match is a 200 with an empty list, not
- * an error; a query over `search.MAX_QUERY` characters is a 400.
+ * first. An empty query lists every deck. No match is a 200 with an empty
+ * list; a query over `search.MAX_QUERY` characters is a 400.
  *
  * Each result is the index entry as it stands (`name`, `description`, `latest`,
- * `versions`, `live`, `keywords`), so answering is a lookup, not a rebuild.
+ * `versions`, `live`, `keywords`).
  * @param index {json.Value} the registry's deck index, from `search.index`
  * @param query {string} the search query ("" for everything)
  * @return {Reply} a 200 reply with `{ query, count, results }`, or a 400
@@ -220,11 +195,11 @@ export func search(index as json.Value, query as string) {
 }
 
 /**
- * A single deck's full record (name, description, versions), or 404 when the
- * deck is unknown.
+ * A single deck's full record (name, description, versions), 404 when the deck
+ * is unknown, 400 when no name is given.
  * @param db {flatdb.DB} the registry to read
  * @param name {string} the deck name
- * @return {Reply} the deck record at 200, or a 404 error reply
+ * @return {Reply} the deck record at 200, or a 404 or 400 error reply
  */
 export func getDeck(db as flatdb.DB, name as string) {
     if ($name == "") {
@@ -237,11 +212,12 @@ export func getDeck(db as flatdb.DB, name as string) {
 }
 
 /**
- * A single deck version's record, or 404 when the deck or version is unknown.
+ * A single deck version's record, 404 when the deck or version is unknown, 400
+ * when either is missing.
  * @param db {flatdb.DB} the registry to read
  * @param name {string} the deck name
  * @param version {string} the version string
- * @return {Reply} the version record at 200, or a 404 error reply
+ * @return {Reply} the version record at 200, or a 404 or 400 error reply
  */
 export func getVersion(db as flatdb.DB, name as string, version as string) {
     if ($name == "" or $version == "") {
@@ -260,11 +236,12 @@ export func getVersion(db as flatdb.DB, name as string, version as string) {
  * `{ found, name, version, kind, url, ref, commit, checksum, description }`,
  * where `ref` / `commit` pin a `git` version and `checksum` pins a `tar.gz`
  * one (the pair the kind does not use is empty); when nothing matches it is a
- * 404 with `{ found: false, name, error }`.
+ * 404 with `{ found: false, name, error }`. A missing name or a constraint
+ * outside the grammar is a 400 with `{ error }`.
  * @param db {flatdb.DB} the registry to read
  * @param name {string} the deck name
  * @param constraintExpr {string} the version constraint ("" is treated as "*")
- * @return {Reply} the resolution at 200, or a 404 not-found reply
+ * @return {Reply} the resolution at 200, a 404 not-found reply, or a 400
  */
 export func resolve(db as flatdb.DB, name as string, constraintExpr as string) {
     if ($name == "") {
@@ -274,8 +251,7 @@ export func resolve(db as flatdb.DB, name as string, constraintExpr as string) {
     if ($expr == "") {
         $expr = "*";
     }
-    # A constraint outside the grammar matches nothing, so answering 404 would
-    # read as "no such version" when the request itself is what is wrong.
+    # A constraint outside the grammar is a malformed request (400), not a 404.
     if (not constraint.isValidConstraint($expr)) {
         return errorReply(400, "not a valid version constraint: " + $expr);
     }
@@ -305,8 +281,8 @@ export func resolve(db as flatdb.DB, name as string, constraintExpr as string) {
  * object of root requirements (deck name -> constraint). Returns the flattened,
  * version-locked graph as `{ ok: true, resolved: [ {name, version, kind, url,
  * ref, commit, checksum, engines, capabilities, description}, ... ] }`, or
- * `{ ok: false, error }` when the graph cannot be satisfied. A malformed
- * `roots` object is a 400.
+ * `{ ok: false, error }` (still a 200) when the graph cannot be satisfied. A
+ * malformed `roots` object, or one `rootsProblem` refuses, is a 400.
  * @param db {flatdb.DB} the registry to read
  * @param rootsJson {string} a JSON object of name -> constraint
  * @return {Reply} the flattened resolution, or an error reply
@@ -363,10 +339,9 @@ export func resolveGraph(db as flatdb.DB, rootsJson as string) {
 /**
  * Why a set of resolution roots cannot be resolved as asked, or "". Pure.
  *
- * Names fold, so two spellings of one deck are one root asked for twice, which
- * would resolve as two decks at two versions; a constraint outside the grammar
- * matches nothing. Both are the request's fault and get a `400`, not a failed
- * resolution.
+ * Refuses too many roots, invalid names, two spellings of one folded name
+ * (they would resolve as two decks at two versions), and constraints outside
+ * the grammar. The caller answers each with a `400`.
  * @param roots {map of string to string} deck name to constraint, as sent
  * @return {string} the complaint, or ""
  */
@@ -395,10 +370,8 @@ export func rootsProblem(roots as map of string to string) {
 /**
  * The API major a request path is asking for, or 0 when it names none.
  *
- * Only a leading `/v<digits>/` segment counts. `/v1/decks` is version 1;
- * `/deck` is the unversioned root alias; `/version` and `/v1x/y` are not
- * version segments at all, and reading them as one would turn an ordinary
- * 404 into a confusing complaint about protocol versions.
+ * Only a leading `/v<digits>/` segment counts: `/v1/decks` is version 1;
+ * `/deck`, `/version` and `/v1x/y` name none, so they stay ordinary 404s.
  * @param path {string} the request path
  * @return {int} the major asked for, or 0
  */
@@ -420,8 +393,7 @@ export func versionOfPath(path as string) {
             return 0;
         }
     }
-    # A major this long is no version anybody serves, and would not fit in an
-    # int; answering with one that is never supported keeps it a 400, not a 500.
+    # Too long for an int; a never-supported major keeps it a 400, not a 500.
     if (len($digits) > 9) {
         return 999999999;
     }
@@ -432,10 +404,8 @@ export func versionOfPath(path as string) {
  * The `400` for a path under an API version this registry does not serve
  * (specification 4.5).
  *
- * A bare `404` here is indistinguishable from a missing deck, which sends the
- * user looking for a typo in a name when the real problem is that their client
- * is newer or older than the registry. `status` 0 means the path is not a
- * version mismatch and the caller should carry on with its own handling.
+ * A `404` would be indistinguishable from a missing deck. `status` 0 means the
+ * path is not a version mismatch and the caller carries on.
  * @param path {string} the request path
  * @param supported {list of int} the majors this registry serves
  * @return {Reply} a 400 naming the supported versions, or status 0
@@ -464,11 +434,9 @@ export func unsupportedVersion(path as string, supported as list of int) {
  * Whether a request may be answered `304` from a tag of the database alone,
  * before anything reads it (see `cacheTag`). Pure.
  *
- * A repeat visit answered from a tag costs nothing: not even a look at the
- * shared parsed copy, let alone building the page again. Only pages and
- * listings that are a function of the database qualify. The three lookups
- * that count towards a deck's figures (`GET /deck`, `GET /decks/:name`,
- * `GET /resolve`) are left out, since a `304` would skip the count; so are
+ * Only pages and listings that are a function of the database qualify. The
+ * three lookups that are counted (`GET /deck`, `GET /decks/:name`,
+ * `GET /resolve`) are excluded, since a `304` would skip the count; so are
  * writes, the documentation books (served with their own validators), and
  * everything else.
  * @param method {string} the request method
@@ -500,11 +468,9 @@ export func isConditional(method as string, path as string) {
  * The validator for a conditional read: the database file's size and change
  * time, the hour, and which representation was asked for. Pure.
  *
- * The file changes on every write, so any edit makes a new tag. The hour is in
- * it because deck pages show counts over windows that move with the clock, which
- * may otherwise be served stale from a cache for at most that hour. The
- * representation is in it because one URL answers a browser with HTML and a
- * client with JSON.
+ * Every write changes the file, so any edit makes a new tag. The hour bounds
+ * how stale the clock-relative counts on deck pages can be. The representation
+ * is included because one URL serves both HTML and JSON.
  * @param sizeBytes {int} the database file's size
  * @param mtimeNanos {int} its modification time
  * @param now {int} the current time (Unix seconds)

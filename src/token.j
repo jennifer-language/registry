@@ -5,24 +5,20 @@
 /**
  * The registry's own credential: minting and verifying the short-lived bearer
  * token a client sends on writes, and generating the opaque refresh token that
- * buys a new one.
+ * renews it.
  *
- * The registry issues **its own** token rather than storing the user's GitHub
- * token (specification 8.4). The token is a JWT signed with HS256, which needs
- * only a shared secret and runs on both interpreter binaries; the registry is
- * both issuer and verifier, so there is no public key to distribute and nothing
- * an asymmetric algorithm would buy.
+ * The registry issues its own token instead of storing the user's provider
+ * token (specification 8.4): a JWT signed with HS256.
  *
- * **The subject is the numeric GitHub account id, never the login** (8.1). A
- * login released by a rename can be re-registered by somebody else, so binding
- * to one would hand an attacker an established scope. The login rides along as
- * a display label and is refreshed on each login.
+ * The subject is the numeric account id, never the login (8.1): a login
+ * released by a rename can be re-registered by somebody else. The login is a
+ * display label.
  *
- * Pure: no I/O, no store, so every branch is testable.
- * @module identity
+ * Pure: no I/O, no store.
+ * @module token
  * @example
  * import "./token.j" as token;
- * def t as string init token.mint($key, 1234567, "alice", 3600, $now);
+ * def t as string init token.mint($key, 1234567, "alice", $orgs, $now, 3600, $now);
  * def who as token.Identity init token.verify($key, $t);
  */
 
@@ -34,35 +30,29 @@ use encoding;
 use convert;
 import "jwt.j" as jwt;
 
-# The signing algorithm. HS256 is symmetric, which is right here: the registry
-# signs and verifies its own tokens, so there is no third party to hand a public
-# key to. `verify` is told the algorithm it expects, which is what closes the
-# algorithm-confusion attack.
-# The signing algorithm. Symmetric, and that is a decision with a condition
-# attached rather than a default.
+# The signing algorithm. `verify` is told the algorithm it expects, which stops
+# algorithm confusion.
 #
-# It holds because **this registry is the only thing that verifies these tokens**:
-# clients present them and never inspect them, and nothing else is handed the
-# key. One key, no distribution, no public half to publish or rotate.
-#
-# It stops holding the moment anything else needs to verify - a CDN edge
-# authorising at the boundary, a companion service, a second implementation.
-# With HMAC the ability to verify *is* the ability to sign, so giving a verifier
-# the key gives it the power to mint a token for any account. At that point this
-# must become asymmetric (`jwt` supports ES256 over a `crypto.ecGenerateKey`
-# pair) and the public half must be published. Specification 8.5 states the rule;
-# this comment exists so the person adding the second verifier meets it here too.
+# HS256 is symmetric, which is safe only while this registry is the sole
+# verifier. With HMAC, verifying requires the signing key, so any second
+# verifier (a CDN edge, a companion service) could mint tokens for any account.
+# Adding one means switching to an asymmetric algorithm (`jwt` supports ES256
+# over a `crypto.ecGenerateKey` pair) and publishing the public key
+# (specification 8.5).
 def const ALG as string init "HS256";
 
-# How many bytes of entropy a refresh token carries. 32 bytes is 256 bits from
-# the crypto-grade source, well past guessing.
+# Bytes of crypto-grade entropy in a refresh token (256 bits).
 def const REFRESH_BYTES as int init 32;
 
 /**
  * Who a token authenticates.
- * @field accountId {int} the numeric GitHub account id, the identity that matters
+ * @field accountId {int} the numeric GitHub account id, which ownership binds to
  * @field login {string} the GitHub login, a display label only
  * @field expiresAt {int} when the token stops working (Unix seconds)
+ * @field orgs {map of string to string} folded organisation login to provider id,
+ *     read at login (8.7)
+ * @field orgsCheckedAt {int} when `orgs` was read (Unix seconds); 0 when the
+ *     token carries no `orgsAt` claim
  */
 export def struct Identity {
     accountId as int,
@@ -78,14 +68,11 @@ export def struct Identity {
  * @param accountId {int} the numeric GitHub account id
  * @param login {string} the GitHub login, carried as a display label
  * @param orgs {map of string to string} the organisations the account actively
- *     belongs to, folded login -> id, read at login (8.7). Carried in the
- *     token because the provider token
- *     is discarded immediately after, so this is the only chance to ask.
- * @param checkedAt {int} when that membership was read (Unix seconds). Recorded
- *     separately from `iat` because a refreshed token is newer than the
- *     membership it carries, and an org-scope write needs to know which.
+ *     belongs to, folded login -> id, read at login (8.7)
+ * @param checkedAt {int} when that membership was read (Unix seconds). Separate
+ *     from `iat` because a refreshed token is newer than its memberships.
  * @param ttl {int} how long the token is valid, in seconds
- * @param now {int} the current time (Unix seconds), passed in so this stays pure
+ * @param now {int} the current time (Unix seconds)
  * @return {string} the compact JWT
  */
 export func mint(
@@ -97,8 +84,7 @@ export func mint(
     ttl as int,
     now as int) {
     def claims as json.Value init json.map();
-    # `sub` is the account id as text: a JWT subject is a string, and the id is
-    # what ownership binds to.
+    # `sub` is the account id as text, since a JWT subject is a string.
     $claims = json.set($claims, "/sub", convert.toString($accountId));
     $claims = json.set($claims, "/login", $login);
     $claims = json.set($claims, "/iat", $now);
@@ -115,8 +101,7 @@ export func mint(
 /**
  * Verify a bearer token and return who it authenticates. Rejects a bad
  * signature, a token signed with a different algorithm, an expired one, and one
- * with no `exp` at all: `mint` always sets it, so a token without one was not
- * minted here, and `jwt.verify` alone would accept it for ever.
+ * with no `exp` (which `jwt.verify` alone would accept for ever).
  * @param key {bytes} the HMAC signing secret
  * @param token {string} the compact JWT
  * @return {Identity} the authenticated identity
@@ -149,8 +134,7 @@ export func verify(key as bytes, token as string) {
 
 /**
  * Generate an opaque refresh token: 32 crypto-grade random bytes as hex. It
- * carries no claims and means nothing on its own; it is a lookup key into the
- * store, which is what lets a single use revoke it.
+ * carries no claims; it is a lookup key into the store, so one use can revoke it.
  * @return {string} the refresh token
  */
 export func newRefresh() {
@@ -160,10 +144,8 @@ export func newRefresh() {
 /**
  * The fingerprint a refresh token is stored under: its SHA-256, as hex.
  *
- * **The token itself is never written down.** A stolen database is then a list
- * of hashes rather than a set of live credentials, exactly as a password table
- * should be. Lookup still works because the client presents the token and the
- * registry hashes it again.
+ * The token itself is never stored, so a leaked database holds hashes rather
+ * than live credentials.
  * @param token {string} the refresh token
  * @return {string} its fingerprint
  */
@@ -173,9 +155,7 @@ export func fingerprint(token as string) {
 }
 
 /**
- * The current time as Unix seconds, for a caller that has no better clock.
- * Every other function here takes `now` as an argument so it stays testable;
- * this is the one place that reads the clock.
+ * The current time as Unix seconds. The only clock read in this module.
  * @return {int} the current time (Unix seconds)
  */
 export func now() {

@@ -46,8 +46,7 @@ func testPathOfIsEmptyWithoutOne() {
 }
 
 func testUnknownIsNotARefusal() {
-    # the distinction the whole permission model rests on: an unanswerable check
-    # must never read as granted, and must be distinguishable from a denial
+    # an unanswerable check is never granted and is distinct from a denial
     def u as Permission init unknown("no credential");
     testing.assertFalse($u.known);
     testing.assertFalse($u.push);
@@ -75,9 +74,7 @@ func throwOnAnAuthFailure() {
 }
 
 func testRefPresenceRefusesToGuess() {
-    # the same rule as `unknown` above, in the place it matters most: this check
-    # exists to find a ref shadowing a commit, so reading "the forge would not
-    # answer" as "there is no such ref" would fail open on its own case
+    # reading "no answer" as "no such ref" would fail open on a shadowing ref
     testing.assertThrows("throwOnAServerError", "forge");
     testing.assertThrows("throwOnAnAuthFailure", "forge");
 }
@@ -98,8 +95,7 @@ func testARepositoryUrlMustNameARepository() {
 }
 
 func testWhatTheAdaptersIgnoreIsRefused() {
-    # the adapters read only the path, so anything else in the URL would be
-    # recorded and handed to clients without ever having been checked
+    # adapters read only the path; the rest would reach clients unchecked
     testing.assertContains(repositoryProblem("https://u:p@github.com/acme/deck"), "credentials");
     testing.assertContains(repositoryProblem("https://github.com/acme/deck?ref=x"), "query");
     testing.assertContains(repositoryProblem("https://github.com/acme/deck#main"), "fragment");
@@ -173,7 +169,7 @@ func testRolesThatMayNotPushAreRefused() {
 }
 
 func testAnUnexpectedRoleIsUnknownNotGranted() {
-    # a role a forge adds later must be refused until somebody decides about it
+    # a role a forge adds later is refused until classified
     def p as Permission init permissionFromRole("superuser");
     testing.assertFalse($p.known);
     testing.assertFalse($p.push);
@@ -210,8 +206,7 @@ func testTheServiceAccountMustHoldATokenAndAskAboutAName() {
 }
 
 func testTheRecordedUrlUsesTheForgesSchemeAndPort() {
-    # the reads go to the configured API whatever the URL says, so the URL
-    # clients will clone from must not point anywhere else
+    # reads use the configured API, so the clone URL must not point elsewhere
     testing.assertEqual(originProblem("https://github.com/o/r", ""), "");
     testing.assertContains(originProblem("http://github.com/o/r", ""), "https://");
     testing.assertContains(originProblem("https://github.com:8080/o/r", ""), "port");

@@ -6,10 +6,8 @@
 #
 #     jennifer test src/admin_test.j
 #
-# Tests go through `parse` and the real `args` grammar rather than building a
-# `Result` by hand, so the declared parser is exercised too. Every published
-# deck is scoped and its scope must be registered first, so most tests start
-# from `registered()` rather than an empty store.
+# Tests go through `parse` and the real grammar, so the parser is exercised
+# too. Most start from `registered()`, since a deck's scope must be registered.
 
 use testing;
 use json;
@@ -26,9 +24,9 @@ func emptyStore() {
     return store.open("/no/such/jvc/admin/missing.json");
 }
 
-# dispatch parses argv and routes it to its command, the way bin/deckadmin
-# does. The entry script uses `args.dispatch` with func values, which needs
-# mutable globals a module top level cannot hold, so the overlay matches instead.
+# dispatch parses argv and routes it to its command, as bin/deckadmin does.
+# `args.dispatch` needs program-level state a module cannot hold, so this
+# matches on the command instead.
 func dispatch(db as flatdb.DB, argv as list of string) {
     def r as args.Result init parse($argv);
     match ($r.command) {
@@ -196,8 +194,7 @@ func testGitAddRejectsAChecksum() {
 }
 
 func testAddRefusesARefShapedLikeAnObjectId() {
-    # a record written by an operator is indistinguishable from one written over
-    # HTTP, so the ref rule cannot live only on the endpoint
+    # an operator record is served like a published one, so the ref rule applies
     def r as AdminResult init dispatch(
         registered(),
         [
@@ -274,8 +271,7 @@ func testBareNameIsRejected() {
 }
 
 func testAddRejectsAHyphenInTheDeckHalf() {
-    # the deck half becomes the bound namespace, so it takes no hyphen even
-    # though the scope half does
+    # the deck half takes no hyphen, unlike the scope half
     def r as AdminResult init dispatch(
         registered(),
         gitAdd("@acme/bad-name", "1.0.0", "https://x/u"));
@@ -426,7 +422,7 @@ func testRegisterNamespaceAcceptsAtPrefixAndIsIdempotent() {
 }
 
 func testRegisterNamespaceAcceptsAHyphenatedScope() {
-    # the case that motivated splitting the two grammars: a real account name
+    # a real account name; the reason the two grammars differ
     def argv as list of string init ["deckadmin", "register-namespace", "jennifer-language"];
     def r as AdminResult init dispatch(emptyStore(), $argv);
     testing.assertTrue($r.ok);
@@ -434,9 +430,8 @@ func testRegisterNamespaceAcceptsAHyphenatedScope() {
 }
 
 func testRegisterNamespaceRejectsBadScope() {
-    # a leading hyphen never reaches validation: args reads it as a flag, which
-    # is harmless double-protection. The grammar itself is covered in
-    # deckname_test.j; these are the ones that parse as positionals.
+    # a leading hyphen parses as a flag, so only positionals are tried here;
+    # the grammar is covered in deckname_test.j
     def bad as list of string init ["acme-", "a--b", "my_org", "con"];
     for (def scope in $bad) {
         def r as AdminResult init dispatch(
@@ -563,7 +558,7 @@ func testLogOptionsFallBackToTheEnvironment() {
 }
 
 func testAFlagBeatsTheEnvironment() {
-    # the point of the flag: override a container-wide setting for one command
+    # a flag overrides a container-wide setting for one command
     def r as args.Result init parse([
         "deckadmin",
         "--log",
@@ -666,17 +661,15 @@ func testTrustNeedsTheRepositoryId() {
 }
 
 func testTrustNeedsARegisteredScope() {
-    # a binding is a standing grant to write under a scope, so it is gated
-    # exactly as a publish is
+    # a binding is a standing write grant, gated like a publish
     def r as AdminResult init dispatch(emptyStore(), ["deckadmin", "trust", "@ghost/x", "1"]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "not registered");
 }
 
 func testTrustNeedsAnOwnedScope() {
-    # registered is not owned. A reserved scope is held precisely so that nobody
-    # can write under it, and a trusted publisher acts *for* an owner - so with
-    # no owner the binding would be a standing way around the reservation.
+    # a trusted publisher acts for an owner; on a reserved scope it would bypass
+    # the reservation
     def r as AdminResult init dispatch(
         registered(),
         ["deckadmin", "trust", "@acme/ansi", "123456789"]);
@@ -719,10 +712,8 @@ func testMintingUnderAnOwnedScopeWorks() {
 }
 
 func testMintingNeedsAnOwnedScope() {
-    # a CI token is a delegated credential like any other, and a reserved scope
-    # has nobody to delegate for. Refused at the mint rather than at the publish:
-    # a token that cannot ever authorise anything is worse than no token, because
-    # it fails later and somewhere else.
+    # a reserved scope has nobody to delegate for; refused at the mint so no
+    # unusable token exists
     def r as AdminResult init dispatch(registered(), ["deckadmin", "mint-token", "acme"]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "reserved");
@@ -779,8 +770,7 @@ func testAReservedScopeCannotBeClaimed() {
     };
     def out as scope.ClaimResult init scope.claim($db, firstcome.policy(), $who, "admin", [], NOW);
     testing.assertFalse($out.allowed);
-    # and it says *reserved*, not "claimed by another account", because nobody
-    # holds it and sending the caller after a person would be a lie
+    # reported as reserved, not as claimed by another account
     testing.assertContains($out.reason, "reserved by this registry");
 }
 
@@ -793,8 +783,7 @@ func testReserveDefaultsIsIdempotent() {
 }
 
 func testReserveDefaultsNeverSeizesAnOwnedScope() {
-    # a bootstrap convenience, not an eviction tool: the operator grant is the
-    # deliberate path for taking a name back
+    # taking a name back is an operator grant, not this command
     def db as flatdb.DB init dispatch(
         emptyStore(),
         ["deckadmin", "register-namespace", "api", "--owner", "42", "--login", "eve"]).db;
@@ -814,8 +803,7 @@ func testDryRunChangesNothing() {
 }
 
 func testNamespacesDistinguishesOwnedFromReserved() {
-    # once the defaults are reserved the store holds scores of names, so a bare
-    # list stops answering the only question an operator has
+    # each line says whether the scope has an owner
     def db as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
     $db = dispatch(
         $db,
@@ -840,7 +828,7 @@ func testNamespacesFilters() {
 }
 
 func testGrantingAReservedScopeMakesItPublishable() {
-    # the whole point of reserving: held until an operator hands it to somebody
+    # a reserved scope is held until an operator grants it
     def db as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
     testing.assertEqual(store.getNamespace($db, "jennifer").subject, "");
     $db = dispatch(
@@ -881,8 +869,7 @@ func testACoOwnerMayWriteUnderTheScope() {
 }
 
 func testACoOwnerIsNotTheOwner() {
-    # adding one must not move the scope's identity: that is a transfer, and a
-    # different verb
+    # adding one is not a transfer
     def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
     testing.assertEqual(store.getNamespace($db, "acme").subject, "1000");
     testing.assertEqual(len(store.ownersOf($db, "acme")), 2);
@@ -922,8 +909,7 @@ func testAddingACoOwnerIsIdempotent() {
 }
 
 func testAReservedScopeCannotTakeACoOwner() {
-    # no owner to co-own with; accepting one would leave a scope nobody holds
-    # that somebody can nevertheless write to
+    # no owner to co-own with; a co-owner could write under a held scope
     def argv as list of string init ["deckadmin", "register-namespace", "jennifer"];
     def db as flatdb.DB init dispatch(emptyStore(), $argv).db;
     def r as AdminResult init dispatch($db, ["deckadmin", "add-owner", "jennifer", "2000"]);
@@ -966,8 +952,7 @@ func testCoOwnersAreShownInTheListing() {
 }
 
 func testARecordWithoutCoOwnersReadsAsOne() {
-    # the field is additive: a namespace written before co-ownership existed has
-    # no list, and must keep working
+    # the field is additive: a record without the list still works
     testing.assertEqual(len(store.getNamespace(owned(), "acme").coOwners), 0);
     testing.assertEqual(len(store.ownersOf(owned(), "acme")), 1);
 }
@@ -981,8 +966,7 @@ func testAReservedScopeHasNoOwnersAtAll() {
 # --- keywords ----------------------------------------------------------------
 
 func testKeywordsListsTheRefusedTermsDecoded() {
-    # the operator's window into a list that is deliberately unreadable in the
-    # source; without this there is no way to audit what is actually refused
+    # the only way to read the base64 list in plaintext
     def out as AdminResult init cmdKeywords(emptyStore(), parse(["deckadmin", "keywords"]), NOW);
     testing.assertTrue($out.ok);
     testing.assertFalse($out.changed);
@@ -1000,8 +984,7 @@ func testKeywordsEncodesATermForTheList() {
 }
 
 func testKeywordsFlagsATermThatCouldNeverMatch() {
-    # every lookup runs on a folded, well-formed keyword, so encoding a term
-    # with a space in it would produce a line that can never fire
+    # lookups run on well-formed keywords, so a term with a space never matches
     def out as AdminResult init cmdKeywords(
         emptyStore(),
         parse(["deckadmin", "keywords", "two words"]),
@@ -1018,8 +1001,7 @@ func testKeywordsSaysWhenATermIsAlreadyRefused() {
 }
 
 func testKeywordsNeverWrites() {
-    # it reads a compiled-in word list, so it must work against no registry at
-    # all - which is exactly the situation an operator is in when curating it
+    # it reads a compiled-in list and must work with no registry
     def out as AdminResult init cmdKeywords(emptyStore(), parse(["deckadmin", "keywords"]), NOW);
     testing.assertFalse($out.changed);
 }
@@ -1046,8 +1028,7 @@ func testAddRefusesAnInvalidEngineConstraint() {
 }
 
 func testAddRefusesASecondBuildOfOneVersion() {
-    # 1.0.0+b is the same release as 1.0.0+a; storing both is two commits behind
-    # one version number
+    # 1.0.0+b is the same release as 1.0.0+a
     def first as list of string init gitAdd("@acme/ansi", "1.0.0+a", "https://x/a");
     def db as flatdb.DB init dispatch(registered(), $first).db;
     def r as AdminResult init dispatch($db, gitAdd("@acme/ansi", "1.0.0+b", "https://x/b"));

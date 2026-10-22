@@ -5,14 +5,11 @@
 /**
  * Reading a deck's `deck.toml`.
  *
- * **The manifest is read at the resolved commit, never taken from the request
- * body** (specification 7). That is the whole reason this module exists: if a
- * publisher could name the deck in the request, the name would be whatever they
- * typed rather than what the repository actually declares, and the scope check
- * would be checking a claim instead of a fact.
+ * The manifest is read at the resolved commit, never taken from the request
+ * body (specification 7), so the scope check runs against what the repository
+ * declares rather than what the publisher typed.
  *
- * The shape is the specification's, and the appendix's worked example is the
- * canonical instance of it:
+ * The shape is the specification's; the appendix's worked example:
  *
  *     [package]
  *     name = "@acme/routeros"
@@ -25,19 +22,15 @@
  *     [decks]
  *     "@acme/net" = "^1.0.0"
  *
- * Note that a deck's dependencies live under `[decks]` and become the version
- * record's `requires`: the manifest is written for a person declaring what their
- * deck needs, the record is read by a resolver, and the two names differ because
- * they are read by different audiences.
+ * Dependencies under `[decks]` become the version record's `requires`.
  *
- * Parsing is pure - a string in, a `Manifest` out - so every malformed input
- * has a test rather than a comment. Fetching the bytes at a commit is the
- * caller's job, through a `forge.readFile`.
+ * Parsing is pure: a string in, a `Manifest` out. The caller fetches the bytes
+ * at a commit through `forge.readFile`.
  * @module manifest
  * @example
  * import "./manifest.j" as manifest;
  * def m as manifest.Manifest init manifest.parse($tomlText);
- * # if (!m.ok) { refuse with m.error }
+ * # if (not $m.ok) { refuse with $m.error }
  */
 
 use toml;
@@ -52,8 +45,7 @@ import "./constraint.j" as constraint;
 export def const FILENAME as string init "deck.toml";
 
 /**
- * A parsed `deck.toml`. `ok` false means nothing else is meaningful except
- * `error`, which is phrased for whoever ran the publish.
+ * A parsed `deck.toml`. When `ok` is false only `error` is meaningful.
  * @field ok {bool} whether the manifest parsed and validated
  * @field error {string} why not, for the publisher to read
  * @field name {string} the deck name, folded
@@ -63,9 +55,8 @@ export def const FILENAME as string init "deck.toml";
  * @field requires {map of string to string} deck name -> version constraint
  * @field engines {map of string to string} engine -> version range
  * @field capabilities {list of string} host capabilities the code needs
- * @field keywords {list of string} the deck's tags, already normalised: folded,
- *     filtered against the refused list, deduplicated, and capped at
- *     `keywords.LIMIT`. Never a reason to reject a manifest.
+ * @field keywords {list of string} the deck's tags, normalised by
+ *     `keywords.normalise`; never a reason to reject a manifest
  */
 export def struct Manifest {
     ok as bool,
@@ -80,8 +71,8 @@ export def struct Manifest {
     keywords as list of string
 };
 
-# bad builds a refusal. Every field is zeroed, so a caller that ignores `ok`
-# gets an empty name rather than a half-populated one that might pass a check.
+# bad builds a refusal with every field zeroed, so a caller ignoring `ok` gets
+# no name that might pass a check.
 func bad(reason as string) {
     def noMap as map of string to string init {};
     def noList as list of string init [];
@@ -108,8 +99,8 @@ func str(doc as toml.Value, pointer as string) {
 }
 
 # table reads a table of string values into a map, folding the keys when they
-# are deck names. An absent table is empty, which is what the specification says
-# an absent `requires` means. `tableProblem` has already vouched for the shape.
+# are deck names. An absent table is empty, as the specification defines an
+# absent `requires`. Call after `tableProblem` has checked the shape.
 func table(doc as toml.Value, pointer as string, decks as bool) {
     def out as map of string to string init {};
     if (not toml.has($doc, $pointer)) {
@@ -126,10 +117,9 @@ func table(doc as toml.Value, pointer as string, decks as bool) {
 }
 
 # tableProblem is why a dependency table cannot be published, or "". Each entry
-# must be a constraint in the grammar (2.4), since one outside it matches nothing
-# and a typo would otherwise surface only when somebody fails to install. Under
-# `[decks]` each key must also be a scoped deck name, and two spellings of one
-# name are refused: names fold, so they would be one dependency at two versions.
+# must be a constraint in the grammar (2.4); one outside it matches nothing.
+# Under `[decks]` each key must be a scoped deck name, and two spellings of one
+# folded name are refused, since they would be one dependency at two versions.
 func tableProblem(doc as toml.Value, pointer as string, decks as bool) {
     def label as string init "[" + strings.substring($pointer, 1, len($pointer)) + "]";
     if (not toml.has($doc, $pointer)) {
@@ -190,17 +180,16 @@ func fieldProblem(doc as toml.Value, field as string) {
     return "";
 }
 
-# ptrEscape encodes one JSON Pointer reference token (RFC 6901). A dependency
-# key is a scoped deck name and contains a "/", which would otherwise read as a
-# path separator and address a table that does not exist.
+# ptrEscape encodes one JSON Pointer reference token (RFC 6901). A scoped deck
+# name contains a "/", which would otherwise read as a path separator.
 func ptrEscape(token as string) {
     def out as string init strings.replace($token, "~", "~0");
     return strings.replace($out, "/", "~1");
 }
 
 # strList reads an optional array, keeping its strings and skipping anything
-# else. Fields where a wrong entry must fail the publish check `listProblem`
-# first; keywords do not, because a bad keyword never fails a publish.
+# else. Fields where a wrong entry fails the publish check `listProblem` first;
+# keywords do not.
 func strList(doc as toml.Value, pointer as string) {
     def out as list of string init [];
     if (not toml.has($doc, $pointer) or not (toml.typeOf($doc, $pointer) == "list")) {
@@ -216,13 +205,9 @@ func strList(doc as toml.Value, pointer as string) {
 }
 
 /**
- * Parse and validate a `deck.toml`.
- *
- * Validation is deliberately strict about the two fields that become the
- * published record's identity, and lenient about everything else. A malformed
- * name or version must not reach the store: a name outside the grammar produces
- * a record a conforming client cannot install (2.1), and a version that is not
- * SemVer cannot be ordered against its siblings.
+ * Parse and validate a `deck.toml`. Strict on name and version, which form the
+ * record's identity: a name outside the grammar cannot be installed by a
+ * conforming client (2.1), and a non-SemVer version cannot be ordered.
  * @param text {string} the file's contents
  * @return {Manifest} the parsed manifest, or a refusal with `error` set
  */
@@ -280,9 +265,7 @@ export func parse(text as string) {
         requires: table($doc, "/decks", true),
         engines: table($doc, "/engines", false),
         capabilities: strList($doc, "/package/capabilities"),
-        # Normalised here rather than at the call site so there is one answer to
-        # "what tags does this deck have": a bad keyword costs the publisher that
-        # keyword and never their release, so this cannot fail the parse.
+        # Normalised here so every caller sees the same tags; cannot fail the parse.
         keywords: keywords.normalise(strList($doc, "/package/keywords"))
     };
 }

@@ -6,8 +6,8 @@
 #
 #     jennifer test src/search_test.j
 #
-# search.j imports store and flatdb, so the overlay reaches them through those
-# aliases and Hit / find / matchesName by bare name.
+# The overlay reaches store and flatdb through their aliases and search.j's own
+# names bare.
 
 use testing;
 
@@ -33,8 +33,8 @@ func ver(v as string) {
     };
 }
 
-# seeded returns a registry with three decks whose names and descriptions are
-# chosen so name matches and description matches can be told apart.
+# seeded returns a registry of three decks whose name and description matches
+# can be told apart.
 func seeded() {
     def db as flatdb.DB init store.open("/no/such/jvc/search/missing.json");
     $db = store.putVersion($db, "@acme/routeros", "MikroTik router client", ver("0.1.0"));
@@ -97,9 +97,6 @@ func testMatchesOnDescription() {
 }
 
 func testNameMatchesRankAboveDescriptionMatches() {
-    # "ansi" is @zeta/ansi's name, and nothing else's; "terminal" is only in its
-    # description. A query hitting one deck by name and another by description
-    # must put the name match first.
     def db as flatdb.DB init seeded();
     $db = store.putVersion($db, "@acme/terminal", "an ansi helper", ver("1.0.0"));
     def hits as list of Hit init find($db, "terminal");
@@ -110,8 +107,8 @@ func testNameMatchesRankAboveDescriptionMatches() {
 }
 
 func testDeckAppearsOnlyOnceWhenBothMatch() {
-    # "ansi" is in @zeta/ansi's name and in @acme/terminal's description; the
-    # deck matching on both must not be listed twice.
+    # "ansi" matches @zeta/ansi by name and @acme/terminal by description; no deck
+    # is listed twice.
     def db as flatdb.DB init seeded();
     $db = store.putVersion($db, "@acme/terminal", "an ansi helper", ver("1.0.0"));
     def hits as list of Hit init find($db, "ansi");

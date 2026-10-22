@@ -6,9 +6,8 @@
 #
 #     jennifer test src/manifest_test.j
 #
-# This is the file a publish takes the deck's identity from, so the tests care
-# most about what must be refused: anything that would put a name or a version
-# into the store that a conforming client could not then install.
+# Most tests cover refusals: names or versions a conforming client could not
+# install.
 
 use testing;
 
@@ -40,7 +39,6 @@ func testAFullManifestParses() {
 }
 
 func testAScopedDependencyKeySurvives() {
-    # dependencies are declared under [decks] and become the record's `requires`;
     # the key holds a "/", which addresses a nested table unless escaped
     def m as Manifest init full();
     testing.assertEqual(len($m.requires), 2);
@@ -69,8 +67,7 @@ version = "1.0.0"
 }
 
 func testTheNameIsFolded() {
-    # so a repository declaring @Acme/Tool publishes to @acme/tool, and the scope
-    # check runs against the folded form
+    # the scope check runs against the folded form
     def m as Manifest init parse('[package]
 name = "@Acme/Tool"
 version = "1.0.0"
@@ -134,8 +131,7 @@ version = "1.0"
 }
 
 func testARefusalCarriesNoName() {
-    # a caller that ignores `ok` must not find a usable name to check a scope
-    # against; every field is zeroed on refusal
+    # every field is zeroed, so a caller ignoring `ok` has no name to check
     def m as Manifest init parse('[package]
 name = "routeros"
 version = "1.0.0"
@@ -163,7 +159,7 @@ version = "1.0.0"
 }
 
 func testAVersionTooLargeToOrderIsRefused() {
-    # it would pass a SemVer check and then throw in every listing that sorted it
+    # valid SemVer, but it would throw in every listing that sorted it
     def m as Manifest init parse('[package]
 name = "@acme/tool"
 version = "99999999999999999999.0.0"
@@ -207,7 +203,7 @@ func testDependencyNamesAreFolded() {
 }
 
 func testAWrongTypeIsAnErrorNotACrash() {
-    # these used to throw out of `parse`, so a publish failed with no message
+    # guards against `parse` throwing, which failed a publish with no message
     def name as Manifest init parse('[package]
 name = 5
 version = "1.0.0"

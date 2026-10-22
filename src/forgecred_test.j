@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
 # pragma-jennifer-version: >=0.25.0
+#
+# White-box tests for forgecred.j. Run with:
+#
+#     jennifer test src/forgecred_test.j
 
 use testing;
 use strings;
@@ -42,8 +46,7 @@ func unsealAlteredText() {
 }
 
 func testAWrongKeyOrATamperedRecordIsRefused() {
-    # a rotated signing key, or an edited record, must fail rather than hand the
-    # forge some other string as a credential
+    # must fail rather than hand the forge some other string as a credential
     testing.assertThrows("unsealUnderAnotherKey", "runtime");
     testing.assertThrows("unsealAlteredText", "runtime");
 }

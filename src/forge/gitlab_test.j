@@ -6,9 +6,7 @@
 #
 #     jennifer test src/forge/gitlab_test.j
 #
-# GitLab is the forge that differs most from the GitHub shape, so the parts that
-# differ - encoded project ids and numeric access levels - are where the tests
-# concentrate.
+# The tests focus on encoded project ids and numeric access levels.
 
 use testing;
 use json;
@@ -27,7 +25,7 @@ func testHandlesTheHostedInstance() {
 }
 
 func testProjectIdEncodesNestedGroups() {
-    # GitLab addresses a project by its URL-encoded path, not by segments
+    # GitLab addresses a project by its URL-encoded path
     testing.assertEqual(
         projectId("https://gitlab.com/group/sub/project.git"),
         "group%2Fsub%2Fproject");
@@ -54,7 +52,7 @@ func testReporterMayNot() {
 }
 
 func testInheritedGroupAccessCounts() {
-    # a member may hold no direct project membership and still be able to push
+    # group membership alone may grant push
     def body as string init '{"permissions":{"project_access":null,' +
         '"group_access":{"access_level":40}}}';
     def p as forge.Permission init permissionFrom(doc($body));
@@ -128,8 +126,8 @@ func testAMembershipWithoutALevelIsUnknown() {
 }
 
 func testAFileIsAskedAboutAsOneSegment() {
-    # the files API takes the whole path as one escaped segment, and the commit as
-    # the ref, so a branch moving later cannot change the answer
+    # one escaped path segment, and the commit as the ref so a moved branch cannot
+    # change the answer
     testing.assertEqual(
         filePath("https://gitlab.com/acme/tool", "c0ffee", "src/tool.j"),
         "/projects/acme%2Ftool/repository/files/src%2Ftool.j?ref=c0ffee");

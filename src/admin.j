@@ -3,16 +3,11 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * The deck-repository maintenance logic: the small set of operations that
- * insert, update, remove, and inspect entries in the registry `flatdb`
- * document. It is the brain behind the `bin/deckadmin` script: `parser`
- * declares the command-line grammar, and each `cmd*` takes the current DB, the
- * parsed command line, and a timestamp, returning an `AdminResult` that carries
- * the (possibly edited) DB, whether anything changed (so the caller knows to
- * `store.save`), and a message to print. Keeping all of it here, rather than in
- * the entry script, makes every branch unit-testable; the entry script only
- * binds the handlers to `args.dispatch`. All editing goes through the `store`
- * module.
+ * The operator verbs behind `bin/deckadmin`, which only binds them to
+ * `args.dispatch`. `parser` declares the grammar; each `cmd*` takes the current
+ * DB, the parsed command line and a timestamp, and returns an `AdminResult`
+ * with the (possibly edited) DB, whether to `store.save` it, and a message. All
+ * editing goes through `store`.
  * @module admin
  * @example
  * import "./admin.j" as admin;
@@ -55,8 +50,7 @@ export def struct AdminResult {
 };
 
 # ownershipCommands adds the scope-ownership and credential half of the grammar.
-# Split out of `parser` only for length: one function declaring every command was
-# past the point where a reader could find the one they wanted.
+# Split out of `parser` for length.
 func ownershipCommands(p as args.Parser) {
     def out as args.Parser init $p;
     def ns as args.Parser init args.parser("register-namespace", "register a scope");
@@ -127,9 +121,7 @@ func ownershipCommands(p as args.Parser) {
 }
 
 /**
- * How this invocation should log. Resolved from the command line and the
- * environment together, so a container sets it once in compose and an operator
- * can still override it for a single command.
+ * How this invocation logs, resolved from the command line and the environment.
  * @field path {string} the log file ("" for none)
  * @field level {string} the minimum level
  * @field format {string} the record format
@@ -148,10 +140,8 @@ export def struct LogOptions {
  * Resolve the logging configuration: a flag beats the environment, which beats
  * the default. Pure, so the precedence is testable without a process.
  *
- * The console defaults **off** here, unlike the server. `deckadmin` already
- * prints a result line, so mirroring every event to the console by default would
- * make each command print itself twice; `--verbose` is for when the structured
- * form is what you want to see.
+ * The console defaults off, unlike the server, because `deckadmin` already
+ * prints a result line; `--verbose` turns it on.
  * @param r {args.Result} the parsed command line
  * @param envPath {string} REGISTRY_LOG
  * @param envLevel {string} REGISTRY_LOG_LEVEL
@@ -175,8 +165,7 @@ export func logOptions(
     if ($format == "") {
         $format = $envFormat;
     }
-    # A file is read by something else later, so it defaults to a parseable
-    # format; the console is read by a person, and gets text.
+    # A file defaults to a parseable format; the console gets text.
     if ($format == "") {
         $format = "logfmt";
     }
@@ -227,12 +216,9 @@ func parseList(spec as string) {
 
 # readResult / failResult / editResult build the three AdminResult shapes.
 #
-# A read records nothing: listing decks is not an event. A failure records a
-# `commandFailed`, because a log that shows only what worked hides the
-# misconfigured invocation an operator is usually looking for. An edit takes its
-# event as an argument, so the command that made the change is also the code that
-# describes it - the alternative, reconstructing the event from the message
-# string afterwards, would drift the moment a message is reworded.
+# A read records nothing. A failure records a `commandFailed`, so the log shows
+# failed invocations too. An edit takes its event from the command that made
+# the change, rather than reconstructing it from the message.
 func readResult(db as flatdb.DB, message as string) {
     return AdminResult{db: $db, ok: true, changed: false, message: $message, event: audit.none()};
 }
@@ -269,10 +255,8 @@ func publishParser(name as string, help as string) {
 }
 
 /**
- * The deckadmin command-line grammar: the subcommands, their positionals, and
- * their flags. Kept here rather than in the entry script so the parse is
- * testable, and so `--help` text is generated from one declaration instead of
- * being maintained by hand.
+ * The deckadmin command-line grammar: subcommands, positionals and flags. Also
+ * the source of the `--help` text.
  * @return {args.Parser} the parser for the whole CLI
  */
 export func parser() {
@@ -282,11 +266,9 @@ export func parser() {
             "and its scope must be registered first. A git version is pinned by the " +
             "commit its tag pointed at, which is the integrity boundary; a tar.gz " +
             "version is pinned by its checksum.");
-    # Logging is configured on the root parser, so these go *before* the command:
-    # `deckadmin --log data/registry.log add ...`. `args` hands the accumulated
-    # result down into the subcommand parser, which is what makes that work; a
-    # flag placed after the command is matched against the command's own grammar
-    # and would be rejected as unknown.
+    # Logging flags belong to the root parser, so they go before the command:
+    # `deckadmin --log data/registry.log add ...`. After the command they are
+    # matched against its own grammar and rejected as unknown.
     $p = args.flag($p, "log", "", "", "append events to this file (REGISTRY_LOG)");
     $p = args.flag(
         $p,
@@ -361,8 +343,7 @@ export func parser() {
 # checkPin validates the delivery pin for a kind, returning "" when it is well
 # formed and the operator-facing complaint otherwise. A git version is pinned by
 # its commit and a tar.gz version by its checksum; supplying the other kind's
-# pin is an error rather than a silent no-op, because it means the operator
-# believes something about this version that is not true.
+# pin is an error.
 func checkPin(kind as string, ref as string, commit as string, checksum as string) {
     if ($kind == store.KIND_GIT) {
         if ($ref == "" or $commit == "") {
@@ -371,11 +352,9 @@ func checkPin(kind as string, ref as string, commit as string, checksum as strin
         if (not store.isCommit($commit)) {
             return "not a full 40-character lowercase commit SHA: " + $commit;
         }
-        # The same rule the publish endpoint applies, and for the same reason: a
-        # ref shaped like an object id is stored and served as this version's
-        # `ref`, and a client that resolves a name before an object follows it
-        # instead of the pin. An operator gets the check too, because a record
-        # written here is indistinguishable from one written over HTTP.
+        # As in the publish endpoint: a client that resolves a name before an
+        # object would follow a ref shaped like an object id instead of the pin.
+        # A record written here is indistinguishable from one written over HTTP.
         if (store.isObjectIdLike($ref)) {
             return "--ref " + $ref + " is shaped like a git object id, which a " +
                 "client can resolve as a commit; use a tag that cannot be read as one";
@@ -396,7 +375,7 @@ func checkPin(kind as string, ref as string, commit as string, checksum as strin
 }
 
 # The schemes a version's URL may use. Anything else (empty, `javascript:`, a
-# bare word) is a record no client can fetch from, served as if it were one.
+# bare word) is a record no client can fetch from.
 def const URL_SCHEMES as list of string init ["https://", "http://", "ssh://", "git://", "file://"];
 
 # urlProblem is why a version's URL cannot be stored, or "". Looser than the
@@ -437,8 +416,7 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
     def ref as string init args.asString($r, "ref");
     def commit as string init args.asString($r, "commit");
     def checksum as string init args.asString($r, "checksum");
-    # Folded on the way in, so the record is written in exactly one form and a
-    # later lookup in any casing finds it (specification 2.1).
+    # Folded on the way in, so a lookup in any casing finds it (specification 2.1).
     def name as string init deckname.fold(args.asString($r, "deck"));
     def version as string init args.asString($r, "version");
     def url as string init args.asString($r, "url");
@@ -448,8 +426,8 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
             "not a valid deck name: " + $name +
                 " (lowercase; the scope may carry hyphens, the deck may not)");
     }
-    # A registry deck is always scoped. A bare name denotes a module bundled with
-    # the interpreter or a local file, so it is not publishable here.
+    # A bare name denotes a bundled module or a local file, so only scoped names
+    # are publishable.
     if (not deckname.isScoped($name)) {
         return failResult(
             $db,
@@ -462,8 +440,7 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
             "not a valid version: " + $version +
                 " (SemVer, with no number longer than 18 digits)");
     }
-    # The same rules a publish applies to `[decks]` (manifest.j): a record written
-    # by an operator is indistinguishable from one written over HTTP.
+    # The rules a publish applies to `[decks]` (manifest.j).
     for (def dep in $requires) {
         if (not deckname.isValid($dep) or not deckname.isScoped($dep)) {
             return failResult($db, "not a deck name in --requires: " + $dep);
@@ -495,8 +472,8 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
             "namespace @" + $scope +
                 " is not registered; run 'deckadmin register-namespace " + $scope + "'");
     }
-    # The presence of a repository pin is what selects the kind; an absent one
-    # means the version is an uploaded artifact and must carry a checksum.
+    # A repository pin selects git; without one the version is an artifact and
+    # needs a checksum.
     def kind as string init store.KIND_TARGZ;
     if (not ($ref == "") or not ($commit == "")) {
         $kind = store.KIND_GIT;
@@ -522,9 +499,8 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
         license: "",
         keywords: []
     };
-    # The operator may replace a version, but only by its exact string: a second
-    # record differing only in build metadata is a second commit behind one
-    # version number, not a replacement.
+    # A version is replaced only by its exact string; a twin differing only in
+    # build metadata would put a second commit behind one version number.
     def twin as string init store.publishedAs($db, $name, $version);
     if (not ($twin == "" or $twin == $version)) {
         return failResult(
@@ -532,8 +508,7 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
             $name + "@" + $twin + " is the same version as " + $version +
                 " (build metadata does not count); give " + $twin + " to replace it");
     }
-    # Whether this overwrites an existing version decides how loudly it is
-    # recorded, so it must be asked before the store is edited.
+    # Asked before the edit: a replacement logs at a higher level.
     def replaced as bool init store.hasVersion($db, $name, $version);
     def pin as string init $commit;
     if ($kind == store.KIND_TARGZ) {
@@ -579,9 +554,8 @@ export func cmdRemove(db as flatdb.DB, r as args.Result, now as string) {
  * Register a scope so scoped decks may publish under it.
  *
  * With `--owner` it binds the scope to that principal; without one it reserves
- * the scope **operator-held**, which registers the name so nobody may claim it
- * while binding it to nobody, so nobody may write under it either. Re-running it
- * with an owner is how a scope is reassigned.
+ * the scope operator-held: nobody may claim it or write under it. Re-running it
+ * with an owner reassigns the scope.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} the parsed command line
  * @param now {string} the registration timestamp (Unix seconds as text)
@@ -593,8 +567,7 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
     if (strings.startsWith($scope, "@")) {
         $scope = strings.substring($scope, 1, len($scope));
     }
-    # A scope is checked against the *scope* grammar, which permits hyphens; the
-    # deck grammar does not, because only the deck half becomes a namespace.
+    # The scope grammar permits hyphens; the deck grammar does not.
     if (not deckname.isScopeIdent($scope)) {
         return failResult(
             $db,
@@ -605,13 +578,11 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
     if (store.hasNamespace($db, $scope) and $owner == "") {
         return readResult($db, "namespace @" + $scope + " already registered");
     }
-    # An operator grant bypasses the policy deliberately: it is the mechanism
-    # that covers what derivation cannot, including reassigning a scope after a
-    # dispute (specification 8.2), so re-granting an existing scope is allowed.
+    # An operator grant bypasses the policy and may re-grant an existing scope:
+    # it covers what derivation cannot, such as a dispute (specification 8.2).
     def reassigned as bool init store.hasNamespace($db, $scope);
-    # A change of owner takes the old owner's delegations with it: the CI tokens
-    # and trusted publishers under the scope were theirs to grant, not the new
-    # owner's. Re-granting to the same owner (a kind change, say) keeps them.
+    # A change of owner drops the old owner's CI tokens and trusted publishers.
+    # Re-granting to the same owner (a kind change, say) keeps them.
     def handover as bool init false;
     if ($reassigned) {
         def before as store.Namespace init store.getNamespace($db, $scope);
@@ -651,10 +622,8 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
 }
 
 /**
- * Invalidate every refresh token belonging to an account, which is the operator
- * path the specification requires (section 8.5). Outstanding bearer tokens are
- * signed and stateless, so they run out on their own; what this stops is the
- * holder minting new ones.
+ * Invalidate every refresh token of an account (specification 8.5). Issued
+ * bearer tokens are stateless and expire on their own.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} the parsed command line
  * @param now {string} unused; kept so every command shares one handler shape
@@ -680,13 +649,9 @@ export func cmdRevoke(db as flatdb.DB, r as args.Result, now as string) {
  * Register every reserved scope operator-held, so no self-service claim can take
  * one (see `reserved.j` for what is on the list and why brands are not).
  *
- * **Idempotent, and it never touches a scope that already exists.** A name
- * somebody legitimately owns is reported and left alone rather than seized: this
- * is a bootstrap convenience, not an eviction tool, and the operator grant is
- * the deliberate path for taking a name back.
- *
- * Worth running on a fresh registry before it is public, and again after the
- * list grows. `--dry-run` prints the plan.
+ * Idempotent, and never touches an existing scope: an owned name is reported and
+ * left alone. Taking a name back is an operator grant. `--dry-run` prints the
+ * plan.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} the parsed command line
  * @param now {string} the registration timestamp (Unix seconds as text)
@@ -735,8 +700,7 @@ export func cmdReserveDefaults(db as flatdb.DB, r as args.Result, now as string)
         $lines[] = "already reserved: " + convert.toString(len($held));
     }
     if (len($owned) > 0) {
-        # The interesting case: somebody holds a name the list wants. Left alone,
-        # and named, because it is a decision for a person.
+        # Somebody owns a listed name: named and left for the operator.
         $lines[] = "OWNED BY SOMEBODY, left untouched: " + strings.join($owned, " ");
     }
     if (len($added) == 0 or $dry) {
@@ -752,13 +716,10 @@ export func cmdReserveDefaults(db as flatdb.DB, r as args.Result, now as string)
  * Mint a CI token: the non-interactive fallback where trusted publishing is
  * unavailable (specification 8.10).
  *
- * **The secret is printed once and never stored.** Only its SHA-256 is written
- * down, so this command is the sole moment the token exists in readable form; if
- * it is lost, the remedy is to revoke and mint another.
+ * The secret is printed once; only its SHA-256 is stored. A lost token is
+ * revoked and replaced.
  *
- * It expires by default, because a token nobody remembers is the one that leaks.
- * `--days 0` opts out explicitly, which is the point of making it a flag rather
- * than a default.
+ * It expires by default (`--days 90`); `--days 0` opts out.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} the parsed command line
  * @param now {string} the minting timestamp (Unix seconds as text)
@@ -775,11 +736,8 @@ export func cmdMintToken(db as flatdb.DB, r as args.Result, now as string) {
     if (not store.hasNamespace($db, $scopeName)) {
         return failResult($db, "namespace @" + $scopeName + " is not registered");
     }
-    # Same reason as `cmdTrust`: a CI token is a delegated credential, and a
-    # reserved scope has nobody to delegate for. `publishview.checkDeck` refuses
-    # the publish anyway, so without this the command would mint a secret that
-    # can never authorise anything - a dead credential is worse than a refusal,
-    # because it fails later and somewhere else.
+    # A reserved scope has nobody to delegate for, and `publishview.checkDeck`
+    # would refuse every use of the token, so refuse to mint it here.
     if (store.getNamespace($db, $scopeName).subject == "") {
         return failResult(
             $db,
@@ -831,9 +789,7 @@ export func cmdMintToken(db as flatdb.DB, r as args.Result, now as string) {
 }
 
 /**
- * List CI tokens. Shows the fingerprint, never anything that could be presented
- * as a credential, plus when each was last used - which is how an unused token
- * gets found and retired.
+ * List CI tokens by fingerprint, with when each was last used.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} unused; kept so every command shares one handler shape
  * @param now {string} unused; kept so every command shares one handler shape
@@ -867,7 +823,7 @@ export func cmdTokens(db as flatdb.DB, r as args.Result, now as string) {
 }
 
 /**
- * Revoke one CI token, without disturbing the others.
+ * Revoke one CI token.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} the parsed command line
  * @param now {string} unused; kept so every command shares one handler shape
@@ -888,11 +844,8 @@ export func cmdRevokeToken(db as flatdb.DB, r as args.Result, now as string) {
 /**
  * Withdraw a version from new resolutions, or restore it.
  *
- * **Not a deletion.** The version stays in the record and stays fetchable, so a
- * lockfile that already pins it keeps installing; what stops is a *fresh*
- * resolution choosing it (specification 9). Deleting instead would break every
- * consumer who already depends on the version, which punishes them for the
- * publisher's mistake.
+ * The version stays recorded and fetchable, so a lockfile that pins it still
+ * installs; only fresh resolutions skip it (specification 9).
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} the parsed command line
  * @param now {string} unused; kept so every command shares one handler shape
@@ -922,10 +875,8 @@ export func cmdSetYanked(db as flatdb.DB, r as args.Result, now as string, yanke
  * Register a trusted publisher: the CI workflow permitted to publish a deck
  * with no stored credential (specification 8.9).
  *
- * The scope must already be owned, so a binding never bypasses name authority -
- * it only removes the ordering problem of a deck that does not exist yet. A
- * binding on a deck with no versions is **pending**, and the first publish
- * converts it.
+ * The scope must already be owned, so a binding never bypasses name authority.
+ * A binding on a deck with no versions is pending until the first publish.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} the parsed command line
  * @param now {string} the registration timestamp (Unix seconds as text)
@@ -950,8 +901,7 @@ export func cmdTrust(db as flatdb.DB, r as args.Result, now as string) {
             "a trusted publisher needs the repository id, " +
                 "not the path: a path can be renamed and re-registered by somebody else");
     }
-    # Name authority first. A binding is a standing grant to write under a scope,
-    # so it is exactly as privileged as a publish and gated the same way.
+    # A binding is a standing write grant, so it is gated like a publish.
     def scopeName as string init deckname.scopeOf($deck);
     if (not store.hasNamespace($db, $scopeName)) {
         return failResult(
@@ -959,10 +909,8 @@ export func cmdTrust(db as flatdb.DB, r as args.Result, now as string) {
             "namespace @" + $scopeName +
                 " is not registered; run 'deckadmin register-namespace " + $scopeName + "'");
     }
-    # Registered is not owned. A scope bound to nobody is reserved, and a
-    # trusted publisher is a standing grant to write under it *on somebody's
-    # behalf* - so with no owner there is nobody to act for, and the binding
-    # would be a way to publish under a name the registry is holding shut.
+    # A reserved scope has no owner for the publisher to act for; a binding
+    # would open a name the registry holds shut.
     if (store.getNamespace($db, $scopeName).subject == "") {
         return failResult(
             $db,
@@ -993,8 +941,7 @@ export func cmdTrust(db as flatdb.DB, r as args.Result, now as string) {
 }
 
 /**
- * Remove a deck's trusted publisher, which is how a compromised or retired
- * repository is cut off.
+ * Remove a deck's trusted publisher, cutting off its repository.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} the parsed command line
  * @param now {string} unused; kept so every command shares one handler shape
@@ -1044,14 +991,11 @@ export func cmdPublishers(db as flatdb.DB, r as args.Result, now as string) {
 /**
  * Add a co-owner: a second principal that may write under a scope.
  *
- * **Not a transfer.** The scope still names one owner as the principal it was
- * granted to; a co-owner publishes and yanks under it but does not become the
- * scope's identity. Handing the scope on is `register-namespace`, which is a
- * different verb on purpose.
+ * Not a transfer: the scope keeps its one owner, and a co-owner may publish and
+ * yank under it. Transfer is `register-namespace`.
  *
- * Co-owners are held as subject ids under the scope's own provider, with no
- * login stored beside them: the id is what authorises, and a second copy of a
- * display label is a second thing to go stale after a rename.
+ * Co-owners are subject ids under the scope's provider, with no login stored,
+ * since only the id authorises.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} the parsed command line
  * @param now {string} unused; kept so every command shares one handler shape
@@ -1091,9 +1035,8 @@ export func cmdAddOwner(db as flatdb.DB, r as args.Result, now as string) {
 }
 
 /**
- * Remove a co-owner. The scope's own owner cannot be removed this way: losing
- * the last owner would leave decks nobody can yank, so reassignment is
- * `register-namespace`.
+ * Remove a co-owner. The owner cannot be removed this way, which would leave
+ * decks nobody can yank; reassignment is `register-namespace`.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} the parsed command line
  * @param now {string} unused; kept so every command shares one handler shape
@@ -1139,11 +1082,8 @@ export func cmdNamespaces(db as flatdb.DB, r as args.Result, now as string) {
     if (len($scopes) == 0) {
         return readResult($db, "(no namespaces registered)");
     }
-    # Reserving the defaults puts scores of operator-held names in the store, so
-    # a bare list of names stopped answering the question an operator actually
-    # has, which is "which of these has an owner". Each line says which it is,
-    # and the filters exist because the reserved block otherwise buries the few
-    # entries anybody is looking for.
+    # The reserved defaults are many, so each line says whether the scope has an
+    # owner, and `--owned` / `--reserved` filter.
     def onlyOwned as bool init args.asBool($r, "owned");
     def onlyReserved as bool init args.asBool($r, "reserved");
     def lines as list of string init [];
@@ -1222,21 +1162,14 @@ export func cmdList(db as flatdb.DB, r as args.Result, now as string) {
 }
 
 /**
- * `deckadmin keywords` - read the refused-keyword list, or encode terms for it.
+ * `deckadmin keywords`: read the refused-keyword list, or encode terms for it.
  *
- * The list is stored base64 so that a public repository does not carry a page of
- * the vocabulary it refuses (see `keywords.j`). That is right for the file and
- * useless for the operator maintaining it, who needs to see what is actually on
- * the list and needs the encoded form of anything they want to add. This is the
- * one place both are available, and it is deliberately an operator command
- * rather than an endpoint: the decoded list is exactly what should not be
- * fetchable by anything that crawls.
+ * The list is stored base64 (see `keywords.j`). This command decodes it and
+ * encodes additions; it is not an endpoint, so the decoded list is never
+ * fetchable.
  *
- * With no arguments it prints the list, grouped by why each group exists. With
- * words, it prints the line to paste into the module.
- *
- * Reads nothing and writes nothing, so it works against any registry, including
- * none.
+ * With no arguments it prints the list by group; with words, the lines to paste
+ * into the module. Reads and writes nothing, so it needs no registry.
  * @param db {flatdb.DB} the store, returned untouched
  * @param r {args.Result} the parsed command line
  * @param now {string} unused; kept so the shape matches its siblings
@@ -1253,8 +1186,7 @@ export func cmdKeywords(db as flatdb.DB, r as args.Result, now as string) {
         def folded as string init keywords.fold($word);
         def note as string init "";
         if (not keywords.isWellFormed($folded)) {
-            # Encoding it anyway would produce a line that can never match, since
-            # every lookup runs on an already-folded, well-formed keyword.
+            # Lookups run on folded, well-formed keywords, so this never matches.
             $note = "   # WARNING: not a well-formed keyword; it would never match";
         }
         if (keywords.isBlocked($folded)) {
@@ -1283,8 +1215,7 @@ func keywordListing() {
     return $msg;
 }
 
-# keywordGroup names one group of the list. A lookup by name rather than three
-# call sites, so `cmdKeywords` stays a table and not a chain of branches.
+# keywordGroup returns one group of the list by name.
 func keywordGroup(which as string) {
     if ($which == "abuse") {
         return keywords.abuse();
@@ -1296,10 +1227,8 @@ func keywordGroup(which as string) {
 }
 
 /**
- * Parse an argument vector against the CLI grammar. A thin wrapper over
- * `args.parse` so a caller (and a test) need not build the parser itself.
- * `-h` / `--help` sets the result's `done` flag with `helpText` to print,
- * rather than exiting, so it composes with `try` / `catch`.
+ * Parse an argument vector against the CLI grammar. `-h` / `--help` sets the
+ * result's `done` flag with `helpText` to print instead of exiting.
  * @param argv {list of string} the argument vector (os.ARGS; index 0 is skipped)
  * @return {args.Result} the parsed command line
  * @throws {Error} kind "args" on an unknown flag, a missing required argument,

@@ -6,9 +6,8 @@
 #
 #     jennifer test src/config_test.j
 #
-# The whole point of this module is a precedence rule, so that is what is tested:
-# defaults, then the file, then the environment, with the environment winning and
-# an absent setting never blanking a present one.
+# Precedence: defaults, then the file, then the environment, and an absent
+# setting never blanks a present one.
 
 use testing;
 
@@ -94,8 +93,7 @@ func testAKeyTheFileOmitsKeepsItsDefault() {
 }
 
 func testAMalformedFileThrows() {
-    # a deployment whose configuration silently failed to load is worse than one
-    # that refuses to start and says so
+    # refuse to start rather than run on a configuration that failed to load
     testing.assertThrows("parsesBrokenToml", "runtime");
 }
 
@@ -122,7 +120,7 @@ func testTheEnvironmentOverridesTheFile() {
 }
 
 func testAnEmptyVariableDoesNotBlankASetting() {
-    # a stray empty value in a compose file must not silently erase configuration
+    # a stray empty value in a compose file must not erase configuration
     def env as map of string to string init {"REGISTRY_ADDR": "", "REGISTRY_DB": "   "};
     def c as Config init applyEnv(applyToml(defaults(), sample()), $env);
     testing.assertEqual($c.addr, ":9000");
@@ -130,8 +128,7 @@ func testAnEmptyVariableDoesNotBlankASetting() {
 }
 
 func testABooleanCanBeTurnedOffFromTheEnvironment() {
-    # the exception to the rule above: "0" has to be able to disable something
-    # the file enabled, so booleans parse rather than test for emptiness
+    # "0" must be able to disable something the file enabled
     def env as map of string to string init {"REGISTRY_TLS": "0"};
     testing.assertFalse(applyEnv(applyToml(defaults(), sample()), $env).tls.enabled);
     def on as map of string to string init {"REGISTRY_TLS": "true"};
@@ -151,7 +148,7 @@ func testBooleanSpellings() {
 }
 
 func testAnUnrecognisedBooleanKeepsTheConfiguredValue() {
-    # reading "maybe" as "no" would quietly disable TLS
+    # reading "maybe" as "no" would disable TLS
     def env as map of string to string init {"K": "perhaps"};
     testing.assertTrue(envFlag($env, "K", true));
     testing.assertFalse(envFlag($env, "K", false));
@@ -268,8 +265,7 @@ func testTheTermsMustBeAcceptedDeliberately() {
 }
 
 func testStagingIsRecognisable() {
-    # a staging certificate is untrusted, and a browser warning is a confusing
-    # way to discover which endpoint you pointed at
+    # boot warns that a staging certificate is untrusted
     testing.assertTrue(isStaging(LE_STAGING));
     testing.assertFalse(isStaging(LE_PRODUCTION));
 }
@@ -277,8 +273,6 @@ func testStagingIsRecognisable() {
 # --- the rename ---------------------------------------------------------------
 
 func testLegacyNamesMapAcrossThePrefix() {
-    # `jvc` is the client; naming the server's variables after it meant a host
-    # running both had one JVC_DB meaning two different databases
     testing.assertEqual(legacyNameOf("REGISTRY_DB"), "JVC_DB");
     testing.assertEqual(legacyNameOf("REGISTRY_TLS_DOMAINS"), "JVC_TLS_DOMAINS");
 }
@@ -289,8 +283,7 @@ func testSomethingElseHasNoLegacyName() {
 }
 
 func testTheCanonicalUrlLosesATrailingSlash() {
-    # a client records this string to say where a deck came from; two spellings
-    # of one registry would read as two registries
+    # two spellings of one registry would read as two registries
     def env as map of string to string init {"REGISTRY_URL": "https://registry.jennifer-lang.dev/"};
     testing.assertEqual(
         applyEnv(defaults(), $env).canonicalUrl,
@@ -309,19 +302,16 @@ func testNoCanonicalUrlByDefault() {
 }
 
 func testTheClientIpHeaderIsOptInAndOff() {
-    # reading a forwarded header unconditionally would let any caller write its
-    # own address into the audit log
+    # an unconditionally trusted forwarded header lets any caller forge its logged
+    # address
     testing.assertEqual(defaults().clientIpHeader, "");
     def env as map of string to string init {"REGISTRY_CLIENT_IP_HEADER": "CF-Connecting-IP"};
     testing.assertEqual(applyEnv(defaults(), $env).clientIpHeader, "CF-Connecting-IP");
 }
 
 func testTheBannerOnlyInventsAHostWhenThereIsNone() {
-    # ":8080" is every interface, so a name has to be invented to make the URL
-    # clickable, and localhost is right because the reader is at the machine
     testing.assertEqual(displayUrl("http", ":8080"), "http://localhost:8080");
-    # but an address that already names a host must keep it: prefixing produced
-    # "localhost127.0.0.1:8080", which is not a URL and lies about the binding
+    # guards against prefixing a host that is already there
     testing.assertEqual(displayUrl("http", "127.0.0.1:8080"), "http://127.0.0.1:8080");
     testing.assertEqual(displayUrl("https", "0.0.0.0:8443"), "https://0.0.0.0:8443");
 }

@@ -6,10 +6,8 @@
 #
 #     jennifer test src/certs_test.j
 #
-# The ACME conversation needs a CA and is not tested here. Everything that
-# *decides* is, because those are the parts that go wrong quietly: a renewal that
-# never fires leaves a dead certificate, one that fires every boot meets a rate
-# limit, and a path built from a hostile name writes outside its directory.
+# The ACME conversation needs a CA and is not tested here; renewal timing and
+# path building are.
 
 use testing;
 use fs;
@@ -44,7 +42,7 @@ func testRenewalFiresAtLifetimeMinusTheWindow() {
 }
 
 func testAWindowWiderThanTheLifetimeStillLeavesADay() {
-    # otherwise every boot renews, which is the fastest way to a rate limit
+    # otherwise every boot renews and hits the rate limit
     def wide as config.Tls init tls();
     $wide.renewBeforeDays = 200;
     testing.assertFalse(dueForRenewal($wide, NOW - 3600, NOW));
@@ -52,8 +50,7 @@ func testAWindowWiderThanTheLifetimeStillLeavesADay() {
 }
 
 func testACertificateFromTheFutureIsDue() {
-    # a clock that moved backwards or a restored backup; trusting a timestamp we
-    # can prove wrong is worse than renewing early
+    # a clock that moved backwards, or a restored backup
     testing.assertTrue(dueForRenewal(tls(), NOW + DAY, NOW));
 }
 
@@ -67,8 +64,7 @@ func testPathsAreUnderTheDomainDirectory() {
 }
 
 func testTheAccountKeyIsPerDeploymentNotPerDomain() {
-    # an ACME account is the deployment's identity to the CA; one per domain
-    # would register a new account on every domain added
+    # one key per domain would register a new ACME account per domain
     testing.assertEqual(accountKeyPath(tls()), "data/tls/account.key");
 }
 
@@ -84,24 +80,20 @@ func testADomainIsFolded() {
 }
 
 func testAChallengeTokenCannotEscapeItsDirectory() {
-    # the token comes from the CA and lands in a path; a CA would not send a
-    # hostile one, but that is not a property worth depending on
+    # the token is remote input that becomes a path
     def p as string init challengePath(tls(), "../../../etc/passwd");
     testing.assertFalse(strings.contains($p, ".."));
     testing.assertContains($p, "data/acme-challenge/");
 }
 
 func testAnOrdinaryTokenSurvivesIntact() {
-    # the filter must not mangle a real token, or the CA looks for a file that
-    # is not there
+    # a mangled token would leave the CA looking for a missing file
     def token as string init "abc123-XYZ_token";
     testing.assertEqual(challengePath(tls(), $token), "data/acme-challenge/abc123-XYZ_token");
 }
 
 func testATokenKeepsItsCase() {
-    # an ACME token is base64url and case is significant; folding it would let
-    # two distinct tokens collide on one file, and the second challenge would be
-    # answered with the first one's response
+    # base64url is case-significant; folding would let two tokens share one file
     testing.assertFalse(challengePath(tls(), "AbC") == challengePath(tls(), "abc"));
 }
 
@@ -140,8 +132,7 @@ func testNothingStoredReadsAsAbsent() {
 }
 
 func testADomainOfDotsCannotAddressItsParent() {
-    # the character filter alone admits `..`, and a name of exactly `..` would
-    # resolve to the directory above the certificate store
+    # the character filter alone admits `..`, which would address the parent
     testing.assertEqual(dirFor(tls(), ".."), "data/tls/__");
     testing.assertEqual(dirFor(tls(), "."), "data/tls/_");
     testing.assertEqual(dirFor(tls(), "..."), "data/tls/__.");

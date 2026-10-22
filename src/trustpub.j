@@ -3,37 +3,27 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * Trusted publishing: letting a CI job publish with no stored credential
+ * Trusted publishing: a CI job publishes with no stored credential
  * (specification 8.9).
  *
- * A device grant needs a human at a browser, which a pipeline does not have. The
- * alternative to a long-lived token in a CI secret is to let the **forge itself**
- * say where a build ran: CI systems mint a short-lived OIDC token per job whose
- * claims name the repository, the workflow, and the ref. The registry verifies
- * that token against the issuer's published keys and matches its claims to a
- * binding an owner registered in advance.
+ * CI systems mint a short-lived OIDC token per job whose claims name the
+ * repository, the workflow, and the ref. The registry verifies that token against
+ * the issuer's published keys and matches its claims to a binding an owner
+ * registered in advance. The issuer attests what ran where, which also yields the
+ * `repositoryId` that 7.3 wants recorded.
  *
- * That is stronger than asking the forge about the caller (7.1 route A) and
- * cheaper than verifying a signature the caller produced (route B): it is the
- * issuer stating, under its own signature, what ran where. It also yields the
- * `repositoryId` that 7.3 wants recorded, from the party that assigns it.
+ * Claim extraction, audience and issuer checks, ref matching, and the verdict are
+ * pure. Only `fetchJwks` touches the network, so every decision on whether an
+ * unauthenticated request may write is testable without a socket.
  *
- * **Everything here is pure.** Claim extraction, audience and issuer checks, ref
- * matching, and the final verdict are functions of their arguments. The one
- * impure step - fetching the issuer's JWKS and checking the signature - lives in
- * the caller, so every decision this module makes is testable without a socket.
- * That matters more here than anywhere else in the tree: this is the code that
- * decides whether an unauthenticated HTTP request may write to the registry.
- *
- * The provider shapes live in one `match` rather than a module each, unlike
- * `identity/` and `forge/`, because a provider contributes no behaviour - only
- * the names of four claims. A vtable per provider would be four files of field
- * lookups.
+ * Provider shapes live in one `match`, unlike `identity/` and `forge/`, because a
+ * provider contributes only the names of four claims.
  * @module trustpub
  * @example
  * import "./trustpub.j" as trustpub;
- * def c as trustpub.Claims init trustpub.claimsFrom("github-actions", $verifiedToken);
- * def v as trustpub.Verdict init trustpub.check($binding, $c, "jennifer-registry");
+ * def c as trustpub.Claims init trustpub.verified($jwt, $jwksJson, "github-actions");
+ * def v as trustpub.Verdict init trustpub.check($binding, $c, "jennifer-registry",
+ *     trustpub.expectedIssuer($c.provider, ""));
  */
 
 use strings;
@@ -44,21 +34,19 @@ import "jwt.j" as jwt;
 import "./deckname.j" as deckname;
 
 # The providers whose claim shapes are known. A token from anything else is
-# refused rather than guessed at: reading the wrong claim would compare a
-# repository id against a field the issuer never promised to populate.
+# refused: reading the wrong claim would compare a repository id against a
+# field the issuer never promised to populate.
 export def const GITHUB as string init "github-actions";
 export def const GITLAB as string init "gitlab-ci";
 export def const GITEA as string init "gitea-actions";
 
-# The issuer GitHub Actions tokens carry. Fixed for github.com; a self-hosted
-# GitLab or Gitea issues under its own base URL, which is why those two are
-# checked against the deployment's configured issuer instead of a constant.
+# The issuer GitHub Actions tokens carry on github.com. GitLab and Gitea issue
+# under their own base URL and are checked against the configured issuer.
 export def const GITHUB_ISSUER as string init "https://token.actions.githubusercontent.com";
 
 /**
- * The claims this registry cares about, lifted out of a **already
- * signature-verified** token. Extraction is separate from verification so the
- * matching rules can be tested exhaustively against hand-written claim sets.
+ * The claims this registry reads from an already signature-verified token.
+ * Kept separate from verification so matching is testable on hand-written claims.
  * @field provider {string} which issuer shape this was read with
  * @field issuer {string} the `iss` claim
  * @field audience {string} the `aud` claim
@@ -85,10 +73,9 @@ export def struct Claims {
 /**
  * A registered trusted publisher: the workload permitted to write to a deck.
  *
- * Keyed on `repositoryId`, never on `repository`, for the reason 8.1 gives about
- * logins: a repository path can be renamed and the freed path claimed by
- * somebody else, so a binding on the path would follow the name rather than the
- * project. The path is carried for display.
+ * Keyed on `repositoryId`, never on `repository`: a renamed repository's freed
+ * path can be claimed by somebody else (compare 8.1 on logins). The path is for
+ * display.
  * @field provider {string} which issuer this binding accepts
  * @field repositoryId {string} the immutable repository id that may publish
  * @field repository {string} the repository path, a display label
@@ -132,9 +119,9 @@ export func isKnownProvider(provider as string) {
     return $provider == GITHUB or $provider == GITLAB or $provider == GITEA;
 }
 
-# text reads a claim as a string, returning "" when absent. A numeric claim (a
-# repository id is a number on every provider here) is converted, because the
-# binding stores it as text and comparing 42 to "42" would silently never match.
+# text reads a claim as a string, "" when absent. A numeric claim (repository
+# ids are numbers) is converted, since the binding stores text and 42 never
+# equals "42".
 func text(doc as json.Value, pointer as string) {
     if (not json.has($doc, $pointer)) {
         return "";
@@ -149,9 +136,8 @@ func text(doc as json.Value, pointer as string) {
  * Strip the `@ref` suffix a workflow claim may carry.
  *
  * GitHub's `job_workflow_ref` is
- * `owner/repo/.github/workflows/publish.yml@refs/tags/v1.2.0`: the workflow and
- * the ref in one string. The ref is matched separately against `refPattern`, so
- * keeping it here would force every binding to name a specific tag.
+ * `owner/repo/.github/workflows/publish.yml@refs/tags/v1.2.0`. The ref is
+ * matched separately against `refPattern`.
  * @param claim {string} the raw workflow claim
  * @return {string} the workflow path alone
  */
@@ -166,10 +152,8 @@ export func workflowPath(claim as string) {
 /**
  * Read the claims this registry needs from a verified token, for one provider.
  *
- * The claim names differ per provider, which is the whole reason `provider` is
- * part of a binding. `sub` is deliberately not used as a key: its shape varies
- * by provider and by configuration, so matching on it would be matching on a
- * string whose meaning the issuer may change.
+ * Claim names differ per provider, hence `provider` in a binding. `sub` is not
+ * used: its shape varies by provider and configuration.
  * @param provider {string} which shape to read
  * @param doc {json.Value} the verified token's claim set
  * @return {Claims} the extracted claims; empty fields for an unknown provider
@@ -194,9 +178,9 @@ export func claimsFrom(provider as string, doc as json.Value) {
             $out.repositoryId = text($doc, "/project_id");
             $out.repository = text($doc, "/project_path");
             $out.workflow = workflowPath(text($doc, "/workflow_ref"));
-            # GitLab's `ref` is a bare name, `v1.2.0` or `main`, and `ref_type`
-            # says which. Completed here, so `refs/tags/*` means a tag on every
-            # provider; left bare, a pattern such as `v*` matched branches too.
+            # GitLab's `ref` is a bare name and `ref_type` says which kind.
+            # Completed so a tag pattern means a tag on every provider; a bare
+            # pattern such as `v*` would match branches too.
             $out.ref = fullRef($out.ref, text($doc, "/ref_type"));
         }
         when GITHUB, GITEA {
@@ -212,9 +196,9 @@ export func claimsFrom(provider as string, doc as json.Value) {
     return $out;
 }
 
-# fullRef completes a bare ref name from its type ("tag" or "branch"). A ref
-# that is already full, or whose type is unknown, is returned as it is; an
-# unknown type cannot match a `refs/...` pattern, which is the safe way to fail.
+# fullRef completes a bare ref name from its type ("tag" or "branch"). A full
+# ref or an unknown type is returned unchanged, so it cannot match a `refs/...`
+# pattern.
 func fullRef(ref as string, refType as string) {
     if ($ref == "" or strings.startsWith($ref, "refs/")) {
         return $ref;
@@ -229,10 +213,8 @@ func fullRef(ref as string, refType as string) {
 /**
  * Does the CI run a token speaks for match the release being published?
  *
- * The binding says which repository and workflow may publish; this says that
- * the run published **what it built**. Without it, any run of a bound workflow
- * on any matching ref could publish any tag of the repository, an older or an
- * unreviewed one included. Three checks:
+ * Without this, any run of a bound workflow could publish any tag of the
+ * repository, an older or unreviewed one included. Checks:
  *
  * - the token's `sha`, where it carries one, must be the commit the tag points
  *   at;
@@ -262,15 +244,11 @@ export func matchesRelease(c as Claims, tag as string, commit as string, now as 
 /**
  * Does a ref satisfy a binding's pattern?
  *
- * Only two forms are supported: an exact ref, and a trailing star, as in
- * `refs/tags/` with one appended. That is deliberate. A general glob in an
- * authorisation check
- * is a liability - every additional metacharacter is another chance for a
- * pattern to match more than its author believed - and these two cover what
- * bindings actually express, which is "any tag" or "this branch".
+ * Two forms only: an exact ref, and a trailing star, as in `refs/tags/` with
+ * one appended. Each further metacharacter is another way for a pattern to
+ * match more than its author meant.
  *
- * An empty pattern means any ref, which is the permissive default a binding
- * **should** narrow.
+ * An empty pattern means any ref, a permissive default a binding should narrow.
  * @param pattern {string} the binding's pattern
  * @param ref {string} the ref from the token
  * @return {bool} true when the ref is permitted
@@ -283,7 +261,7 @@ export func refMatches(pattern as string, ref as string) {
         return $pattern == $ref;
     }
     def prefix as string init strings.substring($pattern, 0, len($pattern) - 1);
-    # A bare "*" is any ref; otherwise the ref must actually extend the prefix.
+    # A bare "*" is any ref; otherwise the ref must extend the prefix.
     return strings.startsWith($ref, $prefix);
 }
 
@@ -291,10 +269,8 @@ export func refMatches(pattern as string, ref as string) {
  * The issuer a provider's token must carry.
  *
  * GitHub Actions on github.com is a fixed string. A self-hosted GitLab, Gitea,
- * or Forgejo issues under its own base URL, so the deployment supplies it; a
- * registry that accepts those providers without configuring an issuer accepts
- * tokens from any instance, which is why an empty expectation is a refusal
- * rather than a wildcard.
+ * or Forgejo issues under its own base URL, which the deployment supplies. An
+ * empty result is a refusal, since a wildcard would accept any instance.
  * @param provider {string} the provider
  * @param configuredIssuer {string} the deployment's configured issuer ("" if none)
  * @return {string} the issuer to require, or "" when none can be determined
@@ -312,15 +288,11 @@ export func expectedIssuer(provider as string, configuredIssuer as string) {
 /**
  * Check a verified token's claims against a registered binding.
  *
- * **Assumes the signature and the expiry are already verified.** This is the
- * second half of 8.9: everything a signature does not establish. The order is
- * chosen so the cheapest and most absolute checks come first, and so a refusal
- * names the specific cause rather than a generic denial.
+ * Assumes the signature and expiry are already verified; this is the rest of
+ * 8.9. Cheapest checks come first, and a refusal names its cause.
  *
- * The audience check is not a formality. A CI job hands its identity token to
- * whatever action asks for one, and a token minted for another service - or for
- * a **different registry** - is replayable here without it. It is the one check
- * that makes a token useless outside the place it was meant for.
+ * Without the audience check, a token minted for another service or another
+ * registry would be replayable here.
  * @param b {Binding} the registered binding
  * @param c {Claims} the verified token's claims
  * @param audience {string} the audience this registry published and requires
@@ -380,15 +352,13 @@ export func keyFor(deck as string) {
 # --- verification (the one impure part) --------------------------------------
 
 # The OIDC discovery path every issuer serves, and the limits on fetching it.
-# The key set is small; a large response here is a sign of something wrong, not
-# of a big JWKS.
+# A key set is small, so a large response means something is wrong.
 def const DISCOVERY_PATH as string init "/.well-known/openid-configuration";
 def const TIMEOUT_MS as int init 10000;
 def const MAX_BYTES as int init 262144;
 
 /**
- * The OIDC discovery document URL for an issuer. Pure, so the join is tested
- * rather than assumed.
+ * The OIDC discovery document URL for an issuer.
  * @param issuer {string} the issuer, with or without a trailing slash
  * @return {string} the discovery URL
  */
@@ -403,13 +373,11 @@ export func discoveryUrl(issuer as string) {
 /**
  * Fetch an issuer's JWKS, following its discovery document.
  *
- * **The only network call in this module.** Two requests: the discovery document
- * names `jwks_uri`, and that is fetched in turn. Following the document rather
- * than guessing the path is what lets an issuer rotate its key location.
+ * The only network call in this module: the discovery document names
+ * `jwks_uri`, which is fetched in turn, so an issuer can move its keys.
  *
- * A caller should cache the result. Fetching per request would put two round
- * trips in front of every publish and make the registry's availability depend on
- * the issuer's.
+ * A caller should cache the result; fetching per request adds two round trips
+ * to every publish and ties availability to the issuer's.
  * @param issuer {string} the issuer to fetch from
  * @return {string} the raw JWKS JSON
  * @throws {Error} when either request fails or the document has no `jwks_uri`
@@ -446,14 +414,11 @@ export func fetchJwks(issuer as string) {
 /**
  * Verify a CI identity token's signature against a JWKS, and read its claims.
  *
- * **Signature and expiry only.** `jwt.verifyJwksWith` resolves the `kid`, checks
- * the RS256 signature, enforces `exp` / `nbf`, and with `requireExp` refuses a
- * token with no `exp` at all, which plain `verifyJwks` would accept as never
- * expiring (8.9 step 2 verifies `exp`, so it must be there). `iss` and `aud` are
- * left to `check`, which names which of them failed; calling this alone
- * authorises nothing. The algorithm is pinned to RS256 rather than read from the
- * token, which is what stops the classic confusion attack of a token that
- * nominates `none` or an HMAC the attacker can compute.
+ * Signature and expiry only: `kid` resolution, the RS256 signature, `exp` and
+ * `nbf`, and `requireExp` refuses a token with no `exp` (8.9 step 2). `iss` and
+ * `aud` are left to `check`; this alone authorises nothing. The algorithm is
+ * pinned to RS256, which stops a token nominating `none` or an attacker-computable
+ * HMAC.
  * @param token {string} the raw compact JWT
  * @param jwksJson {string} the issuer's key set
  * @param provider {string} which claim shape to read

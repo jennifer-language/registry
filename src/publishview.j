@@ -5,25 +5,22 @@
 /**
  * `POST /publish`, as pure data (specification 7).
  *
- * The registry does not trust the request body for anything that matters. A
- * publish names a **repository and a tag**; the caller's forge resolves that tag
- * to a commit and reads `deck.toml` **at that commit**, and everything the
- * record says about the deck comes from there. The request cannot name the deck,
- * because then the scope check would be checking a claim rather than a fact.
+ * A publish names a repository and a tag; the forge resolves the tag to a
+ * commit and reads `deck.toml` at that commit, and the record comes from there.
+ * The request cannot name the deck, so the scope check checks a fact, not a
+ * claim.
  *
- * Two ways to be authorised, and they answer different halves of 7.1:
+ * Authorisation covers the halves of 7.1 differently:
  *
- * - **A bearer token** identifies a person. It establishes *name* authority
- *   through the scope binding, and nothing about the source, so a deployment
- *   must still satisfy source authority by route A or B.
- * - **A CI identity token** (8.9) identifies a *workload*, and its repository
- *   claim is the forge attesting where the build ran. That is route C, so it
- *   settles both halves at once.
+ * - **A bearer token** identifies a person and establishes name authority
+ *   through the scope binding; source authority is route A, the forge's answer
+ *   in `Source.authority` (route B, signed tags, is not built).
+ * - **A CI identity token** (8.9) identifies a workload; its repository claim is
+ *   the forge attesting where the build ran (route C), settling both halves.
  *
  * Everything here is a function of the store and its arguments. The forge calls
- * that produce a `Source` happen in `bin/serve`, which is what keeps the
- * ordering of these checks - the part that decides who may write - testable
- * without a network.
+ * that produce a `Source` happen in `bin/serve`, so the order of checks is
+ * testable without a network.
  * @module publishview
  * @example
  * import "./publishview.j" as publishview;
@@ -47,20 +44,19 @@ import "./citoken.j" as citoken;
 import "./forge.j" as forge;
 
 /**
- * What the forge produced for a publish request. Assembled by the caller, which
- * owns every network call; this module only reads it.
+ * What the forge produced for a publish request, assembled by the caller.
  * @field repository {string} the clone URL that was published from
  * @field tag {string} the tag named in the request, kept for display
- * @field commit {string} the 40-hex commit that tag resolved to - the pin
+ * @field commit {string} the 40-hex commit that tag resolved to (the pin)
  * @field repoId {string} the forge's immutable numeric repository id
  * @field repoOwnerId {string} the numeric id of the owning account
  * @field repoOwner {string} the owner's name, a display label
  * @field manifestText {string} the bytes of `deck.toml` at that commit
  * @field readmeText {string} the bytes of `README.md` at that commit ("" when
  *     the repository has none; a deck without one is not an error)
- * @field commitShadowed {bool} true when the repository also holds a **branch or
- *     tag named exactly like the resolved commit**, which means the manifest
- *     above cannot be trusted to have come from the commit (see `checkSource`)
+ * @field commitShadowed {bool} true when the repository also holds a branch or
+ *     tag named exactly like the resolved commit, so the manifest may not have
+ *     come from the commit (see `checkSource`)
  * @field entryPresent {bool} true when the tree at that commit holds the entry
  *     module the manifest's name implies, `src/<deck>.j` (specification 6.1)
  * @field authority {forge.Permission} what the forge said about the publishing
@@ -97,10 +93,8 @@ export def struct PublishReply {
     event as audit.Event
 };
 
-# refuse builds a reply that leaves the store untouched. The event is recorded
-# for a refusal as well as a success: a rejected publish is how a misconfigured
-# pipeline looks from the server side, and it is the thing an operator is
-# usually trying to find.
+# refuse builds a reply that leaves the store untouched. Refusals are logged too,
+# since that is how a misconfigured pipeline shows up for an operator.
 func refuse(db as flatdb.DB, status as int, reason as string) {
     def body as json.Value init json.map();
     $body = json.set($body, "/error", $reason);
@@ -116,9 +110,8 @@ func refuse(db as flatdb.DB, status as int, reason as string) {
 /**
  * Validate a `Source` before anything is decided from it.
  *
- * The commit is checked here because it becomes the record's identity: an
- * abbreviated or malformed SHA would be stored as the pin and handed to every
- * client that installs the version.
+ * The commit becomes the record's identity, so an abbreviated or malformed SHA
+ * is refused before it is stored as the pin.
  * @param src {Source} the forge's output
  * @return {string} "" when usable, or the complaint
  */
@@ -129,10 +122,9 @@ export func checkSource(src as Source) {
     if (strings.trim($src.tag) == "") {
         return "missing `tag`";
     }
-    # A tag shaped like an object id is refused before anything is resolved. The
-    # registry would otherwise store it and serve it to every client as `ref`,
-    # and a client that looks a name up before an object gets whatever that ref
-    # points at while the record still reads as pinned.
+    # A tag shaped like an object id is refused: served as `ref`, a client that
+    # resolves names before objects would fetch what that ref points at while the
+    # record still reads as pinned.
     if (store.isObjectIdLike($src.tag)) {
         return "the tag " + $src.tag + " is shaped like a git object id, " +
             "which a client can resolve as a commit; publish from a tag that " +
@@ -141,12 +133,9 @@ export func checkSource(src as Source) {
     if (not store.isCommit($src.commit)) {
         return "the tag did not resolve to a full commit SHA: " + $src.commit;
     }
-    # The manifest above was read through the forge's ref-or-sha parameter, which
-    # resolves a **name** before an object. So a branch or tag named after the
-    # resolved commit stands in front of it, and everything read "at the commit"
-    # came from wherever that ref points instead - while the record still says
-    # `commit`. Refused rather than worked around, because at this point the
-    # bytes in hand are already the wrong ones.
+    # The manifest was read through the forge's ref-or-sha parameter, which
+    # resolves a name before an object, so a ref named after the commit means
+    # the bytes in hand came from that ref. Refused, since they are already wrong.
     if ($src.commitShadowed) {
         return "the repository has a branch or tag named " + $src.commit +
             ", which shadows the commit of that id; delete it and publish again";
@@ -156,9 +145,9 @@ export func checkSource(src as Source) {
 
 /**
  * Where the entry module of the deck a manifest names must be, or "" when the
- * manifest does not parse or names no valid deck - in which case the parse
- * error, not a missing file, is what the publish reports. The caller uses it to
- * know which file to ask the forge about before `checkRelease` judges the answer.
+ * manifest does not parse or names no valid deck (the parse error is then what
+ * the publish reports). The caller asks the forge about this file before
+ * `checkRelease` judges the answer.
  * @param manifestText {string} the bytes of `deck.toml` at the commit
  * @return {string} the path, such as `src/routeros.j`, or ""
  */
@@ -187,14 +176,12 @@ export func deckNameOf(manifestText as string) {
  * Whether what the commit holds is a release of what its manifest says
  * (specification 7, steps 6 and 8).
  *
- * The tag and the manifest must name the same version, tolerating a single
- * leading `v` on the tag and nothing more (2.3): a tag `v1.0.0` whose manifest
- * says `0.9.0` is a mislabelled release, and publishing it would hand out a
- * `ref` and a `version` that disagree for as long as the record exists. And the
+ * The tag and the manifest must name the same version, allowing one leading `v`
+ * on the tag (2.3); otherwise the record's `ref` and `version` disagree. The
  * tree must hold the entry module, without which a client installs nothing.
  *
- * Both are facts about the caller's own repository and say nothing about the
- * store, so they are checked as soon as the manifest is read.
+ * Neither depends on the store, so both are checked as soon as the manifest is
+ * read.
  * @param src {Source} the forge's output
  * @param m {manifest.Manifest} the parsed manifest, already `ok`
  * @return {string} "" when it is a release of what it says, or the complaint
@@ -233,14 +220,12 @@ func storeVersion(db as flatdb.DB, m as manifest.Manifest, src as Source, now as
         publishedAt: $now,
         yanked: false,
         license: $m.license,
-        # Already normalised by `manifest.parse`, so a publish carries the tags
-        # the registry will actually index rather than what the file asked for.
+        # Already normalised by `manifest.parse`.
         keywords: $m.keywords
     };
     def out as flatdb.DB init store.putVersion($db, $m.name, $m.description, $ver);
-    # The README is recorded after the deck exists, and only when the repository
-    # had one: an absent README must not blank a previously published one, since
-    # that would make a release from a stripped-down branch erase the page.
+    # The README is recorded only when present: an absent one must not blank a
+    # previously published one.
     if (not (strings.trim($src.readmeText) == "")) {
         $out = store.putReadme($out, $m.name, $src.readmeText);
     }
@@ -267,13 +252,11 @@ func succeed(db as flatdb.DB, m as manifest.Manifest, src as Source, now as stri
 }
 
 /**
- * The checks every publish makes, whoever is calling.
+ * The scope checks every publish makes, whoever is calling.
  *
- * The order is the point. A malformed request is a `400` and never reaches the
- * store; an unknown scope is a `404`-shaped refusal that names the missing
- * registration; and **the version-exists check comes last among these**, because
- * "already published" is the answer a well-formed, authorised, repeated publish
- * should get, and reporting it in place of a real problem would hide the real
+ * An unknown scope is a refusal naming the missing registration, and a scope
+ * held by an operator with no owner is refused too. The version-exists check
+ * comes after these in every caller, so "already published" never hides a real
  * problem.
  * @param db {flatdb.DB} the store to read
  * @param m {manifest.Manifest} the parsed manifest, already `ok`
@@ -284,19 +267,11 @@ export func checkDeck(db as flatdb.DB, m as manifest.Manifest) {
     if (not store.hasNamespace($db, $scopeName)) {
         return "namespace @" + $scopeName + " is not registered on this registry";
     }
-    # A registered scope bound to nobody is *reserved*: an operator holds the
-    # name so that nobody can claim it and nobody can write under it. Every
-    # publish that reaches this module arrives on a **delegated** credential - a
-    # person's bearer token, a workload's identity token, a CI token - and a
-    # delegation under a scope with no owner is a delegation on nobody's behalf.
-    #
-    # `scope.authorise` already refuses it for the bearer-token path, but the
-    # other two never consult the namespace at all: a trusted publisher is
-    # authorised by its binding and a CI token by its own record, so without
-    # this the invariant would hold only where those credentials are created and
-    # not where they are relied on. It belongs here, in the one check all three
-    # share. The operator's own `deckadmin add` does not come through here, so a
-    # reserved scope stays writable by the operator holding it.
+    # A registered scope bound to nobody is reserved, and every publish here
+    # arrives on a delegated credential, which under no owner acts for nobody.
+    # Trusted publishers and CI tokens never consult the namespace, so the check
+    # lives in the one place all three paths share. `deckadmin add` bypasses
+    # this module, so the operator can still write a reserved scope.
     if (store.getNamespace($db, $scopeName).subject == "") {
         return "@" + $scopeName +
             " is held by an operator and has no owner to publish under it";
@@ -305,8 +280,7 @@ export func checkDeck(db as flatdb.DB, m as manifest.Manifest) {
 }
 
 # sourceAuthorityProblem is why the forge's answer does not establish source
-# authority (7.1), or "". Only a known grant counts: a check the forge could not
-# answer is a check that did not pass, whatever the reason it could not.
+# authority (7.1), or "". Only a known grant counts; an unanswered check fails.
 func sourceAuthorityProblem(src as Source) {
     if ($src.authority.known and $src.authority.push) {
         return "";
@@ -321,12 +295,10 @@ func sourceAuthorityProblem(src as Source) {
 /**
  * Whose push access a CI-token publish is checked against (7.1, 8.10).
  *
- * A CI token proves possession and nothing about a repository, so a person has
- * to stand behind it. That is the account that minted it, where it records one,
- * and otherwise the owner of the scope it writes under: an operator mints a
- * token for a scope, and the owner is who it acts for. An organisation scope
- * has no person as its owner, so a token there needs a recorded minter. Returns
- * an empty subject when nobody qualifies, which the check then reports.
+ * A CI token proves nothing about a repository, so an account stands behind it:
+ * its recorded minter, otherwise the owner of the scope it writes under. An
+ * organisation scope has no person as owner, so a token there needs a recorded
+ * minter. Returns an empty subject when nobody qualifies.
  * @param db {flatdb.DB} the store to read
  * @param t {citoken.Token} the token's record
  * @param deckName {string} the deck the manifest names
@@ -362,27 +334,23 @@ export func ciPrincipal(db as flatdb.DB, t as citoken.Token, deckName as string)
 
 # alreadyPublished reports whether this version already exists, build metadata
 # aside: `1.0.0+b` is the same release as a published `1.0.0+a` (SemVer 10).
-# Immutability is absolute (specification 9): a published version's bytes never
-# change, because a lockfile that resolved it once must resolve to the same code
-# forever.
+# A published version never changes (specification 9), so a lockfile always
+# resolves to the same code.
 func alreadyPublished(db as flatdb.DB, m as manifest.Manifest) {
     return not (store.publishedAs($db, $m.name, $m.version) == "");
 }
 
-# parsed reads the manifest and turns a parse failure into a 400. A manifest the
-# repository does not have, or cannot be read, is the caller's problem to report
-# before getting here.
+# parsed reads the manifest; callers turn a parse failure into a 400. A missing
+# or unreadable manifest is reported by the caller before this.
 func parsed(src as Source) {
     return manifest.parse($src.manifestText);
 }
 
 /**
- * Publish authorised by a bearer token: a **person** with a scope binding.
+ * Publish authorised by a bearer token: a person with a scope binding.
  *
- * Establishes name authority only. The deployment is responsible for source
- * authority (7.1 route A or B) before calling, or for recording the source as
- * unverified; this module cannot check it, because a bearer token says nothing
- * about a repository.
+ * The token establishes name authority only. Source authority (7.1) comes from
+ * `src.authority`, which the caller obtained from the forge.
  * @param db {flatdb.DB} the store
  * @param who {identity.Subject} the authenticated caller
  * @param src {Source} what the forge produced
@@ -410,9 +378,8 @@ export func byToken(db as flatdb.DB, who as identity.Subject, src as Source, now
     if (not $verdict.allowed) {
         return refuse($db, 403, $verdict.reason);
     }
-    # Name authority is settled; source authority is the other half (7.1). It
-    # comes after the scope check, so a stranger learns nothing from it, and
-    # before the conflict check, which stays last.
+    # Source authority (7.1) comes after the scope check, so a stranger learns
+    # nothing from it, and before the conflict check, which stays last.
     def sourceComplaint as string init sourceAuthorityProblem($src);
     if (not ($sourceComplaint == "")) {
         return refuse($db, 403, $sourceComplaint);
@@ -424,16 +391,14 @@ export func byToken(db as flatdb.DB, who as identity.Subject, src as Source, now
 }
 
 /**
- * Publish authorised by a **CI token** (8.10): the fallback where trusted
+ * Publish authorised by a CI token (8.10), the fallback where trusted
  * publishing is unavailable.
  *
- * Establishes name authority only, exactly like a bearer token, because
- * possession of a secret says nothing about a repository. What it adds over a
- * user's token is that it is narrower: bound to one scope or one deck, so a
- * leak costs that much and no more.
+ * Establishes name authority only, like a bearer token, but bound to one scope
+ * or one deck.
  *
- * The token is stamped as used on success, which 8.10 requires: once a standing
- * secret exists, finding the unused ones is the only way they get retired.
+ * The token is stamped as used on success (8.10), so unused tokens can be found
+ * and retired.
  * @param db {flatdb.DB} the store
  * @param t {citoken.Token} the record found for the presented token
  * @param src {Source} what the forge produced
@@ -457,9 +422,8 @@ export func byCiToken(db as flatdb.DB, t as citoken.Token, src as Source, now as
     if (not ($deckComplaint == "")) {
         return refuse($db, 403, $deckComplaint);
     }
-    # The record is read again from this store, which the caller opened under the
-    # lock: the one presented was looked up before the forge calls, and a token
-    # revoked while they ran must not publish once they return.
+    # Re-read under the caller's lock, so a token revoked during the forge calls
+    # does not publish.
     def current as citoken.Token init store.getCiToken($db, $t.fingerprint);
     if ($current.fingerprint == "") {
         return refuse($db, 401, "the CI token was revoked");
@@ -485,17 +449,15 @@ export func byCiToken(db as flatdb.DB, t as citoken.Token, src as Source, now as
 }
 
 /**
- * Publish authorised by a CI identity token (8.9): a **workload** with a binding.
+ * Publish authorised by a CI identity token (8.9): a workload with a binding.
  *
- * The claims are already signature-verified by the caller; what happens here is
- * everything a signature does not establish - audience, issuer, and whether
- * these claims match the binding registered for *this deck*.
+ * The caller has verified the signature; this checks the binding registered for
+ * this deck against the claims (audience and issuer included), the repository
+ * id against the forge's, and that the run built this tag and commit.
  *
- * The binding is looked up by the deck name **from the manifest**, so a
- * repository cannot publish to a deck it is not bound to by naming a different
- * one in the request. There is no fallback to creating a binding: 8.9 forbids
- * it, because auto-binding on first use would let whichever repository publishes
- * first capture a name.
+ * The binding is looked up by the deck name from the manifest, so a repository
+ * cannot publish to another deck by naming it. No binding is created on first
+ * use (8.9 forbids it), since that would let the first publisher capture a name.
  * @param db {flatdb.DB} the store
  * @param claims {trustpub.Claims} the verified token's claims
  * @param audience {string} the audience this registry publishes and requires
@@ -535,11 +497,9 @@ export func byTrustedPublisher(
     if (not $v.allowed) {
         return refuse($db, 403, $v.reason);
     }
-    # The token said which repository the build ran in; the forge said which
-    # repository this URL is. They must be the same, or a build in a repository
-    # the caller controls could publish code from one they do not (7.1). A forge
-    # that named no repository has not said it is the same one, so an empty id
-    # is a refusal, not a pass.
+    # The build's repository (token) and the URL's repository (forge) must match,
+    # or a build in one repository could publish code from another (7.1). An
+    # empty forge id is a refusal.
     if ($src.repoId == "" or not ($src.repoId == $claims.repositoryId)) {
         return refuse(
             $db,
@@ -569,15 +529,12 @@ export func byTrustedPublisher(
  * `POST /yank` and `POST /unyank`: withdraw a version from new resolutions, or
  * restore it (specification 9).
  *
- * Authorised exactly as a publish is, and for the same reason: yanking changes
- * what every fresh resolution produces, so it is as privileged as adding a
- * version. It takes a deck name and a version directly rather than a repository
- * and a tag, because there is nothing to read at a commit - the record already
- * exists, and this only flips a flag on it.
+ * Authorised as a bearer-token publish, since yanking changes what every fresh
+ * resolution produces. Takes a deck name and version, since only a flag on an
+ * existing record changes.
  *
- * Reversible by design. The version stays in the record and stays fetchable, so
- * a lockfile that pins it keeps installing; a mistaken yank is undone by
- * unyanking rather than by republishing, which immutability forbids.
+ * Reversible. The version stays fetchable, so a lockfile that pins it keeps
+ * installing; a mistaken yank is undone by unyanking.
  * @param db {flatdb.DB} the store
  * @param who {identity.Subject} the authenticated caller
  * @param name {string} the deck name
@@ -612,8 +569,7 @@ export func setYanked(
     $body = json.set($body, "/version", $version);
     $body = json.set($body, "/yanked", $yanked);
     if (store.isYanked($db, $deck, $version) == $yanked) {
-        # Idempotent: asking for the state it is already in is a success, so a
-        # retried request after a lost response does not read as a failure.
+        # Idempotent, so a retry after a lost response succeeds.
         return PublishReply{status: 200, body: $body, db: $db, changed: false, event: audit.none()};
     }
     return PublishReply{

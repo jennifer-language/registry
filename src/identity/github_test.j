@@ -118,8 +118,7 @@ func membershipNamed(state as string, role as string, orgId as int, login as str
 func testAnActiveMemberCounts() {
     def out as map of string to string init membershipsFrom(membershipDoc("active", "member", 42));
     testing.assertEqual(len($out), 1);
-    # keyed by the folded login, because that is how a claim names it, and valued
-    # by the id, because that is what ownership binds to
+    # keyed by folded login, valued by id
     testing.assertEqual($out["acme"], "42");
 }
 
@@ -128,19 +127,17 @@ func testAnAdminCounts() {
 }
 
 func testAPendingInvitationIsNotMembership() {
-    # non-negotiable per 8.7: an invitation nobody accepted would otherwise let
-    # anyone who can get themselves invited publish under an organisation's name
+    # 8.7: otherwise anyone who gets invited could publish under the org's name
     testing.assertEqual(len(membershipsFrom(membershipDoc("pending", "admin", 42))), 0);
 }
 
 func testABillingManagerIsNotAuthority() {
-    # non-negotiable per 8.7: a finance role with no relationship to code
+    # 8.7: a finance role with no access to code
     testing.assertEqual(len(membershipsFrom(membershipDoc("active", "billing_manager", 42))), 0);
 }
 
 func testTheOrgIdIsReadAsText() {
-    # it is compared against a stored subject id, which is text; comparing 42 to
-    # "42" would silently never match
+    # stored subject ids are text, and 42 never equals "42"
     testing.assertEqual(membershipsFrom(membershipDoc("active", "member", 42))["acme"], "42");
 }
 
@@ -153,8 +150,7 @@ func testTheLoginIsFolded() {
 }
 
 func testAnOrganisationWithoutALoginIsSkipped() {
-    # the id alone cannot be claimed by name, so a row missing the login is not
-    # usable and is dropped rather than half-recorded
+    # an id alone cannot be claimed by name
     def one as json.Value init json.map();
     $one = json.set($one, "/state", "active");
     def org as json.Value init json.map();

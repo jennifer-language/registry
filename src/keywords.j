@@ -5,28 +5,18 @@
 /**
  * Deck keywords: the grammar, the cap, and the terms this registry refuses.
  *
- * Keywords exist so decks can be grouped and browsed. They are **publisher
- * input that becomes navigation**, which is the whole reason this module is
- * strict: a keyword is not just displayed on one deck's page, it creates a
- * shared page that every deck carrying it appears on. An unfiltered keyword
- * field is therefore a way to put arbitrary text into the registry's own
- * navigation, and to sit a deck next to whatever the author chose to associate
- * it with.
+ * Keywords are publisher input that becomes navigation: each one creates a
+ * shared page listing every deck that carries it. Hence the strictness. Rules,
+ * in the order applied:
  *
- * Three rules, in the order they are applied:
+ * - **Grammar.** Lowercase letters, digits and single inner hyphens, 2 to 32
+ *   characters: a URL segment without escaping, and few spellings per tag.
+ * - **Blocklist**, below.
+ * - **Cap of `LIMIT`.** Excess keywords are dropped, not the manifest rejected,
+ *   so one deck cannot flood the tag namespace.
  *
- * - **A grammar.** Lowercase letters, digits, and single inner hyphens, 2 to 32
- *   characters. That is narrow enough to be a URL segment without escaping and
- *   to make two spellings of one tag rare.
- * - **A blocklist**, below.
- * - **A cap of `LIMIT`.** Keywords past it are dropped rather than the manifest
- *   being rejected: a publisher listing fifteen tags is optimistic, not
- *   malicious, and failing their release over it helps nobody. Dropping keeps
- *   the tag namespace from being flooded by one deck claiming everything.
- *
- * Order matters and is tested: the blocklist runs **before** the cap, so a deck
- * cannot push a legitimate keyword out of its own first five by padding the
- * list with refused ones.
+ * The blocklist runs before the cap (tested), so padding with refused terms
+ * cannot push a legitimate keyword out of the first five.
  * @module keywords
  * @example
  * import "./keywords.j" as keywords;
@@ -40,9 +30,8 @@ use encoding;
 use convert;
 
 /**
- * How many keywords a deck may actually use. Everything after this is dropped,
- * in the order the publisher wrote them, so the first five are the ones that
- * count and a publisher who cares can choose which.
+ * How many keywords a deck may use. Later ones, in the publisher's order, are
+ * dropped.
  */
 export def const LIMIT as int init 5;
 
@@ -53,55 +42,34 @@ export def const MAX_LENGTH as int init 32;
 /**
  * Terms this registry will not index, and why.
  *
- * **The terms are base64, and that is deliberate.** In plain text this list
- * would be a page of pornographic and child-abuse vocabulary sitting in a public
- * repository, on a docs site, and in every mirror and code-search index that
- * crawls them. Classifiers do not read the surrounding function name: a
- * moderation blocklist and the material it blocks look identical to a crawler
- * counting keywords, so publishing one in the clear is a reliable way to have
- * the registry itself categorised as what it is refusing, or reported for it.
- * Encoding costs one decode per lookup and removes the whole class of problem.
+ * The terms are base64 so that the list of pornographic and child-abuse
+ * vocabulary is not plain text in a public repository, where crawlers and
+ * classifiers would categorise the registry as what it refuses. It is encoding,
+ * not encryption: a human can audit it, a crawler does not read it in passing.
  *
- * It is **encoding, not encryption**, and it is not trying to be. Anyone reading
- * this file can decode it in a second, which is correct: the list should be
- * auditable by a human. What it must not be is machine-readable in passing.
+ * A word list does not stop a determined author, who can misspell. It ensures
+ * the registry never builds a tag page, tag cloud entry or browsable category
+ * for these terms.
  *
- * **This is a refusal to host navigation for that material, not a claim to have
- * solved moderation.** A word list catches the deliberate and the careless; it
- * does not catch a determined author, who can always misspell. What it does buy
- * is that the registry never *builds a page* grouping decks under these terms,
- * never puts them in a tag cloud on its own front door, and never turns them
- * into a browsable category. That is this project's responsibility, and it is
- * worth doing even though it is not complete.
+ * Groups:
  *
- * Grouped by why, because the reasons differ and a future reader needs to know
- * which line they are changing:
+ * - **`abuse()`**: material involving children. Not configurable; never relax
+ *   it. Such a deck loses the keyword; whether the deck stays is an operator
+ *   and legal decision (`deckadmin yank`).
+ * - **`adult()`**: sexual content, kept out of the shared tag namespace.
+ * - **`slur()`**: hate speech aimed at people.
  *
- * - **`abuse()`** is material involving children. Not a matter of taste, not
- *   configurable, and the one group that should never be relaxed by a
- *   deployment. A deck carrying one of these is refused its keyword; whether the
- *   deck itself belongs here is an operator judgement (`deckadmin yank`) and a
- *   legal one, and both are outside what a word list can decide.
- * - **`adult()`** is sexual content. Refused because this is a package registry
- *   for a programming language and the tag namespace is shared: nobody browsing
- *   for a `parser` should land in that neighbourhood.
- * - **`slur()`** is hate speech aimed at people.
- *
- * Matching is on the **normalised** keyword and is exact, plus a substring pass
- * for the `abuse` group only, since that is the group where a near miss matters
- * more than a false positive.
+ * Matching is exact on the normalised keyword, plus a substring pass for the
+ * `abuse` group only, where a near miss matters more than a false positive.
  * @return {list of string} every refused term, decoded
  */
 export func blocked() {
     return lists.concat(lists.concat(abuse(), adult()), slur());
 }
 
-# decodeAll turns the stored base64 back into terms to match against.
-#
-# Decoded on each call rather than once into a constant, because a module top
-# level is declarations-only and cannot hold computed state. The lists are a few
-# dozen short strings and the call sites are a publish and a page render, so the
-# cost is not worth a cache that would have to live somewhere awkward.
+# decodeAll turns the stored base64 back into terms to match against. It runs
+# on every call because a module top level cannot hold computed state; the
+# lists are a few dozen short strings.
 func decodeAll(encoded as list of string) {
     def out as list of string init [];
     for (def one in $encoded) {
@@ -137,7 +105,7 @@ export func abuse() {
 }
 
 /**
- * Sexual content. Refused as a *category* in this registry's navigation.
+ * Sexual content, refused as a category in the registry's navigation.
  * @return {list of string} the terms, decoded
  */
 export func adult() {
@@ -165,8 +133,8 @@ export func adult() {
 }
 
 /**
- * Hate speech aimed at people. Deliberately short and unambiguous: this list
- * exists to refuse the obvious, not to adjudicate language.
+ * Hate speech aimed at people. Short and unambiguous: it refuses the obvious
+ * and does not adjudicate language.
  * @return {list of string} the terms, decoded
  */
 export func slur() {
@@ -176,14 +144,12 @@ export func slur() {
 /**
  * The substrings that refuse a keyword even inside a longer word.
  *
- * Only the child-abuse group gets this treatment. A substring rule is blunt and
- * produces false positives - which is exactly why it is not applied to the other
- * groups, where a three-letter term would refuse `sexagesimal` - and for this
- * group a false positive costs a publisher one keyword while a false negative
- * costs the registry a category page it should never have built.
+ * Child-abuse group only. Substring matching gives false positives (a
+ * three-letter adult term would refuse `sexagesimal`); here a false positive
+ * costs one keyword, a false negative a category page.
  *
- * The two-letter abbreviation in `abuse()` is deliberately **not** here: as a
- * substring it would refuse `cpp`, `cpu`, and `cpanel`. It stays exact-match.
+ * The two-letter abbreviation in `abuse()` is not here: as a substring it would
+ * refuse `cpp`, `cpu` and `cpanel`. It stays exact-match.
  * @return {list of string} the substrings, decoded
  */
 export func blockedSubstrings() {
@@ -200,13 +166,9 @@ export func blockedSubstrings() {
 }
 
 /**
- * Encode a term for the lists above.
- *
- * The inverse of what `decodeAll` does, exposed because the list is maintained
- * by hand and an operator adding a term needs its encoded form. Kept here rather
- * than in the CLI so the encoding is defined in exactly one place: a mismatch
- * between how terms are written and how they are read would silently produce a
- * list that matches nothing.
+ * Encode a term for the lists above; the inverse of `decodeAll`. Defined here,
+ * beside the decoder, so writing and reading cannot drift apart into a list
+ * that matches nothing.
  * @param word {string} the plain term
  * @return {string} its base64 form, ready to paste into a group above
  */
@@ -215,11 +177,9 @@ export func encode(word as string) {
 }
 
 /**
- * Is this a well-formed keyword? Checked on the already-folded form.
- *
- * The grammar is lowercase letters, digits, and hyphens, starting and ending
- * with a letter or digit, with no doubled hyphen. That makes a keyword safe as a
- * URL path segment with no escaping, which is what `/tag/<keyword>` needs.
+ * Report whether a folded keyword is well formed: lowercase letters, digits
+ * and hyphens, starting and ending with a letter or digit, no doubled hyphen.
+ * Safe unescaped as the `/tag/<keyword>` path segment.
  * @param word {string} the folded candidate
  * @return {bool} true when it matches the grammar
  */
@@ -253,7 +213,7 @@ func isAlnum(ch as string) {
 }
 
 /**
- * Is this keyword refused? Checked on the already-folded form.
+ * Report whether a folded keyword is refused.
  * @param word {string} the folded candidate
  * @return {bool} true when the registry will not index it
  */
@@ -270,19 +230,17 @@ export func isBlocked(word as string) {
 }
 
 /**
- * Fold a keyword to its canonical form: trimmed and lowercased.
- *
- * Folding before every other check is what makes `CLI` and `cli` one tag rather
- * than two pages, and it is also what stops the blocklist being sidestepped by
- * capitalisation.
+ * Fold a keyword to its canonical form: trimmed and lowercased. Applied before
+ * every other check, so `CLI` and `cli` are one tag and casing cannot evade the
+ * blocklist.
  * @param word {string} the raw keyword
  * @return {string} the folded form
  */
 export func fold(word as string) {
     def trimmed as string init strings.trim($word);
-    # Only ASCII is lowered. `strings.lower` maps the Kelvin sign (U+212A) to
-    # `k` and the dotted capital I to `i`, so a non-ASCII spelling folded into
-    # somebody else's valid name; left as written, it fails the grammar instead.
+    # Only ASCII is lowered: `strings.lower` maps the Kelvin sign (U+212A) to `k`
+    # and the dotted capital I to `i`, folding into another valid name. Left as
+    # written, it fails the grammar.
     if (not encoding.isAscii(convert.bytesFromString($trimmed, "utf-8"))) {
         return $trimmed;
     }
@@ -290,11 +248,9 @@ export func fold(word as string) {
 }
 
 /**
- * Turn a manifest's raw keyword list into the ones this registry will index.
- *
- * Folds, drops anything malformed or blocked, removes duplicates, and keeps at
- * most `LIMIT`. Never throws: a bad keyword costs a publisher that keyword, not
- * their release.
+ * Turn a manifest's raw keyword list into the ones this registry indexes:
+ * folded, malformed, blocked and duplicate ones dropped, at most `LIMIT`. Never
+ * throws; a bad keyword costs that keyword, not the release.
  * @param raw {list of string} the keywords as written in deck.toml
  * @return {list of string} the accepted keywords, in the publisher's order
  */

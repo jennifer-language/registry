@@ -11,13 +11,14 @@ constraint:
 "@acme/net" = "^1.0.0"
 ```
 
-Every deck page offers this snippet ready to paste, pinned to that deck's latest
-version.
+Every deck page offers this snippet ready to paste: a `^` constraint on that
+deck's newest version that is not yanked. `jvc add @acme/routeros ^0.1.0`
+writes the entry for you; without a constraint it writes `*`.
 
 ## Version constraints
 
-A constraint is a **single** expression. There are no compound ranges: no `||`,
-no comma-separated lists.
+A constraint is a single expression. There are no compound ranges: no `||`, no
+comma-separated lists.
 
 | Form | Matches |
 | ---- | ------- |
@@ -29,16 +30,16 @@ no comma-separated lists.
 | `~1.2.3` or `~1.2` | `>=1.2.0` and `<1.3.0` |
 | `>=1.0.0`, `<2.0.0`, ... | the comparator holds |
 
-`^` is the one you usually want: it accepts compatible updates and stops at the
-next breaking major. Below `1.0.0`, where the minor is effectively the major, it
-narrows automatically.
+`^` is the usual choice: it accepts compatible updates and stops at the next
+breaking major. Below `1.0.0`, where the minor acts as the major, it narrows
+automatically.
 
-**A prerelease never satisfies a `^` or `~` range.** Ask for a prerelease
-exactly, by version, if you want one.
+A prerelease never satisfies a `^` or `~` range. To get one, ask for it exactly,
+by version.
 
 ## What install does
 
-Resolution happens **on your machine**, not on the server. jvc reads each deck's
+Resolution happens on your machine, not on the server. jvc reads each deck's
 metadata, works out one version per deck that satisfies every constraint on it
 at once, and picks the highest such version. When two of your dependencies
 disagree about a shared deck, the winner must satisfy both.
@@ -55,15 +56,15 @@ Everything else in the deck's repository, including its `deck.toml` and any
 
 ## Lockfiles and reproducibility
 
-The resolved set is recorded with each deck's exact version and commit, so a
-later install reproduces the same code without resolving again. That is what
-makes a build reproducible: the commit is a content hash, and git verifies
-object hashes when it fetches, so the code that arrives is the code that was
-published.
+jvc records the resolved set in `camcorder.lock`, with each deck's exact version
+and commit, so a later install reproduces the same code without resolving
+again. The commit is a
+content hash, and git verifies object hashes when it fetches, so the code that
+arrives is the code that was published.
 
 ## Yanked versions
 
 A yanked version is one the author has withdrawn: a broken release, or one
-published by mistake. It stops satisfying constraints for **new** resolutions,
+published by mistake. It stops satisfying constraints for new resolutions,
 so a fresh install skips it, but it remains fetchable so an existing lockfile
 still installs. Yanking is reversible; deletion is not offered.

@@ -3,27 +3,18 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * The operational log: what the registry did, in one place, from both binaries.
+ * The operational log of both binaries.
  *
- * The events worth recording are split across two programs. `deckadmin` performs
- * every write - publishing a version, registering a scope, revoking tokens - and
- * `serve` performs every read plus the token exchange. Neither sees the other,
- * so an operator asking "what happened to this registry" has to read both. That
- * is why a `Sink` writes to a **file as well as the console**: the file is the
- * shared record, and `data/` is where both processes can reach it.
+ * `deckadmin` performs every write and `serve` every read plus the token
+ * exchange, so a `Sink` writes to a file as well as the console: the file under
+ * `data/` is the record both processes share.
  *
- * An `Event` is **pure data** - a level, a message, and structured fields - built
- * by a function that does no I/O, exactly as `apiview.Reply` and `webview.Page`
- * are. That is what makes the interesting half testable: the assertion is that
- * publishing records the commit it pinned, not that a line reached a file.
+ * An `Event` is pure data (level, message, structured fields) built without I/O,
+ * so tests assert what is recorded rather than what reached a file.
+ * `log.Logger` carries one sink, so a `Sink` holds two and fans out.
  *
- * `log.Logger` carries one sink, so a `Sink` here holds two and fans out.
- *
- * **Nothing secret is ever a field.** A bearer token, a refresh token, a device
- * code, and a client secret are all absent by construction: the builders below
- * take no such argument, so there is no call site that could pass one by
- * accident. An account id and a login are recorded, because that is the point of
- * an audit record.
+ * No builder takes a credential (bearer token, refresh token, device code,
+ * client secret), so none can be logged. Account ids and logins are recorded.
  * @module audit
  * @example
  * import "./audit.j" as audit;
@@ -39,22 +30,21 @@ use convert;
 use encoding;
 import "log.j" as log;
 
-# The levels, in the order log.j ranks them. Exported as constants so a caller
-# names a level rather than spelling a string that a typo would silently demote.
+# The levels, in the order log.j ranks them. Constants, so a typo is a lookup
+# error rather than a demoted level.
 export def const DEBUG as string init "debug";
 export def const INFO as string init "info";
 export def const WARN as string init "warn";
 export def const ERROR as string init "error";
 
 # The default file, relative to the working directory. `data/` is bind-mounted in
-# the container and gitignored, so a log written here survives a restart without
-# ever being committed or baked into an image.
+# the container and gitignored, so the log survives a restart and is never
+# committed or baked into an image.
 export def const DEFAULT_PATH as string init "data/registry.log";
 
 /**
  * One thing that happened, as pure data. `level` is `""` for the null event,
- * which `write` drops - that is how a command with nothing to record says so
- * without the caller testing for it.
+ * which `write` drops.
  * @field level {string} "debug", "info", "warn", "error", or "" for nothing
  * @field message {string} the human-readable summary
  * @field fields {map of string to string} the structured detail
@@ -66,9 +56,8 @@ export def struct Event {
 };
 
 /**
- * Where events go. Either half may be absent: `deckadmin` prints its own human
- * output and so leaves the console off by default, and a deployment that has not
- * configured a path gets no file.
+ * Where events go. Either half may be absent: `deckadmin` leaves the console off
+ * by default, and no configured path means no file.
  * @field console {log.Logger} the console logger (only when hasConsole)
  * @field hasConsole {bool} whether events are written to the console
  * @field file {log.Logger} the file logger (only when hasFile)
@@ -86,7 +75,7 @@ export def struct Sink {
 };
 
 /**
- * A sink that writes nothing. Useful as a default, and in tests.
+ * A sink that writes nothing, for defaults and tests.
  * @return {Sink} a sink with neither half enabled
  */
 export func silent() {
@@ -101,8 +90,8 @@ export func silent() {
 }
 
 /**
- * Normalise a configured level, defaulting an empty or unrecognised one to
- * `info` rather than dropping every record. Pure.
+ * Normalise a configured level; an empty or unrecognised one becomes `info`.
+ * Pure.
  * @param level {string} the configured level
  * @return {string} one of "debug", "info", "warn", "error"
  */
@@ -115,8 +104,8 @@ export func levelOf(level as string) {
 }
 
 /**
- * Normalise a configured format. `text` reads well on a console, `logfmt` and
- * `json` are for a file something else will parse. Pure.
+ * Normalise a configured format: `text` for a console, `logfmt` or `json` for a
+ * file another tool parses. Pure.
  * @param format {string} the configured format
  * @return {string} one of "text", "logfmt", "json"
  */
@@ -131,12 +120,9 @@ export func formatOf(format as string) {
 /**
  * Build a sink, opening the file if one is configured.
  *
- * The file is **probed here, at startup**, rather than on the first event: an
- * unwritable path is a configuration mistake an operator should hear about while
- * reading the boot output, not a surprise hours later when the first publish
- * happens. A failed probe leaves the file half off and records why, so the
- * caller can report it and carry on. A registry that cannot write its log still
- * serves decks.
+ * The file is probed here so an unwritable path shows in the boot output. A
+ * failed probe leaves the file half off with the reason in `fileError`; the
+ * registry still serves.
  * @param level {string} the minimum level ("" defaults to info)
  * @param format {string} the record format ("" defaults to text)
  * @param path {string} the log file ("" for none)
@@ -188,10 +174,8 @@ export func describe(sink as Sink) {
 /**
  * Write an event to every enabled half. A null event (level `""`) is dropped.
  *
- * **A logging failure never propagates.** A full disk must not turn a successful
- * publish into a failed one, nor a served request into a 500, so a sink error is
- * swallowed here. The startup probe in `open` is what catches the mistake that
- * actually matters, which is a path that was never writable at all.
+ * Never throws: a full disk must not turn a successful publish into a failure or
+ * a served request into a 500. `open` catches a path that was never writable.
  * @param sink {Sink} where to write
  * @param ev {Event} the event
  * @return {bool} true when the event was written somewhere
@@ -220,19 +204,16 @@ export func write(sink as Sink, ev as Event) {
         }
     }
     if (not $wrote and not ($lost == "")) {
-        # Every configured half failed. Say so on stderr rather than lose the
-        # record silently: this is the only place a caller could learn of it,
-        # and stderr is the one sink that cannot itself be misconfigured here.
+        # Every configured half failed; stderr cannot be misconfigured here.
         io.eprintf("audit: dropped %s (%s)\n", $ev.message, $lost);
     }
     return $wrote;
 }
 
 # cleaned returns the event with every control character in its message and
-# field values written out as `\xNN`. A field routinely carries request input (a
-# path, a tag, a reason quoting either), and a raw ESC or a right-to-left
-# override in it would reach a terminal running `docker logs` or `tail -f` as a
-# command, or make one line read as another.
+# field values written out as `\xNN`. Fields carry request input, and a raw ESC
+# or right-to-left override would reach a terminal (`docker logs`, `tail -f`)
+# as a command or make one line read as another.
 func cleaned(ev as Event) {
     def out as Event init $ev;
     $out.message = printable($ev.message);
@@ -296,9 +277,7 @@ export func event(level as string, message as string, fields as map of string to
 
 /**
  * A version was published. `pin` is the commit for a git version and the
- * checksum for a tar.gz one - the field is named for what it *is* rather than
- * for which column it came from, because the pin is the thing an audit reader
- * needs to compare against what was actually installed.
+ * checksum for a tar.gz one.
  * @param name {string} the deck name
  * @param version {string} the version
  * @param kind {string} "git" or "tar.gz"
@@ -319,9 +298,8 @@ export func deckPublished(
         "pin": $pin
     };
     if ($replaced) {
-        # Republishing a version that already existed changes what an existing
-        # lockfile resolves to, which is the one edit here that can break an
-        # install that used to work. It is louder than an ordinary publish.
+        # Replacing a version changes what an existing lockfile resolves to,
+        # so it logs at warn.
         return Event{level: WARN, message: "deck version replaced", fields: $f};
     }
     return Event{level: INFO, message: "deck version published", fields: $f};
@@ -367,7 +345,7 @@ export func scopeRegistered(
     $f["subject"] = $subject;
     $f["login"] = $login;
     if ($reassigned) {
-        # The only way a scope changes hands. Worth finding in a log later.
+        # The only way a scope changes hands.
         return Event{level: WARN, message: "scope reassigned", fields: $f};
     }
     return Event{level: INFO, message: "scope granted", fields: $f};
@@ -388,8 +366,7 @@ export func tokensRevoked(accountId as string, count as int) {
 }
 
 /**
- * A command failed. Recorded so a log shows the attempts as well as the edits:
- * a refused publish is how a misconfigured client looks from the server side.
+ * A command failed. Recorded so the log shows attempts as well as edits.
  * @param command {string} the command that failed
  * @param reason {string} the operator-facing message
  * @return {Event} the event
@@ -400,12 +377,10 @@ export func commandFailed(command as string, reason as string) {
 }
 
 /**
- * Name the command an event came from, if it does not already carry one.
+ * Fill in the `command` field of an event that carries it blank.
  *
- * A failure is built where it is detected, deep in the command's own logic,
- * which knows what went wrong but not what the operator typed to get there. The
- * entry point knows the reverse. This is what joins the two without threading
- * the command name through every validation.
+ * A failure is built where it is detected, which does not know the command
+ * name; the entry point does, and fills it in here.
  * @param ev {Event} the event to attribute
  * @param command {string} the command name
  * @return {Event} the event, with `command` filled in when it was blank
@@ -423,24 +398,17 @@ export func attribute(ev as Event, command as string) {
 }
 
 /**
- * Which address to record for a request: the one a trusted proxy reported, or
- * the peer we are actually talking to.
+ * The address to record for a request: the one a trusted proxy reported, or
+ * the connection's peer.
  *
- * **The header is only consulted when a deployment names one.** Any client can
- * send `X-Forwarded-For`, so a registry that reads it unconditionally records
- * whatever the caller felt like claiming - and an audit log that can be written
- * by the party it is auditing is worse than one that says `10.0.1.12`, because
- * it looks trustworthy. Naming a header is the operator asserting that a proxy
- * in front of this registry sets it and strips any client-supplied copy.
+ * The header is consulted only when a deployment names one, since any client
+ * can send `X-Forwarded-For`. Naming it asserts that a proxy in front sets it.
  *
- * The **last** entry of a comma-separated list is taken: the address the proxy
- * nearest this registry saw, which is the one entry a client cannot write. The
- * first is the original client only when every proxy strips what the client
- * sent, and the usual setting appends instead (nginx's
- * `$proxy_add_x_forwarded_for`), which leaves a forged first entry in place.
- * Behind a chain of proxies that is the next proxy out rather than the client;
- * a header one proxy overwrites, such as Cloudflare's `CF-Connecting-IP`, is the
- * way to record the client itself.
+ * The last entry of a comma-separated list is taken: the address the nearest
+ * proxy saw, the one entry a client cannot write. An appending proxy (nginx's
+ * `$proxy_add_x_forwarded_for`) leaves a forged first entry in place. Behind a
+ * chain of proxies the last entry is the next proxy out; a header one proxy
+ * overwrites, such as Cloudflare's `CF-Connecting-IP`, records the client.
  * @param headerValue {string} the value of the configured header ("" when unset
  *     or absent)
  * @param peer {string} the address of the connection itself
@@ -462,9 +430,8 @@ export func clientOf(headerValue as string, peer as string) {
 }
 
 /**
- * A request arrived. Emitted before the handler runs, so it carries no status:
- * `web` has no after-handler hook, and inventing one by wrapping every handler
- * would put the access log in the way of the thing it observes.
+ * A request arrived. Emitted before the handler runs, so it carries no status;
+ * `web` has no after-handler hook.
  * @param method {string} the HTTP method
  * @param path {string} the request path
  * @param client {string} the remote address
@@ -476,8 +443,7 @@ export func requestSeen(method as string, path as string, client as string) {
 }
 
 /**
- * The server started. The one record that says what this process is configured
- * to be, which is the first thing worth knowing when reading a log.
+ * The server started, with the configuration it runs under.
  * @param addr {string} the listen address
  * @param dbPath {string} the store
  * @param identity {string} the configured identity provider
@@ -495,7 +461,7 @@ export func serverStarted(addr as string, dbPath as string, identity as string, 
 
 /**
  * A login began: a device authorization was started against the provider.
- * Carries no code - a device code is a credential for the few minutes it lives.
+ * Carries no device code, which is a credential while it lives.
  * @param provider {string} the identity provider
  * @return {Event} the event
  */
@@ -505,17 +471,12 @@ export func loginStarted(provider as string) {
 }
 
 /**
- * A token was issued or refreshed. Takes the account, login, and the
- * organisations the token carries; the tokens themselves are never arguments,
- * so they cannot be logged.
+ * A token was issued or refreshed, with the account, login and organisations it
+ * carries. The tokens themselves are not arguments.
  *
- * The organisations are recorded because they are the one part of a login that
- * can come back **incomplete without failing**. An identity provider discloses
- * the organisations it is willing to, which on GitHub excludes any that have not
- * approved this registry, so a member of three can be issued a token naming one
- * and every later refusal points somewhere else. With the list in the log, the
- * question "why can this account not claim @acme" is answered by reading the
- * login that minted the token.
+ * Organisations are recorded because they can come back incomplete without
+ * failing: GitHub omits those that have not approved this registry. The log
+ * then explains a later refusal to claim an org scope.
  * @param kind {string} "issued" or "refreshed"
  * @param accountId {string} the subject the token was minted for
  * @param login {string} the display label
@@ -528,10 +489,9 @@ export func tokenIssued(kind as string, accountId as string, login as string, or
 }
 
 /**
- * A token exchange was refused. The status separates "still waiting for the
- * user" from a genuine failure, which is what makes a polled endpoint readable
- * in a log at all.
- * @param stage {string} which exchange: "device", "token", or "refresh"
+ * A token exchange was refused. A `202` (still waiting for the user) logs at
+ * debug, anything else at warn.
+ * @param stage {string} which exchange: "device", "issued", or "refreshed"
  * @param status {int} the HTTP status returned
  * @param reason {string} the error the client was given
  * @return {Event} the event
@@ -543,8 +503,7 @@ export func loginRefused(stage as string, status as int, reason as string) {
         "reason": $reason
     };
     if ($status == 202) {
-        # The client is polling and the user has not finished yet. Expected, and
-        # frequent: one line per poll interval per login. Not a warning.
+        # Polling before the user finished: one line per poll interval.
         return Event{level: DEBUG, message: "login pending", fields: $f};
     }
     return Event{level: WARN, message: "login refused", fields: $f};
@@ -552,7 +511,7 @@ export func loginRefused(stage as string, status as int, reason as string) {
 
 /**
  * A CI workflow was trusted to publish a deck (specification 8.9). A standing
- * grant to write under a scope, so it is recorded as loudly as a scope grant.
+ * write grant, so it logs at warn.
  * @param deck {string} the deck the workflow may publish
  * @param provider {string} the CI provider
  * @param repositoryId {string} the repository id bound
@@ -590,9 +549,8 @@ export func publisherUntrusted(deck as string, repositoryId as string) {
 }
 
 /**
- * A version was withdrawn from new resolutions, or restored. Recorded at `warn`
- * because it changes what a fresh resolution produces for everybody, which is
- * the kind of thing an operator looks for after "why did this stop upgrading".
+ * A version was withdrawn from new resolutions, or restored. Logs at `warn`
+ * because it changes what every fresh resolution produces.
  * @param deck {string} the deck name
  * @param version {string} the version
  * @param yanked {bool} true when withdrawn, false when restored
@@ -607,14 +565,13 @@ export func versionYanked(deck as string, version as string, yanked as bool) {
 }
 
 /**
- * A version was published through the write API, and how it was authorised.
- * `how` separates a person with a token from a CI workload, which is the
- * distinction an operator reading the log actually cares about.
+ * A version was published through the write API. `how` separates a person with
+ * a token from a CI token and a trusted CI workload.
  * @param deck {string} the deck name
  * @param version {string} the version
- * @param commit {string} the commit the tag resolved to - the pin
+ * @param commit {string} the commit the tag resolved to (the pin)
  * @param repository {string} the repository published from
- * @param how {string} "token" or "trusted-publisher"
+ * @param how {string} "token", "ci-token" or "trusted-publisher"
  * @return {Event} the event
  */
 export func deckPublishedFrom(
@@ -634,9 +591,7 @@ export func deckPublishedFrom(
 }
 
 /**
- * A publish was refused. Recorded because a rejected publish is how a
- * misconfigured pipeline looks from the server side, and is usually what an
- * operator is looking for when a release did not appear.
+ * A publish was refused, which is how a misconfigured pipeline shows up.
  * @param reason {string} what the caller was told
  * @param status {int} the HTTP status returned
  * @return {Event} the event
@@ -647,9 +602,8 @@ export func publishRefused(reason as string, status as int) {
 }
 
 /**
- * A CI token was minted. A standing credential now exists, which is a thing an
- * operator should be able to find in the log later, so it is recorded as loudly
- * as a scope grant. The token itself is not a parameter and cannot be logged.
+ * A CI token was minted. A standing credential, so it logs at warn. The token
+ * itself is not a parameter.
  * @param fingerprint {string} the token's SHA-256
  * @param name {string} the operator's label for it
  * @param covers {string} the scope or deck it may write
@@ -685,8 +639,8 @@ export func ciTokenRevoked(fingerprint as string, name as string) {
 }
 
 /**
- * A write was authorised by a CI token. Section 8.10 requires this: once a
- * standing secret exists, detection is the only control left.
+ * A write was authorised by a CI token. Required by section 8.10: with a
+ * standing secret, detection is the remaining control.
  * @param fingerprint {string} the token that authorised it
  * @param name {string} the operator's label for it
  * @param deck {string} what it wrote
@@ -702,9 +656,8 @@ export func ciTokenUsed(fingerprint as string, name as string, deck as string) {
 }
 
 /**
- * The reserved scopes were registered in bulk. `conflicts` counts names the list
- * wanted that somebody already owns, which is the number worth looking at: it is
- * either a legitimate owner who got there first, or a name that should never
+ * The reserved scopes were registered in bulk. `conflicts` counts listed names
+ * somebody already owns: an earlier legitimate owner, or a name that should not
  * have been claimable.
  * @param reservedCount {int} how many scopes were newly held
  * @param conflicts {int} how many were left alone because somebody owns them
@@ -719,9 +672,7 @@ export func scopesReserved(reservedCount as int, conflicts as int) {
 }
 
 /**
- * A co-owner was added to a scope. A second principal can now publish and yank
- * under it, which is a change in who may write, so it is recorded as loudly as
- * a grant.
+ * A co-owner was added to a scope. It changes who may write, so it logs at warn.
  * @param scope {string} the scope
  * @param provider {string} the identity provider the subject belongs to
  * @param subject {string} the principal added
@@ -753,9 +704,7 @@ export func coOwnerRemoved(scope as string, provider as string, subject as strin
 }
 
 /**
- * A TLS certificate is in place. `issuedAt` is when it was obtained, which is
- * what the renewal decision is made from, so it is worth having in the log when
- * somebody asks why a renewal did or did not happen.
+ * A TLS certificate is in place. `issuedAt` is what renewal is decided from.
  * @param domains {string} the names the certificate covers
  * @param issuedAt {int} when it was obtained (Unix seconds)
  * @return {Event} the event
@@ -769,9 +718,8 @@ export func certificateReady(domains as string, issuedAt as int) {
 }
 
 /**
- * A certificate could not be obtained. Recorded at `error` because the registry
- * is now serving less than it was configured to serve, which is exactly the kind
- * of degradation that otherwise goes unnoticed until a browser complains.
+ * A certificate could not be obtained. Logs at `error`: the registry now serves
+ * less than it was configured to.
  * @param domains {string} the names that were requested
  * @param reason {string} what went wrong
  * @return {Event} the event

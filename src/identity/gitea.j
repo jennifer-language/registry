@@ -4,18 +4,15 @@
 # pragma-jennifer-capability: net
 
 /**
- * Gitea as an identity provider, which also covers **Forgejo**: Forgejo is a
- * Gitea fork and its OAuth surface is compatible, so one module serves both
- * (specification 12.3).
+ * Gitea as an identity provider, also covering Forgejo, a Gitea fork with a
+ * compatible OAuth surface (specification 12.3).
  *
- * There is no hosted default. A Gitea or Forgejo instance is always somebody's
- * own, so `baseUrl` is required rather than optional, and an unset one is a
- * configuration error rather than a silent fallback to a stranger's server.
+ * There is no hosted default: `baseUrl` is required, and an unset one is a
+ * configuration error rather than a fallback to a stranger's server.
  *
- * Gitea speaks standard OAuth 2.0, so the device-grant error vocabulary and the
- * exchange shape are the ones in `identity.j`. What differs from GitHub is the
- * endpoint paths and that the user payload calls the username `login` while the
- * numeric id is `id`.
+ * Gitea speaks standard OAuth 2.0, so the device-grant errors and exchange shape
+ * are those in `identity.j`. The user payload names the username `login` and
+ * the numeric id `id`.
  * @module gitea
  * @example
  * import "./gitea.j" as gitea;
@@ -33,8 +30,7 @@ import "../identity.j" as identity;
 def const TIMEOUT_MS as int init 10000;
 def const MAX_BYTES as int init 65536;
 
-# Gitea's default scope set. `read:user` is the only one the registry needs;
-# organisation reads come later, with the org surface.
+# Gitea's default scope set. `read:user` is the only one the registry needs.
 def const DEFAULT_SCOPES as string init "read:user";
 
 func formField(name as string, value as string) {
@@ -55,8 +51,7 @@ func optInt(doc as json.Value, field as string, fallback as int) {
     return $fallback;
 }
 
-# requireBase refuses an unset base rather than guessing one. There is no
-# gitea.com to fall back to that a deployment would actually want.
+# requireBase refuses an unset base: there is no hosted Gitea to default to.
 func requireBase(cfg as identity.Config) {
     if (strings.trim($cfg.baseUrl) == "") {
         throw Error{
@@ -246,8 +241,8 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
 }
 
 # membershipsOf reports no organisations. Organisation scopes are implemented for
-# GitHub only (8.7), and an empty answer makes an organisation scope unwritable
-# through this provider rather than writable by anybody.
+# GitHub only (8.7); an empty answer makes an organisation scope unwritable
+# through this provider.
 func membershipsOf(cfg as identity.Config, accessToken as string) {
     def none as map of string to string init {};
     return $none;

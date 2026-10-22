@@ -5,36 +5,22 @@
 /**
  * The scopes a deployment holds back from self-service claiming.
  *
- * **What belongs here, and what deliberately does not.**
+ * It covers names that mislead whoever holds them: names that imply the registry
+ * itself is speaking (`official`, `admin`, `security`), names that read as
+ * infrastructure (`api`, `www`, `static`), and the project's own names.
  *
- * This list covers names whose *meaning* would mislead a reader no matter who
- * holds them: names that imply the registry itself is speaking (`official`,
- * `admin`, `security`), names that read as infrastructure (`api`, `www`,
- * `static`), and the project's own names. A deck under `@official` would carry
- * an endorsement nobody granted, and that is true whether the holder is a
- * squatter or a well-meaning volunteer.
+ * Brand names are not listed, for three reasons:
  *
- * **Brand names are not here, and that is a decision rather than an oversight.**
- * The obvious ask is to add `microsoft`, `google`, and so on. Three reasons not
- * to:
+ * - Under `derived` (12.7, what the official registry runs) a scope is claimable
+ *   only by the account whose provider identity is that name, so `@microsoft`
+ *   belongs to the GitHub account `microsoft`. A brand list would only matter
+ *   under `firstcome`.
+ * - The list has no edge: any real list is a handful of famous names, and
+ *   readers would assume the absent ones were considered.
+ * - Reserving a brand implies an adjudication nobody here performs. The dispute
+ *   path in section 10 is the mechanism, and it is reactive.
  *
- * - **The claim policy already prevents it.** Under `derived` (12.7, what the
- *   official registry runs) a scope may only be claimed by the account whose
- *   provider identity *is* that name, so `@microsoft` is claimable only by the
- *   GitHub account called `microsoft`. The provider is the allocator, and it
- *   settled the question before this registry saw it. A brand list would only
- *   add anything under `firstcome`.
- * - **The list has no edge.** Every trademark in every jurisdiction is the true
- *   extent of it, so any actual list is a handful of famous names and a false
- *   sense of coverage. Whoever reads it will assume the absent ones were
- *   considered.
- * - **It promises adjudication this registry cannot perform.** Reserving
- *   `microsoft` implies somebody is deciding who deserves it. Nobody here is.
- *   The dispute path in section 10 is the honest mechanism, and it is reactive
- *   by design.
- *
- * A private deployment with different needs supplies its own list; that is why
- * this is data rather than a rule.
+ * A private deployment supplies its own list; this is data, not a rule.
  * @module reserved
  * @example
  * import "./reserved.j" as reserved;
@@ -46,9 +32,8 @@ use maps;
 import "./deckname.j" as deckname;
 
 /**
- * Scopes that would read as the registry speaking for itself, or as a
- * privileged authority. A deck published under any of these inherits trust the
- * registry never granted.
+ * Scopes that read as the registry speaking for itself, or as a privileged
+ * authority; a deck under one would inherit trust nobody granted.
  * @return {list of string} the reserved names
  */
 export func authority() {
@@ -80,9 +65,8 @@ export func authority() {
 }
 
 /**
- * Scopes that read as infrastructure rather than as somebody's namespace. These
- * are the ones a reader mistakes for part of the service, and the ones most
- * likely to collide with a future route or subdomain.
+ * Scopes that read as part of the service, and may collide with a future route
+ * or subdomain.
  * @return {list of string} the reserved names
  */
 export func infrastructure() {
@@ -119,8 +103,8 @@ export func infrastructure() {
 }
 
 /**
- * The project's own names. Held so the registry, the client, and the language
- * cannot be impersonated by whoever registers first.
+ * The project's own names, so the registry, the client, and the language cannot
+ * be impersonated by whoever registers first.
  * @return {list of string} the reserved names
  */
 export func project() {
@@ -128,9 +112,8 @@ export func project() {
 }
 
 /**
- * Placeholder names. Not dangerous, but a deck under `@test` or `@example` is
- * noise in a shared namespace, and `@null` / `@undefined` are the strings a
- * broken client sends when it means nothing at all.
+ * Placeholder names: `@test` or `@example` would be noise, and `@null` /
+ * `@undefined` are what a broken client sends for nothing.
  * @return {list of string} the reserved names
  */
 export func placeholder() {
@@ -159,11 +142,8 @@ export func placeholder() {
 }
 
 /**
- * Every reserved scope, deduplicated and folded.
- *
- * Grouped above by *why* each name is held, because a list this long is
- * otherwise unmaintainable: the next person needs to know which pile a
- * candidate belongs in, and whether it belongs in any.
+ * Every reserved scope, deduplicated and folded. The groups above say why each
+ * name is held.
  * @return {list of string} the full reserved list
  */
 export func defaults() {
@@ -182,12 +162,9 @@ export func defaults() {
 }
 
 /**
- * Is every default a name the grammar would actually accept?
- *
- * A reserved scope that could never be claimed anyway is dead weight, and worse,
- * it hides a typo: `jennifer-lang` reserves something real, `jennifer_lang`
- * reserves nothing and nobody notices. Exported so a test asserts it rather than
- * a reader trusting it.
+ * The names the scope grammar rejects. An invalid reserved name hides a typo:
+ * `jennifer-lang` reserves something, `jennifer_lang` reserves nothing. Exported
+ * so a test asserts the defaults are all valid.
  * @param names {list of string} the names to check
  * @return {list of string} those that are not valid scope names ([] when all are)
  */

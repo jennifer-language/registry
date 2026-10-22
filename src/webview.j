@@ -3,22 +3,20 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * The website's HTML responses, as pure data. The same shape as `apiview`, one
- * layer up: each function maps a registry plus request inputs to a `Page` (an
- * HTTP status and an HTML string), with no dependency on the web engine, so
- * every page is unit-testable without booting a server.
+ * The website's HTML responses as pure data. Each function maps a registry plus
+ * request inputs to a `Page` (HTTP status and HTML string), with no dependency
+ * on the web engine.
  *
- * The web surface is **read-only** by design: a landing page, a search, and a
- * deck page. There is no form that writes anything, no session, and no account
- * UI - publishing is a CLI action. Keep it that way.
+ * The web surface is read-only: no form writes anything, and there is no
+ * session and no account UI. Publishing is a CLI action.
  *
- * Every interpolated value goes through `esc`, because deck names and
- * descriptions are publisher input and end up inside markup, attributes included.
+ * Every interpolated value goes through `esc`: deck names and descriptions are
+ * publisher input and land inside markup and attributes.
  * @module webview
  * @example
  * import "./webview.j" as webview;
- * def page as webview.Page init webview.deck($db, "@acme/routeros");
- * # web.html($ctx, page.status, page.body);
+ * def page as webview.Page init webview.deck($db, "@acme/routeros", $now);
+ * # web.html($ctx, $page.status, $page.body);
  */
 
 use strings;
@@ -49,13 +47,13 @@ export def struct Page {
 };
 
 /**
- * The Content-Security-Policy for every page this module renders. No script
- * runs but the theme switch, admitted by its hash, so a value that escapes its
- * escaping still cannot execute; nothing loads from elsewhere but images, which
- * a README may show from https; and no other site may frame a page.
+ * The Content-Security-Policy for every page this module renders. Only the theme
+ * switch runs, admitted by its hash, so an escaping slip has no script to run;
+ * only images load from elsewhere (a README may show them from https); no other
+ * site may frame a page.
  *
- * Styles stay `unsafe-inline`: the stylesheet is inline by design (one request
- * per page), and a style cannot run code.
+ * Styles are `unsafe-inline` because the stylesheet is inline, and a style
+ * cannot run code.
  * @return {string} the header value
  */
 export func contentSecurityPolicy() {
@@ -65,45 +63,28 @@ export func contentSecurityPolicy() {
         "form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 }
 
-# esc escapes text for any place on a page, element content and quoted attribute
-# values alike, which is why it must cover both quotes. `html.escape` does since
-# 0.24.0-dev+167; before that it covered only `& < >`, and a search for
-# `" autofocus onfocus=...` came back inside the search box's `value` attribute
-# as live markup. Pages still call this one name, so the escaper stays one
-# choice in one place, and `webview_test.j` asserts the quotes are covered.
+# esc escapes text for element content and quoted attribute values alike, so it
+# must cover both quotes (`html.escape` does since 0.24.0-dev+167; without them
+# the search box's `value` attribute was a reflected XSS). Every page calls this
+# one escaper, and `webview_test.j` asserts the quotes are covered.
 func esc(s as string) {
     return html.escape($s);
 }
 
-# The site's stylesheet. Inline, so a page is one request and nothing is fetched
-# from anywhere: no CDN, no font download, no build step. Colours are custom
-# properties redefined under prefers-color-scheme, so dark mode is the same
-# markup.
+# The theme switch, inlined beside the stylesheet so a page stays one request
+# with no CDN and no build step.
 #
-# The accent is orange, and the two themes take **different** oranges rather than
-# one: a deep burnt orange has the contrast to be read as text on near-white,
-# while a light warm orange is what reads on the dark ground. Each pairs with
-# `--on-accent`, the colour of text placed *on* the accent - the search button is
-# the only such surface, and hardcoding white there would leave black-on-white
-# contrast in one theme and white-on-light-orange in the other.
-# The theme switch. Kept to these few lines and inlined beside the stylesheet,
-# so the page keeps its "one request, no CDN, no build step" property; what it
-# gives up is the older claim that there is no JavaScript at all.
+# It runs in `head`, before the body paints; applied later, a stored choice
+# shows the wrong theme for a frame. It removes the `no-js` class, which is what
+# shows the switch: with scripting off the button stays hidden and the page
+# follows the system setting.
 #
-# It runs in `head`, before the body paints, because applying a stored choice
-# afterwards shows the wrong theme for a frame. The `no-js` class is removed by
-# the same script, which is what hides the switch when scripting is off: a button
-# that cannot work is worse than no button, and the page still follows the system
-# setting exactly as it did before.
+# `light` and `dark` are the only stored values; an unstamped page follows the
+# system, so there is no third "clear" state.
 #
-# `light` and `dark` are the only stored values. Clearing the choice is not
-# offered, because "follow my system" is what an unstamped page already does and
-# a third state in a two-state control is a puzzle rather than a feature.
-#
-# The button is wired from here, by a listener on the document, rather than by an
-# `onclick` attribute: the Content-Security-Policy admits this one script by its
-# hash, and an inline handler would need `unsafe-inline`, which admits any
-# script an injection manages to place in a page.
+# The button is wired by a document listener, not an `onclick` attribute: the
+# Content-Security-Policy admits this script by its hash, and an inline handler
+# would need `unsafe-inline`, which admits any injected script.
 def const THEME_SCRIPT as string init '
 (function () {
   var root = document.documentElement;
@@ -125,6 +106,13 @@ def const THEME_SCRIPT as string init '
 })();
 ';
 
+# The site's stylesheet, inline so a page is one request with nothing fetched.
+# Colours are custom properties redefined per theme, so dark mode is the same
+# markup.
+#
+# The two themes use different oranges for the accent: burnt orange reads as
+# text on near-white, a light orange on the dark ground. `--on-accent` is the
+# colour of text on the accent (the search button), so it contrasts in both.
 def const STYLE as string init '
 :root {
   --bg: #fdfdfc; --fg: #1a1a19; --muted: #6b6b66; --line: #e4e4e0;
@@ -335,8 +323,7 @@ tr.is-yanked td:first-child { text-decoration: line-through; }
 ';
 
 # layout wraps a page body in the site chrome. `title` is plain text and is
-# escaped here, since it routinely carries a deck or scope name; `body` is markup
-# this module built, with everything untrusted in it already escaped.
+# escaped here; `body` is markup with everything untrusted already escaped.
 func layout(title as string, body as string) {
     return '<!doctype html>
 <html lang="en" class="no-js">
@@ -427,8 +414,7 @@ func hitList(hits as list of search.Hit, emptyMessage as string) {
     if (len($hits) == 0) {
         return '<div class="empty">' + $emptyMessage + '</div>';
     }
-    # Joined once at the end: adding each item to a growing string re-copies all
-    # of it, which made a listing of thousands of decks quadratic in its size.
+    # Joined once: appending to a growing string is quadratic in the listing.
     def items as list of string init [];
     for (def hit in $hits) {
         $items[] = hitItem($hit);
@@ -437,18 +423,9 @@ func hitList(hits as list of search.Hit, emptyMessage as string) {
 }
 
 /**
- * The landing page.
- *
- * It deliberately **does not list every deck**. A full listing is the right
- * front page for a registry with twenty decks and the wrong one for a registry
- * that succeeds: it grows without bound, it is the slowest page to render and
- * the heaviest to send, and it answers a question nobody arrives with. Somebody
- * landing here either knows what they want, in which case they want the search
- * box, or does not, in which case an alphabetical wall of names is not browsing.
- *
- * So the front door is: search, or one of two ways in - everything, or by tag.
- * The count is still here, because "how big is this registry" is a fair question
- * and one number answers it.
+ * The landing page: search, links to `/browse` and `/tags`, and the deck
+ * count. It does not list every deck, since a full listing grows without bound
+ * and is the slowest page to render and send.
  * @param db {flatdb.DB} the registry to read
  * @return {Page} a 200 page
  */
@@ -469,16 +446,15 @@ export func home(db as flatdb.DB) {
 }
 
 /**
- * How many decks one page of a listing shows. Every listing is paged: a page of
- * all 5,000 decks of a large registry was 1.2 MB, and rendering it took about
- * 80 MB per request in flight.
+ * How many decks one page of a listing shows. Measured unpaged at 5,000 decks:
+ * 1.2 MB per page and about 80 MB per request in flight.
  */
 export def const PAGE_SIZE as int init 100;
 
 /**
  * Turn a `page` query parameter into a page number: 1 for anything that is not
- * a small positive number, so a malformed link shows the first page rather than
- * an error. Past the last page is clamped where the listing is known.
+ * a small positive number. Past the last page is clamped where the listing is
+ * known.
  * @param raw {string} the parameter as given ("" when absent)
  * @return {int} the page, 1-based
  */
@@ -543,11 +519,7 @@ func pageOf(
 }
 
 /**
- * The browse page: every deck, a page at a time, which is what the landing page
- * used to be.
- *
- * Kept as its own page rather than deleted, because "show me everything" is a
- * real request - it is just not the thing to greet somebody with.
+ * The browse page: every deck, a page at a time.
  * @param index {json.Value} the registry's deck index, from `search.index`
  * @param page {int} which page, 1-based; past the last shows the last
  * @return {Page} a 200 page
@@ -562,8 +534,7 @@ export func browse(index as json.Value, page as int) {
 }
 
 /**
- * The search results page. An empty query lists everything, which is what the
- * landing page shows, so a submitted empty box is not an error.
+ * The search results page. An empty query lists everything.
  * @param index {json.Value} the registry's deck index, from `search.index`
  * @param query {string} the search query
  * @param page {int} which page of results, 1-based
@@ -677,8 +648,8 @@ export func deck(db as flatdb.DB, name as string, now as int) {
     }
     def safe as string init esc($name);
     def all as list of string init store.listVersionsDescending($db, $name);
-    # Live versions drive everything a reader might act on. The full list still
-    # drives the table, because a yanked version is not hidden - it is labelled.
+    # Live versions drive everything a reader might act on; the table lists all,
+    # with yanked versions labelled.
     def live as list of string init store.listLiveVersionsDescending($db, $name);
     def body as string init '<h1><span class="deckname">' + $safe + '</span></h1>';
     def description as string init store.deckDescription($db, $name);
@@ -699,8 +670,7 @@ export func deck(db as flatdb.DB, name as string, now as int) {
             '<th>Requires</th><th>Engines</th><th>Capabilities</th></tr></thead><tbody>' +
             versionRows($db, $name) + '</tbody></table>';
     }
-    # The licence and the source describe the version somebody would install, so
-    # they come from the newest **live** one where there is one.
+    # The licence and source come from the newest live version, if any.
     def shown as list of string init $live;
     if (len($shown) == 0) {
         $shown = $all;
@@ -719,18 +689,12 @@ export func deck(db as flatdb.DB, name as string, now as int) {
     return Page{status: 200, body: layout($name, $body)};
 }
 
-# yankNotice warns when the versions a reader would reach for are withdrawn.
+# yankNotice warns when the versions a reader would reach for are withdrawn, so
+# the page never presents as current a version the resolver refuses. Two cases:
 #
-# Silence here was the bug: a yanked version stopped satisfying resolutions and
-# the page went on presenting it as the current release, so the registry told a
-# browser one thing and a resolver another. Two cases are worth distinguishing,
-# because the advice differs:
-#
-#   * **every** version yanked - there is nothing to install, and saying so is
-#     the only honest thing the page can do;
-#   * the **newest** yanked but older ones live - the deck is fine, the latest
-#     release is not, and the reader needs to know the number below is not the
-#     highest one on the page.
+#   * every version yanked: nothing to install;
+#   * the newest yanked, older ones live: the snippet pins a lower version than
+#     the highest in the table.
 func yankNotice(all as list of string, live as list of string) {
     if (len($all) == 0 or len($all) == len($live)) {
         return "";
@@ -742,8 +706,7 @@ func yankNotice(all as list of string, live as list of string) {
             'working.</p>';
     }
     if ($all[0] == $live[0]) {
-        # An older version was yanked and the newest is fine: the table says so
-        # row by row and a banner would be noise.
+        # Only older versions are yanked; the table labels them.
         return "";
     }
     return '<p class="notice">The newest version, <code>' +
@@ -769,15 +732,12 @@ func tagRow(db as flatdb.DB, name as string) {
 /**
  * A deck's resolution counts, or "" when nothing has ever been counted.
  *
- * **The heading says "Resolutions", not "Downloads", and the note under it says
- * why.** The registry never sees a download: a client fetches a deck's code
- * straight from its repository, so the only thing countable here is a client
- * asking where that repository is. Labelling that "downloads" would be a number
- * everyone would reasonably misread, and it would misread *high* on CI-heavy
- * decks and *low* on popular ones with stable lockfiles.
+ * The heading says "Resolutions" and the note explains it: clients fetch code
+ * from the deck's repository, so the registry counts metadata lookups, never
+ * downloads. Such counts run high on CI-heavy decks and low on decks installed
+ * from stable lockfiles.
  *
- * A deck nobody has resolved yet renders nothing at all, rather than six zeroes.
- * A wall of zeroes on a day-old deck reads as failure; absence reads as new.
+ * A deck never resolved renders nothing rather than six zeroes.
  * @param db {flatdb.DB} the registry to read
  * @param name {string} the deck name
  * @param now {int} the current time (Unix seconds)
@@ -814,13 +774,8 @@ export func statsSection(db as flatdb.DB, name as string, now as int) {
  * A repository URL turned into something a browser can open, or "" if it is not
  * safe to link.
  *
- * Two jobs, and the second is the one that matters. A clone URL ends in `.git`,
- * which most forges also serve as a browsable page but none of them show a human
- * that way, so the suffix comes off. And the URL is **publisher input** that
- * reaches this page from a manifest: only `http` and `https` are linked, so a
- * `javascript:` or `data:` URL recorded on a version becomes visible text rather
- * than a working link on this origin. Escaping alone would not do that, because
- * an escaped `javascript:` href still runs.
+ * A trailing `.git` is removed. The URL is publisher input, so only `http` and
+ * `https` are linked: an escaped `javascript:` or `data:` href would still run.
  * @param url {string} the recorded clone or artifact URL
  * @return {string} a browsable URL, or "" when it should not be a link
  */
@@ -851,11 +806,6 @@ export func repoLabel(url as string) {
 }
 
 # factsSection renders where a deck's code lives and who may publish it.
-#
-# Both answers were missing from this page entirely, which made it a dead end:
-# somebody deciding whether to depend on a deck could not reach its source, and
-# could not see who stands behind it. The two belong together because they are
-# the same question asked twice - what is this, and who says so.
 func factsSection(db as flatdb.DB, name as string, latest as store.DeckVersion) {
     def items as string init "";
     def link as string init repoLink($latest.url);
@@ -878,11 +828,9 @@ func factsSection(db as flatdb.DB, name as string, latest as store.DeckVersion) 
 
 # ownerFact renders the scope a deck belongs to and who holds it.
 #
-# The **login** is shown and the subject id is not, for the reason `listScopes`
-# gives: an id is what ownership binds to, and publishing a list of them hands
-# out exactly what an impersonation needs. A co-owner is counted, not named,
-# because the store keeps co-owners as ids with no login recorded alongside -
-# naming them would mean either showing an id or inventing a name.
+# The login is shown, never the subject id (see `listScopes`: ids are what
+# ownership binds to). Co-owners are counted, not named, because the store keeps
+# them as ids with no login.
 func ownerFact(db as flatdb.DB, name as string) {
     def scope as string init deckname.scopeOf($name);
     if ($scope == "") {
@@ -913,20 +861,13 @@ func ownerFact(db as flatdb.DB, name as string) {
 /**
  * A deck's rendered README, or "" when it has none.
  *
- * A README is untrusted publisher input, and it is rendered with
- * `markdown.toHtml` alone, which is **safe by default**: raw HTML in the source
- * is escaped, and a link whose scheme is not http, https or mailto becomes `#`.
- * Never render one with `markdown.toHtmlWith`, which opts raw HTML back in.
+ * A README is untrusted publisher input, rendered with `markdown.toHtml` alone,
+ * which escapes raw HTML and turns a link whose scheme is not http, https or
+ * mailto into `#`. Never use `markdown.toHtmlWith`, which opts raw HTML back in.
+ * Escaping the source first would double-escape code blocks; the tests fail on
+ * an interpreter without safe defaults instead.
  *
- * It used to be escaped with `html.escape` first, as a guard for interpreters
- * older than that default. That guard cost more than it bought: the renderer
- * escapes text again, so a code block showing `a < b` reached the reader as
- * `a &lt; b`, and quotes and alerts (`>`) stopped being markup. The tests now
- * carry the guarantee instead - an interpreter without safe defaults fails them
- * rather than serving a publisher's script.
- *
- * Exported so the escaping has a test of its own rather than being reachable
- * only through a whole page.
+ * Exported so the escaping has its own test.
  * @param db {flatdb.DB} the registry to read
  * @param name {string} the deck name
  * @return {string} the rendered section, or "" when there is no README
@@ -943,15 +884,8 @@ export func readmeSection(db as flatdb.DB, name as string) {
 /**
  * A scope's page: who holds it, and every deck published under it.
  *
- * This is the other half of the deck page's "Published under" line. Without it,
- * an owner's name was a dead end - you could see that `@mplx` published a deck
- * and had no way to ask what else `@mplx` publishes, which is the obvious next
- * question and the one that makes a registry browsable rather than a lookup
- * table.
- *
- * A **registered but unowned** scope is a real state and gets its own answer:
- * reserved names are registered to nobody on purpose (`reserved.j`), so the page
- * says the name is held rather than pretending somebody holds it.
+ * The deck page's "Published under" line links here. A registered but unowned
+ * scope (a reserved name, see `reserved.j`) is shown as reserved.
  * @param db {flatdb.DB} the registry to read
  * @param index {json.Value} the registry's deck index, from `search.index`
  * @param name {string} the scope, with or without its leading "@"
@@ -986,8 +920,8 @@ func scopeFacts(db as flatdb.DB, folded as string) {
     def ns as store.Namespace init store.getNamespace($db, $folded);
     def items as string init "";
     if ($ns.subject == "") {
-        # A reserved name: registered precisely so nobody can claim it, and bound
-        # to nobody so nobody can publish under it.
+        # A reserved name: registered so nobody can claim it, bound to nobody so
+        # nobody can publish under it.
         $items = $items + '<div class="fact"><dt>Status</dt><dd>Reserved by ' +
             'this registry</dd></div>';
     } else {
@@ -1019,9 +953,9 @@ func scopeFacts(db as flatdb.DB, folded as string) {
 /**
  * A 404 page carrying a human explanation.
  *
- * The message is plain text and is escaped here, not by the caller: it routinely
- * carries the requested path or name, and a contract of "arrives escaped" was
- * forgotten once already, which made every HTML 404 a reflected XSS.
+ * The message is plain text and is escaped here, not by the caller, since it
+ * often carries the requested name; a caller-escapes contract was once a
+ * reflected XSS.
  * @param message {string} the explanation, as plain text
  * @return {Page} a 404 page
  */
@@ -1032,10 +966,9 @@ export func notFound(message as string) {
 }
 
 /**
- * The placeholder shown for a static section that has not been built. Serving a
- * bare 404 there would look like a broken site rather than a missing build step,
- * so it names the command that produces it.
- * @param title {string} the section's name, e.g. "Reference"
+ * The placeholder shown for a static section that has not been built; it names
+ * the command that builds it.
+ * @param title {string} the section's name, e.g. "Admin manual"
  * @param root {string} the directory it is served from, e.g. "public/reference"
  * @param config {string} the grimoire config to build it ("" for the default)
  * @return {Page} a 404 page explaining how to build that section
@@ -1059,15 +992,9 @@ export func sectionMissing(title as string, root as string, config as string) {
 /**
  * The tag index: a cloud, then every tag alphabetically.
  *
- * Two renderings of one list because they answer different questions. The cloud
- * is weighted by how many decks carry each tag, so it says *what this registry
- * is mostly for* at a glance - which is the question somebody who does not know
- * what they want actually has. The alphabetical list is for somebody who does
- * know, and it is complete and scannable in a way a cloud never is.
- *
- * The cloud is sized by count, in five steps rather than continuously: a linear
- * scale makes one popular tag enormous and everything else unreadable, and five
- * buckets keep the smallest tag legible while still showing the shape.
+ * The cloud is weighted by how many decks carry each tag, in five size steps (a
+ * linear scale makes one popular tag dominate); the list is complete and
+ * scannable.
  * @param index {json.Value} the registry's deck index, from `search.index`
  * @return {Page} a 200 page
  */
@@ -1110,9 +1037,7 @@ export func tags(index as json.Value) {
 }
 
 # cloudStep buckets a count into 1..5 for the cloud's font size.
-#
-# Relative to the most-used tag rather than to an absolute number, so the cloud
-# looks the same on a registry with ten decks and one with ten thousand.
+# Relative to the most-used tag, so the scale is independent of registry size.
 func cloudStep(count as int, most as int) {
     if ($most < 2) {
         return 3;
@@ -1136,10 +1061,8 @@ func tagLink(name as string, count as int, extra as string) {
 }
 
 # tagCounts maps each tag in use to how many decks carry it.
-#
-# Read from each deck's **newest** version, because a tag describes what a deck
-# is now: a keyword dropped two releases ago should stop grouping the deck, and
-# summing every version would count a long-lived deck once per release.
+# Only each deck's newest version counts, so a dropped keyword stops grouping
+# the deck and a deck counts once, not once per release.
 func tagCounts(index as json.Value) {
     def out as map of string to int init {};
     for (def i in lists.range(0, json.length($index, ""))) {
@@ -1172,9 +1095,8 @@ func latestKeywords(db as flatdb.DB, name as string) {
  */
 export func tag(index as json.Value, name as string, page as int) {
     def folded as string init keywords.fold($name);
-    # A refused or malformed tag can never have been stored, so there is nothing
-    # to look up and nothing to render: answering 404 keeps the registry from
-    # echoing an arbitrary string back inside its own page at all.
+    # A refused or malformed tag cannot have been stored; a 404 also avoids
+    # echoing an arbitrary string into the page.
     if (not keywords.isWellFormed($folded) or keywords.isBlocked($folded)) {
         return notFound("That is not a tag used here.");
     }

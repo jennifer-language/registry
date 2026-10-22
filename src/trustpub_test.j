@@ -6,11 +6,8 @@
 #
 #     jennifer test src/trustpub_test.j
 #
-# This module decides whether an unauthenticated HTTP request may write to the
-# registry, so the tests are weighted toward what must be **refused**. Every
-# check in `check` has a test that removes it and shows the refusal, because a
-# check that silently stops working is indistinguishable from one that never
-# existed.
+# Weighted toward refusals: every check in `check` has a test showing the
+# refusal when its condition fails.
 
 use testing;
 use json;
@@ -25,7 +22,7 @@ def const ISS as string init "https://token.actions.githubusercontent.com";
 def const REPO_ID as string init "123456789";
 def const WORKFLOW as string init "acme/deck-routeros/.github/workflows/publish.yml";
 
-# A binding as `deckadmin trust add` would record it.
+# A binding as `deckadmin trust` would record it.
 func binding() {
     return Binding{
         provider: GITHUB,
@@ -85,8 +82,7 @@ func testANumericRepositoryIdIsReadAsText() {
 # --- what must be refused -----------------------------------------------------
 
 func testATokenForAnotherAudienceIsRefused() {
-    # the replay case: CI hands its token to whatever action asks, and a token
-    # minted for another service must not work here
+    # replay: a token minted for another service must not work here
     def c as Claims init claimsFrom(GITHUB, json.set(token(), "/aud", "some-other-service"));
     def v as Verdict init check(binding(), $c, AUD, ISS);
     testing.assertFalse($v.allowed);
@@ -94,14 +90,13 @@ func testATokenForAnotherAudienceIsRefused() {
 }
 
 func testATokenForADifferentRegistryIsRefused() {
-    # the same shape, the same issuer, a real token - for somebody else
+    # a valid token from the same issuer, for somebody else
     def c as Claims init claimsFrom(GITHUB, json.set(token(), "/aud", "registry.other.example"));
     testing.assertFalse(allowed($c));
 }
 
 func testAnUnconfiguredAudienceRefusesEverything() {
-    # a missing audience must not read as "accept any": that would turn every
-    # CI token on the internet into a credential for this registry
+    # a missing audience must not read as "accept any"
     def v as Verdict init check(binding(), claims(), "", ISS);
     testing.assertFalse($v.allowed);
     testing.assertContains($v.reason, "no trusted-publishing audience");
@@ -127,15 +122,14 @@ func testAnotherRepositoryIsRefused() {
 }
 
 func testARenamedRepositoryStillPublishes() {
-    # the point of keying on the id: the path changed, the project did not
+    # keyed on the id: the path changed, the project did not
     def doc as json.Value init json.set(token(), "/repository", "acme/deck-routeros-ng");
     $doc = json.set(
         $doc,
         "/job_workflow_ref",
         "acme/deck-routeros-ng/.github/workflows/publish.yml@refs/tags/v0.2.0");
     def b as Binding init binding();
-    # the workflow claim carries the path too, so a rename changes it; a binding
-    # that pins the workflow must be updated, which is the documented cost
+    # the workflow claim carries the path, so a rename breaks a pinned workflow
     $b.workflow = "acme/deck-routeros-ng/.github/workflows/publish.yml";
     testing.assertTrue(check($b, claimsFrom(GITHUB, $doc), AUD, ISS).allowed);
 }
@@ -162,8 +156,7 @@ func testAnEmptyRepositoryIdNeverMatches() {
 }
 
 func testAnotherWorkflowInTheSameRepositoryIsRefused() {
-    # a pull-request workflow in the same repository must not publish; that is
-    # the difference between "this project" and "any code a contributor proposes"
+    # a pull-request workflow in the same repository must not publish
     def doc as json.Value init json.set(
         token(),
         "/job_workflow_ref",
@@ -234,8 +227,7 @@ func testGiteaNamesTheWorkflowPlainly() {
 }
 
 func testASelfHostedIssuerMustBeConfigured() {
-    # github.com is a constant; anything self-hosted is not guessable, and an
-    # unguessable issuer left unset must refuse rather than accept any instance
+    # an unset self-hosted issuer must refuse rather than accept any instance
     testing.assertEqual(expectedIssuer(GITHUB, ""), GITHUB_ISSUER);
     testing.assertEqual(expectedIssuer(GITEA, ""), "");
     testing.assertEqual(expectedIssuer(GITEA, "https://git.example"), "https://git.example");
@@ -290,8 +282,7 @@ func testATokenSignedByTheIssuerVerifies() {
 }
 
 func testATokenWithoutExpiryIsRefused() {
-    # RFC 7519 makes exp optional, and the JWT library reads its absence as
-    # "never expires"; a CI token that cannot expire must not publish
+    # a token without exp never expires (RFC 7519) and must not publish
     def key as bytes init crypto.rsaGenerateKey(2048);
     def token as string init signedBy($key, '{"repository_id":"42"}');
     def message as string init "";
@@ -330,7 +321,7 @@ func testDiscoveryUrlJoin() {
 }
 
 func testGitlabBareRefsAreCompletedFromTheirType() {
-    # a bare `v1` matched `v*` whether it was a tag or a branch
+    # a bare `v1` must not match `v*` as both tag and branch
     def doc as json.Value init json.map();
     $doc = json.set($doc, "/project_id", "42");
     $doc = json.set($doc, "/ref", "v1");

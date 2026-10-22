@@ -86,9 +86,7 @@ func testNameIsNotNarrowed() {
 }
 
 func testARefusalNamesTheOrganisationsTheTokenCarries() {
-    # The failure this message exists for: a member of three organisations whose
-    # provider disclosed one. Without the list, the refusal reads as "you are not
-    # a member", which is false and sends the reader to the wrong place.
+    # a member whose provider did not disclose the organisation sees what was seen
     def who as identity.Subject init identity.Subject{
         provider: "github",
         id: "1234567",
@@ -103,7 +101,7 @@ func testARefusalNamesTheOrganisationsTheTokenCarries() {
 }
 
 func testARefusalWithNoOrganisationsSaysSo() {
-    # "()" would read as a rendering bug; "none" is a statement about the token
+    # "(none)", not "()"
     def who as identity.Subject init identity.Subject{
         provider: "github",
         id: "1234567",

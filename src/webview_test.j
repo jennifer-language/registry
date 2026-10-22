@@ -6,11 +6,9 @@
 #
 #     jennifer test src/webview_test.j
 #
-# webview.j imports store / search / deckname / html / flatdb, so the overlay
-# reaches them through those aliases and Page / home / results / deck by bare
-# name. These assert the contract of each page - status, the values that must
-# appear, and that untrusted text is escaped - not its exact markup, so the
-# stylesheet and layout can change without rewriting the suite.
+# The overlay reaches webview.j's imports through their aliases and its own
+# names bare. Tests assert each page's contract (status, required values,
+# escaping of untrusted text), not its markup.
 
 use testing;
 use json;
@@ -100,9 +98,7 @@ func testEmptyRegistrySaysSo() {
 }
 
 func testHomeDoesNotListEveryDeck() {
-    # the front door offers search and two ways in; a full listing is /browse.
-    # A registry that succeeds would otherwise ship its largest page as its
-    # first impression.
+    # the full listing is /browse, not the landing page
     def page as Page init home(seeded());
     testing.assertEqual($page.status, 200);
     testing.assertFalse(strings.contains($page.body, "@acme/routeros"));
@@ -111,7 +107,6 @@ func testHomeDoesNotListEveryDeck() {
 }
 
 func testHomeStillCountsTheRegistry() {
-    # "how big is this" is a fair question and one number answers it
     testing.assertContains(home(seeded()).body, "decks");
 }
 
@@ -130,7 +125,7 @@ func testResultsEchoTheQueryIntoTheBox() {
 }
 
 func testNoMatchesStillAnswers200() {
-    # an empty result set is not an error: the page explains, and keeps the box
+    # an empty result set is not an error
     def page as Page init results(search.index(seeded()), "nothing-here", 1);
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "Nothing matched");
@@ -193,8 +188,7 @@ func testUnknownDeckIs404() {
 # --- escaping ---------------------------------------------------------------
 
 func testDescriptionIsEscaped() {
-    # a description is operator input and lands inside markup, so a tag in it
-    # must not survive as one
+    # a description is untrusted input landing inside markup
     def db as flatdb.DB init emptyDb();
     $db = store.putVersion($db, "@acme/x", "<script>alert(1)</script>", gitVer("1.0.0"));
     def page as Page init browse(search.index($db), 1);
@@ -210,8 +204,7 @@ func testTheSearchQueryIsEscaped() {
 }
 
 func testTheSearchQueryCannotLeaveTheValueAttribute() {
-    # no angle bracket needed: a bare quote closes value="..." and the rest
-    # becomes attributes of the input, which ran script on page load
+    # a bare quote closing value="..." was a reflected XSS
     def page as Page init results(search.index(seeded()), '" autofocus onfocus=alert(1) x="', 1);
     testing.assertFalse(strings.contains($page.body, '" autofocus'));
     testing.assertContains($page.body, "&quot; autofocus");
@@ -227,16 +220,14 @@ func testTheTitleIsEscaped() {
 }
 
 func testTheNotFoundMessageIsEscaped() {
-    # the site-wide 404 echoes the requested path, which is entirely the
-    # visitor's to choose; this was a reflected XSS while callers escaped it
+    # the 404 echoes the requested path; this was a reflected XSS
     def page as Page init notFound('No such page: /x"><svg onload=alert(1)>');
     testing.assertFalse(strings.contains($page.body, "<svg onload"));
     testing.assertContains($page.body, "&lt;svg onload=alert(1)&gt;");
 }
 
 func testAnUnknownDeckNameIsEscapedOnce() {
-    # the message is escaped inside `notFound`, so a caller escaping it as well
-    # would show the reader a literal `&lt;`
+    # `notFound` escapes; escaping in the caller too would show `&lt;`
     def page as Page init deck(emptyDb(), "@acme/<b>", NOW);
     testing.assertContains($page.body, "@acme/&lt;b&gt;");
     testing.assertFalse(strings.contains($page.body, "&amp;lt;"));
@@ -250,7 +241,7 @@ func testSectionMissingExplainsHowToBuild() {
     testing.assertContains($page.body, "Reference not built");
     testing.assertContains($page.body, "grimoire");
     testing.assertContains($page.body, "public/reference/");
-    # the default book takes no --config, so the command must not carry one
+    # the default book takes no --config
     testing.assertFalse(strings.contains($page.body, "--config"));
 }
 
@@ -284,9 +275,7 @@ func testADeckWithNoReadmeRendersNothing() {
 }
 
 func testAReadmeCannotInjectScript() {
-    # This is the one that matters. A README is untrusted publisher input, and
-    # these tests are the whole guarantee that markdown.toHtml escapes raw HTML:
-    # rendering it verbatim would run a publisher's script for every visitor.
+    # These tests are the guarantee that markdown.toHtml escapes raw HTML.
     def out as string init readmeSection(
         withReadme("# Hi\n\n<script>alert(1)</script>\n"),
         "@acme/tool");
@@ -310,8 +299,7 @@ func testAReadmeCannotBreakOutOfTheContainer() {
 }
 
 func testAReadmeLinkCannotRunScript() {
-    # a link is markup the renderer does produce, so its target is what has to
-    # be refused, whatever the case of the scheme and however it is spelt
+    # the link target is refused, whatever the case of the scheme
     def out as string init readmeSection(
         withReadme("[a](javascript:alert(1)) [b](JaVaScRiPt:alert(1)) [c](data:text/html,x)\n"),
         "@acme/tool");
@@ -320,8 +308,7 @@ func testAReadmeLinkCannotRunScript() {
 }
 
 func testAReadmeShowsItsTextExactlyOnce() {
-    # escaping before rendering escaped twice, so a code block read `&lt;` and a
-    # quote was not a quote; what the publisher wrote is what the reader sees
+    # escaping before rendering escaped twice
     def out as string init readmeSection(
         withReadme("```\nif (a < b && c) x\n```\n\n> quoted\n"),
         "@acme/tool");
@@ -331,7 +318,6 @@ func testAReadmeShowsItsTextExactlyOnce() {
 }
 
 func testRenderingKeepsMarkdownIntact() {
-    # the safety measure must not cost the feature
     def out as string init readmeSection(
         withReadme("# H\n\n- one\n- two\n\n`code`\n\n[link](https://example.com)\n"),
         "@acme/tool");
@@ -353,10 +339,7 @@ func testTheDeckPageShowsTheReadmeAndLicence() {
 }
 
 func testTheMenuLinksToTheDiscoveryDocument() {
-    # Not the rendered API prose: this points at the live document a client
-    # actually reads, which is the one URL a client may hard-code and the only
-    # thing on the site that answers "what does this registry serve, right now".
-    # Last entry, so the order stays Decks / Manual / Reference / API.
+    # The live discovery document, after the reference link.
     def page as Page init home(emptyDb());
     testing.assertContains($page.body, '<a href="/.well-known/jennifer-registry">API</a>');
     def nav as int init strings.indexOf($page.body, "<nav>");
@@ -382,16 +365,14 @@ func testTheSwitchIsOnEveryPage() {
 }
 
 func testTheScriptRunsBeforeTheBodyPaints() {
-    # applying a stored choice after the body renders shows the wrong theme for
-    # a frame, which is the flash every themed page gets wrong
+    # applied later, a stored choice shows the wrong theme for a frame
     def page as Page init home(emptyDb());
     testing.assertTrue(strings.indexOf($page.body, "jvcTheme") <
         strings.indexOf($page.body, "<body>"));
 }
 
 func testAllThreeThemeStatesAreStyled() {
-    # unstamped follows the system; an explicit choice has to beat the system in
-    # both directions, or the switch works one way only
+    # an explicit choice must override the system in both directions
     def css as string init home(emptyDb()).body;
     testing.assertContains($css, "@media (prefers-color-scheme: dark)");
     testing.assertContains($css, ':root:not([data-theme="light"])');
@@ -399,8 +380,7 @@ func testAllThreeThemeStatesAreStyled() {
 }
 
 func testTheSwitchHidesItselfWithoutScripting() {
-    # a button that cannot work is worse than no button; the page still follows
-    # the system setting, exactly as it did before the switch existed
+    # without scripting the button is hidden and the page follows the system
     def page as Page init home(emptyDb());
     testing.assertContains($page.body, 'class="no-js"');
     testing.assertContains($page.body, '.no-js .theme');
@@ -469,8 +449,7 @@ func testAnUnusedTagIs404() {
 }
 
 func testARefusedTagIsNotEchoedBack() {
-    # a refused tag can never have been stored, so the page must not render the
-    # string at all rather than reflecting whatever was in the URL
+    # a refused tag cannot be stored, so the page must not reflect it
     def refused as string init decodeAllFromKeywords();
     def page as Page init tag(search.index(taggedDb()), $refused, 1);
     testing.assertEqual($page.status, 404);
@@ -513,7 +492,7 @@ func testADeckPageLinksItsRepository() {
 }
 
 func testARepositoryUrlIsOnlyLinkedWhenItIsHttp() {
-    # publisher input reaching an href: escaping alone would not stop this one
+    # an escaped javascript: href still runs
     testing.assertEqual(repoLink("javascript:alert(1)"), "");
     testing.assertEqual(repoLink("data:text/html,x"), "");
     testing.assertEqual(repoLink("https://x/y.git"), "https://x/y");
@@ -536,7 +515,7 @@ func testAnUnknownScopeIs404() {
 }
 
 func testADeckWithNoLookupsShowsNoCounts() {
-    # six zeroes on a day-old deck reads as failure; absence reads as new
+    # no section rather than six zeroes
     def p as Page init deck(seeded(), "@acme/routeros", NOW);
     testing.assertFalse(strings.contains($p.body, "Resolutions"));
 }
@@ -562,15 +541,13 @@ func yankedDb() {
 }
 
 func testAYankedVersionIsLabelledOnTheDeckPage() {
-    # the bug this covers: the page listed a yanked version indistinguishably
-    # from a live one, so the site said "current release" while the resolver
-    # refused to choose it
+    # the page presented a yanked version as current while the resolver refused it
     def page as Page init deck(yankedDb(), "@acme/routeros", NOW);
     testing.assertContains($page.body, ">yanked<");
 }
 
 func testTheInstallSnippetSkipsAYankedVersion() {
-    # recommending a version no resolver will pick is the costly half of the bug
+    # no resolver will pick a yanked version
     def page as Page init deck(yankedDb(), "@acme/routeros", NOW);
     testing.assertContains($page.body, '"@acme/routeros" = "^0.1.0"');
     testing.assertFalse(strings.contains($page.body, '= "^0.2.0"'));
@@ -596,15 +573,14 @@ func testADeckWithEveryVersionYankedSaysSo() {
 }
 
 func testAnEntirelyLiveDeckGetsNoNotice() {
-    # the stylesheet names the class on every page, so the marker is what to
-    # look for, not the word
+    # the stylesheet names the class on every page, so match the marker
     def page as Page init deck(seeded(), "@acme/routeros", NOW);
     testing.assertFalse(strings.contains($page.body, ">yanked<"));
     testing.assertFalse(strings.contains($page.body, "is-yanked\">"));
 }
 
 func testYankingAnOlderVersionDoesNotRaiseABanner() {
-    # the table says so row by row; a banner would be noise
+    # the table labels it
     def db as flatdb.DB init store.setYanked(seeded(), "@acme/routeros", "0.1.0", true);
     def page as Page init deck($db, "@acme/routeros", NOW);
     testing.assertFalse(strings.contains($page.body, "newest installable"));

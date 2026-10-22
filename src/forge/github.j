@@ -7,19 +7,16 @@
  * GitHub as a forge: resolving a tag, reading `deck.toml` at a commit, and
  * answering whether the caller may push (specification 12.3).
  *
- * **`push` is the requirement, not ownership** (7.1). `GET /repos/{owner}/{repo}`
- * returns a `permissions` object for the authenticated user, which accepts a
- * repository owned by an organisation the caller can write to; an ownership
- * comparison would wrongly reject that.
+ * The requirement is `push`, not ownership (7.1): `GET /repos/{owner}/{repo}`
+ * returns a `permissions` object for the authenticated user, which also covers
+ * an organisation repository the caller can write to.
  *
- * A missing or unusable answer is `unknown`, never a refusal: 7.1 requires an
- * unanswerable check to be treated as unverified rather than as granted, and
- * conflating the two is how a permission system quietly fails open.
+ * A missing or unusable answer is `unknown` (7.1: unverified, never granted).
  *
- * **Verified against live github.com** on 2026-08-16: `repo` returns the
- * numeric repository and owner ids, `resolveTag` resolves an annotated tag
- * through its tag object to the commit, and `readFile` reads a path at a commit.
- * `permission` is still unverified, because it needs a real caller token.
+ * Verified against live github.com on 2026-08-16: `repo` returns the numeric
+ * repository and owner ids, `resolveTag` resolves an annotated tag through its
+ * tag object to the commit, and `readFile` reads a path at a commit.
+ * `permission` is unverified, because it needs a real caller token.
  * @module github
  * @example
  * import "./github.j" as github;
@@ -71,8 +68,7 @@ export func handlesUrl(cfg as forge.Config, url as string) {
 }
 
 /**
- * Interpret GitHub's repository payload as a push permission. Pure, so the
- * decision that gates publishing is testable without a socket.
+ * Interpret GitHub's repository payload as a push permission. Pure.
  * @param doc {json.Value} the decoded `/repos/{owner}/{repo}` response
  * @return {forge.Permission} granted, refused, or unknown
  */
@@ -117,9 +113,8 @@ export func repoFrom(doc as json.Value) {
 /**
  * The commit a tag payload points at. Pure.
  *
- * An annotated tag resolves in two steps: the ref points at a tag object, which
- * points at the commit. A lightweight tag points at the commit directly. Both
- * shapes appear in `/git/ref`, so both are handled here.
+ * For a lightweight tag this is the commit; for an annotated tag it is the tag
+ * object, which the caller dereferences.
  * @param doc {json.Value} the decoded `/git/ref/tags/{tag}` response
  * @return {string} the object SHA the ref names, or ""
  */
@@ -194,11 +189,9 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
     return $res.body;
 }
 
-# refExists reports whether a branch or tag of this exact name is present. Both
-# namespaces are asked because either would shadow an object of the same name in
-# a `?ref=` lookup; `/git/ref/{ns}/{name}` is an exact match, unlike
-# `/git/matching-refs`, which matches on prefix and would report a ref named
-# `abc1234def` when asked about `abc1234`.
+# refExists reports whether a branch or tag of this exact name is present; either
+# would shadow an object of the same name in a `?ref=` lookup.
+# `/git/ref/{ns}/{name}` matches exactly; `/git/matching-refs` matches a prefix.
 func refExists(cfg as forge.Config, url as string, name as string) {
     def heads as http.Response init get($cfg, repoPath($url) + "/git/ref/heads/" + $name, "");
     if (forge.refPresence($heads.status)) {
@@ -208,11 +201,9 @@ func refExists(cfg as forge.Config, url as string, name as string) {
     return forge.refPresence($tags.status);
 }
 
-# fileExists answers from a listing of the file's directory rather than from the
-# file: the entry module may be far larger than any cap worth setting on a read,
-# and a listing is a small JSON document whatever the files in it weigh. A
-# missing directory is a `404`, which is a provable "no"; any other failure
-# throws through `refPresence` rather than reading as absence.
+# fileExists answers from a listing of the file's directory, which stays small
+# however large the file is. A `404` is absent; any other failure throws through
+# `refPresence`.
 func fileExists(cfg as forge.Config, url as string, commit as string, path as string) {
     def parts as list of string init forge.splitPath($path);
     def res as http.Response init get(
@@ -238,8 +229,8 @@ func permission(cfg as forge.Config, url as string, callerToken as string) {
 }
 
 # permissionFor asks, with the registry's own token, what a named account may do
-# in this repository (12.5, the service-account route). Anything but a role the
-# forge states is unknown, and unknown is never permission.
+# in this repository (12.5, the service-account route). Anything but a stated
+# role is unknown.
 func permissionFor(cfg as forge.Config, url as string, username as string) {
     def problem as string init forge.askProblem($cfg, $username);
     if (not ($problem == "")) {

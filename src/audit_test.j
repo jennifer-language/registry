@@ -6,10 +6,8 @@
 #
 #     jennifer test src/audit_test.j
 #
-# The builders are pure, so what is asserted here is the *record*: that the
-# fields an operator will search on are present and named consistently, that the
-# events worth finding later are ranked above the routine ones, and above all
-# that no builder has a way to accept a secret.
+# The builders are pure, so these tests assert the record: field names, levels,
+# and that no builder accepts a secret.
 
 use testing;
 use maps;
@@ -33,8 +31,7 @@ func testFormatsFallBackToText() {
 # --- the record ---------------------------------------------------------------
 
 func testAPublishRecordsThePin() {
-    # the pin is the integrity boundary, so it is the field an audit reader most
-    # needs: it is what a later install can be compared against
+    # the pin is the integrity boundary
     def ev as Event init deckPublished(
         "@acme/tool",
         "1.2.0",
@@ -49,8 +46,7 @@ func testAPublishRecordsThePin() {
 }
 
 func testReplacingAVersionIsLouderThanPublishingOne() {
-    # an upsert over an existing version changes what an existing lockfile
-    # resolves to, which is the only edit here that can break a working install
+    # replacing a version changes what an existing lockfile resolves to
     def ev as Event init deckPublished("@acme/tool", "1.2.0", "tar.gz", "sha256:ab", true);
     testing.assertEqual($ev.level, WARN);
     testing.assertContains($ev.message, "replaced");
@@ -77,22 +73,20 @@ func testAReservationIsNotAGrant() {
 }
 
 func testAReassignmentIsFindable() {
-    # the only way a scope changes hands, so it is ranked to be searchable
+    # the only way a scope changes hands
     def ev as Event init scopeRegistered("acme", "github", "9999999", "bob", true);
     testing.assertEqual($ev.level, WARN);
     testing.assertContains($ev.message, "reassigned");
 }
 
 func testTheSubjectIsRecordedNotJustTheLogin() {
-    # ownership binds to the id; a log naming only the login would be useless
-    # after a rename, which is the case the whole ownership model exists for
+    # ownership binds to the id, which survives a rename
     def ev as Event init scopeRegistered("acme", "github", "1234567", "alice", false);
     testing.assertEqual($ev.fields["subject"], "1234567");
 }
 
 func testAPollingClientDoesNotFillTheLogWithWarnings() {
-    # 202 means the user has not finished at the browser yet: expected, and
-    # emitted once per poll interval per login
+    # 202 (user not finished yet) is expected once per poll interval
     def waiting as Event init loginRefused("token", 202, "authorization_pending");
     testing.assertEqual($waiting.level, DEBUG);
     def refused as Event init loginRefused("token", 400, "expired_token");
@@ -111,18 +105,13 @@ func testTheBootRecordSaysWhetherAuthIsServed() {
 # --- what must never appear ---------------------------------------------------
 
 func testNoBuilderCanBeHandedASecret() {
-    # This is a design assertion, not a behavioural one. Every builder that runs
-    # anywhere near a credential takes the account and the label only, so there
-    # is no parameter a token could arrive through. If someone later adds one,
-    # this test still passes - but the arity change is what review should catch,
-    # and the record below is what it should be compared against.
+    # A design assertion: builders near a credential take only the account and
+    # labels. An added parameter would not fail this test; review catches it.
     def issued as Event init tokenIssued("issued", "1234567", "alice", "acme,viverto");
     testing.assertEqual(len($issued.fields), 3);
     testing.assertEqual($issued.fields["subject"], "1234567");
     testing.assertEqual($issued.fields["login"], "alice");
-    # The third field is the organisation list. It is public information - the
-    # same logins any visitor reads off a deck page - and it is here because an
-    # incomplete one is otherwise invisible until a claim fails.
+    # The organisation list is public information.
     testing.assertEqual($issued.fields["orgs"], "acme,viverto");
 
     def started as Event init loginStarted("github");
@@ -205,7 +194,7 @@ func testAttributingAnEventWithNoCommandFieldIsANoOp() {
 # --- which address gets recorded ----------------------------------------------
 
 func testThePeerIsUsedWhenNoHeaderIsConfigured() {
-    # the default: unforgeable, and correct when nothing is in front of us
+    # the default: unforgeable, and correct with no proxy in front
     testing.assertEqual(clientOf("", "10.0.1.12:44496"), "10.0.1.12:44496");
     testing.assertEqual(clientOf("   ", "10.0.1.12:44496"), "10.0.1.12:44496");
 }
@@ -215,8 +204,8 @@ func testAConfiguredHeaderWins() {
 }
 
 func testTheLastEntryOfAChainIsRecorded() {
-    # X-Forwarded-For grows left to right, and a proxy that appends leaves
-    # whatever the client claimed in front: only the last entry is the proxy's
+    # an appending proxy leaves the client's claim in front; only the last
+    # entry is the proxy's
     testing.assertEqual(clientOf("6.6.6.6, 203.0.113.7", "10.0.1.12:44496"), "203.0.113.7");
     testing.assertEqual(clientOf(" 172.68.1.1 ,203.0.113.7 , ", "10.0.1.12:0"), "203.0.113.7");
 }

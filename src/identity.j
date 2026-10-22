@@ -3,23 +3,17 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * The identity-provider interface (specification 12.2): who is this caller,
- * stably?
+ * The identity-provider interface (specification 12.2): the caller's stable
+ * external identity.
  *
- * A deployment names one provider module under `identity/`, each exporting a
- * `provider()` that returns a `Provider` - a struct of `func` values the core
- * calls without knowing which module supplied them. This module holds the shared
- * types, because a Jennifer struct is identified by `(module, name)`: four
- * provider modules each declaring their own `Subject` would declare four
- * incompatible types.
+ * A deployment names one provider module under `identity/`, whose `provider()`
+ * returns a `Provider`, a struct of `func` values. The shared types live here
+ * because a struct type is identified by `(module, name)`.
  *
- * Not to be confused with `token.j`, which mints the registry's *own* bearer
- * token. A provider here answers for an **external** identity; `token.j` turns
- * that answer into a credential the registry issues.
+ * `token.j` mints the registry's own bearer token from what a provider reports.
  *
- * This module is pure. The provider modules are where the network lives, and
- * each keeps its parsing separate from its one HTTP call so the parsing can be
- * tested without a socket.
+ * Pure. Provider modules do the network calls and keep their parsing separate
+ * so it can be tested without a socket.
  * @module identity
  * @example
  * import "./identity/github.j" as github;
@@ -30,10 +24,9 @@
 use strings;
 
 /**
- * Where a provider lives and what it is registered as. Self-hosted instances of
- * GitLab, Gitea, and Forgejo differ from their hosted counterparts **only** in
- * `baseUrl`, which is why there is one module per API family rather than one per
- * deployment.
+ * Where a provider lives and what it is registered as. Self-hosted GitLab,
+ * Gitea and Forgejo differ from hosted only in `baseUrl`, so there is one module
+ * per API family.
  * @field name {string} the provider name advertised in discovery ("github", ...)
  * @field baseUrl {string} the instance root, no trailing slash ("" = the module's default)
  * @field clientId {string} the OAuth application id
@@ -52,9 +45,13 @@ export def struct Config {
  * Who the caller is, as the provider reports them.
  * @field provider {string} the provider that issued this subject
  * @field id {string} the provider's stable subject identifier, opaque; a numeric
- *     account id on a forge, the `sub` claim on OIDC. **This is what scope
- *     ownership binds to** (specification 8.1).
+ *     account id on a forge, the `sub` claim on OIDC. Scope ownership binds to
+ *     it (specification 8.1).
  * @field login {string} the provider's username, a display label only
+ * @field orgs {map of string to string} folded organisation login to provider id;
+ *     empty from a provider's `subject`, filled from the bearer token (8.7)
+ * @field orgsCheckedAt {string} when `orgs` was read (Unix seconds as text); ""
+ *     when not known
  */
 export def struct Subject {
     provider as string,
@@ -93,10 +90,9 @@ export def struct Poll {
 /**
  * An identity provider, as a set of func values.
  *
- * **Every function takes the `Config` as its first argument.** Jennifer has no
- * closures and a module top level is declarations-only, so a provider cannot be
- * built around a configuration it remembers; the caller holds the pair and
- * passes it in. `provider()` therefore takes nothing and returns a vtable.
+ * Every function takes the `Config` as its first argument: Jennifer has no
+ * closures, so `provider()` takes nothing and returns a vtable, and the caller
+ * passes the configuration on each call.
  * @field name {string} the provider name, advertised in discovery
  * @field flow {func} `func(Config) -> string`: "device" or "authcode" (12.2)
  * @field startDevice {func} `func(Config) -> Device`: begin a device authorization
@@ -106,10 +102,8 @@ export def struct Poll {
  * @field exchangeCode {func} `func(Config, code, verifier) -> string`: swap an
  *     authorization code for a provider token
  * @field memberships {func} `func(Config, accessToken) -> map of string to string`:
- *     the organisations this token's owner is an **active** member of, as folded
- *     login -> id. Asked once,
- *     at login, because the provider token is discarded immediately afterwards
- *     (8.4) and there is no way to ask again later.
+ *     the organisations this token's owner is an active member of, as folded
+ *     login -> id. Asked once, at login (8.7).
  * @field subject {func} `func(Config, accessToken) -> Subject`: who this token is
  */
 export def struct Provider {
@@ -123,9 +117,8 @@ export def struct Provider {
     memberships as func
 };
 
-# The states a poll may report. `slowDown` is deliberately distinct from
-# `pending`: both mean keep waiting, but the first also means widen the interval,
-# which the registry passes on as a 429 rather than another 202.
+# The states a poll may report. `slowDown` also means widen the interval, and
+# the registry answers it with 429 instead of 202.
 export def const STATE_OK as string init "ok";
 export def const STATE_PENDING as string init "pending";
 export def const STATE_SLOWDOWN as string init "slowDown";
@@ -134,11 +127,9 @@ export def const STATE_EXPIRED as string init "expired";
 
 /**
  * Map the OAuth device-grant error vocabulary (RFC 8628) onto the states this
- * registry serves. Every provider speaking the standard grant shares it, so it
- * lives here rather than being repeated per module.
+ * registry serves, shared by every provider speaking the standard grant.
  *
- * An unrecognised error is **terminal**, not pending: waiting cannot recover
- * from an error we do not know, and treating it as pending would spin a client
+ * An unrecognised error is terminal: treating it as pending would spin a client
  * until its device code expired.
  * @param code {string} the provider's `error` field ("" when the exchange succeeded)
  * @return {string} one of the STATE_ constants
@@ -156,9 +147,7 @@ export func pollState(code as string) {
 
 /**
  * Join a configured base URL with a path, tolerating a trailing slash on the
- * base and supplying a default when the deployment set none. Self-hosted
- * instances differ from hosted ones only here, so getting it right once removes
- * a whole class of per-provider bug.
+ * base and supplying a default when the deployment set none.
  * @param baseUrl {string} the configured base ("" to use the default)
  * @param fallback {string} the module's default base
  * @param path {string} the path, beginning with "/"

@@ -5,21 +5,17 @@
 /**
  * The deployment's configuration, from a TOML file and the environment.
  *
- * **The environment wins.** A file is the readable, reviewable, version-
- * controllable statement of how a deployment is meant to run; the environment is
- * how one instance is varied or a secret is injected without editing a file into
- * an image. That ordering is the only one that lets both be true at once, and it
- * is what every container runtime assumes.
+ * The environment wins over the file, so one instance can be varied or given a
+ * secret without editing a file baked into an image.
  *
- * A field is overridden only when the environment **sets it to something**. An
+ * A field is overridden only when the environment sets it to something: an
  * unset variable and an empty one both mean "not specified", so a stray empty
- * value in a compose file cannot silently blank a configured setting. The one
- * exception is a boolean, where an explicit `0` has to be able to turn something
- * off; those parse the value rather than testing for emptiness.
+ * value in a compose file cannot blank a configured setting. Booleans are the
+ * exception and parse the value, so an explicit `0` can turn something off.
  *
- * Everything here is pure: `applyToml` takes the file's text and `applyEnv` takes
- * a map, so the precedence rules have tests rather than requiring a process with
- * a particular environment. `bin/serve` does the reading.
+ * Everything here is pure except `readEnv`: `applyToml` takes the file's text and
+ * `applyEnv` takes a map, so the precedence rules are testable. `bin/serve` does
+ * the reading.
  * @module config
  * @example
  * import "./config.j" as config;
@@ -40,17 +36,15 @@ use maps;
 export def const DEFAULT_PATH as string init "config.toml";
 export def const PATH_ENV as string init "REGISTRY_CONFIG";
 
-# The prefix every variable carries, and the one this project used before the
-# registry was split out of the jvc repository. `jvc` is the *client*; naming the
-# server's variables after it meant a host running both had one `JVC_DB` meaning
-# two different databases.
+# The prefix every variable carries, and the legacy one. `JVC_` is the client's
+# prefix, so a host running both had one `JVC_DB` naming two databases.
 export def const PREFIX as string init "REGISTRY_";
 export def const LEGACY_PREFIX as string init "JVC_";
 
 # Let's Encrypt's production and staging directories. Staging issues untrusted
-# certificates with far higher rate limits, which is what a first run should use:
-# the production limits are per registered domain per week, and a misconfigured
-# deployment can exhaust them long before anybody notices.
+# certificates with far higher rate limits, which suits a first run: production
+# limits are per registered domain per week and a misconfigured deployment can
+# exhaust them.
 export def const LE_PRODUCTION as string init "https://acme-v02.api.letsencrypt.org/directory";
 export def const LE_STAGING as string init "https://acme-staging-v02.api.letsencrypt.org/directory";
 
@@ -143,10 +137,8 @@ export def struct Config {
 };
 
 /**
- * The configuration of a registry nobody has configured: a read-only,
- * plain-HTTP, console-logging instance. Every default is the *narrow* choice -
- * no TLS, no logins, no trusted publishing - so an unconfigured deployment
- * cannot accidentally serve more than its operator asked for.
+ * The unconfigured registry: read-only, plain HTTP, console logging. Every
+ * default is the narrow choice (no TLS, no logins, no trusted publishing).
  * @return {Config} the defaults
  */
 export func defaults() {
@@ -191,9 +183,8 @@ export func defaults() {
     };
 }
 
-# trimSlash drops a trailing slash, so a URL configured either way advertises one
-# form. A client records this string to identify where a deck came from, and two
-# spellings of one registry would read as two registries.
+# trimSlash drops trailing slashes. A client records this URL as a deck's origin,
+# so two spellings of one registry would read as two registries.
 func trimSlash(url as string) {
     def out as string init strings.trim($url);
     while (strings.endsWith($out, "/")) {
@@ -252,11 +243,8 @@ func names(doc as toml.Value, pointer as string, fallback as list of string) {
 }
 
 /**
- * Overlay a TOML document onto a configuration.
- *
- * An unparseable file throws rather than being ignored. A deployment whose
- * configuration silently failed to load is worse than one that refuses to start:
- * the first serves the wrong thing, the second tells somebody.
+ * Overlay a TOML document onto a configuration. An unparseable file throws, so a
+ * deployment refuses to start instead of serving with the wrong settings.
  * @param base {Config} what to overlay onto, usually `defaults()`
  * @param text {string} the file's contents ("" leaves the base untouched)
  * @return {Config} the merged configuration
@@ -307,9 +295,7 @@ export func applyToml(base as Config, text as string) {
     return $out;
 }
 
-# envStr overrides only when the variable is set to something. An unset variable
-# and an empty one both mean "not specified", so an empty value left in a compose
-# file cannot blank a setting the file configured.
+# envStr overrides only when the variable is set to something non-empty.
 func envStr(env as map of string to string, key as string, fallback as string) {
     if (not maps.has($env, $key)) {
         return $fallback;
@@ -323,12 +309,8 @@ func envStr(env as map of string to string, key as string, fallback as string) {
 
 /**
  * Read a boolean from an environment value. Anything in `1 true yes on` is true,
- * anything in `0 false no off` is false, and anything else leaves the fallback.
- *
- * A boolean cannot use the empty-means-unset rule, because `0` has to be able to
- * turn something off that the file turned on. So it parses, and an unrecognised
- * value is treated as not specified rather than as false - misreading "maybe" as
- * "no" would quietly disable TLS.
+ * anything in `0 false no off` is false, and anything else leaves the fallback,
+ * since reading "maybe" as "no" would disable TLS.
  * @param env {map of string to string} the environment
  * @param key {string} the variable
  * @param fallback {bool} what to keep when it is unset or unrecognised
@@ -422,7 +404,7 @@ export func applyEnv(base as Config, env as map of string to string) {
 }
 
 # envInt reads a whole number from the environment. Unset, empty, or not a number
-# leaves the configured value in place, like every other setting here.
+# leaves the configured value in place.
 func envInt(env as map of string to string, name as string, fallback as int) {
     if (not maps.has($env, $name)) {
         return $fallback;
@@ -439,12 +421,9 @@ func envInt(env as map of string to string, name as string, fallback as int) {
 }
 
 /**
- * The pre-rename name of a variable, or "" when there is none.
- *
- * Kept because a rename that merely stops reading the old name is worse than no
- * rename: an unset variable falls back to a *default*, so an already-configured
- * deployment would silently start serving a different database rather than
- * failing loudly. The old name still works and says it is deprecated.
+ * The pre-rename name of a variable, or "" when there is none. The old names
+ * are still read, with a warning, because an unset variable falls back to a
+ * default and a configured deployment would start serving a different database.
  * @param name {string} the current variable name
  * @return {string} the deprecated equivalent, or "" if the name is not ours
  */
@@ -461,11 +440,8 @@ export func legacyNameOf(name as string) {
 export def const MIN_TOKEN_KEY as int init 32;
 
 /**
- * Why this configuration cannot be served, or "" when it can.
- *
- * Checked once at boot rather than discovered at the first request. A registry
- * that starts and then fails every HTTPS connection because nobody named a
- * domain is worse than one that refuses to start and says which key is missing.
+ * Why this configuration cannot be served, or "" when it can. Checked once at
+ * boot, so a missing setting stops the server instead of failing requests.
  * @param cfg {Config} the resolved configuration
  * @return {string} the complaint, or "" when the configuration is usable
  */
@@ -477,8 +453,7 @@ export func problem(cfg as Config) {
         return "respondTimeout must be at least 1 second";
     }
     # The key signs every bearer token and seals every stored forge credential,
-    # so a short one is a guessable one. 32 characters is what the documented
-    # `openssl rand -hex 32` gives with room to spare (it gives 64).
+    # so a short one is guessable. The documented `openssl rand -hex 32` gives 64.
     if (not ($cfg.tokenKey == "") and len($cfg.tokenKey) < MIN_TOKEN_KEY) {
         return "tokenKey must be at least " + convert.toString(MIN_TOKEN_KEY) +
             " characters; generate one with: openssl rand -hex 32";
@@ -508,12 +483,12 @@ export func problem(cfg as Config) {
  * (specification 7.1, route A), resolved from the configuration.
  *
  * - `login`: the identity provider's token, kept from the caller's own login,
- *   asks the forge. Only possible when identity and forge are **one service**,
+ *   asks the forge. Only possible when identity and forge are one service,
  *   since otherwise the forge would not accept that token (12.5).
  * - `service`: the registry's own forge token asks the forge about the caller,
- *   by username. For a deployment where identity and forge are different
- *   services sharing one user directory, so a username means the same account
- *   on both - which is the operator's assertion to make, not something checked.
+ *   by username. For identity and forge as different services sharing one user
+ *   directory; that a username is the same account on both is the operator's
+ *   assertion and is not checked.
  *
  * Unset, it is `login` when identity and forge are the same service and
  * `service` otherwise.
@@ -532,10 +507,9 @@ export func sourceAuthorityOf(cfg as Config) {
 }
 
 # sameService reports whether the identity provider and the forge are one
-# service, which is when a token from the login is one the forge accepts. Forgejo
-# logs in through the gitea identity module, so the two names are one family;
-# self-hosted instances must also share a base URL, since two Gitea servers are
-# two services.
+# service, so the forge accepts a login token. Forgejo logs in through the gitea
+# identity module, so the two names are one family; self-hosted instances must
+# also share a base URL.
 func sameService(cfg as Config) {
     def forgeFamily as string init strings.lower($cfg.forge);
     if ($forgeFamily == "forgejo") {
@@ -556,8 +530,8 @@ func rootOf(url as string) {
     return $out;
 }
 
-# authorityProblem refuses a source-authority setting that cannot work. It only
-# matters once logins are on, since without them nothing can publish.
+# authorityProblem refuses a source-authority setting that cannot work, once
+# logins are on.
 func authorityProblem(cfg as Config) {
     def mode as string init sourceAuthorityOf($cfg);
     if (not ($mode == "login" or $mode == "service")) {
@@ -579,9 +553,8 @@ func authorityProblem(cfg as Config) {
 }
 
 /**
- * Is this directory URL the CA's staging endpoint? Used to say so at boot,
- * because a staging certificate is untrusted and the resulting browser warning
- * is otherwise a confusing way to find out.
+ * Whether this directory URL is the CA's staging endpoint, so boot can warn that
+ * its certificates are untrusted.
  * @param directory {string} the configured directory URL
  * @return {bool} true when it looks like a staging endpoint
  */
@@ -590,14 +563,9 @@ export func isStaging(directory as string) {
 }
 
 /**
- * The address rendered as a URL for the boot banner.
- *
- * A listen address is a host and a port, and the host half is routinely empty:
- * `:8080` means every interface. Only in that case does a name have to be
- * invented to make a clickable URL, and `localhost` is the right invention,
- * because the person reading the banner is at the machine. When the address
- * already carries a host, prefixing one produces `localhost127.0.0.1:8080` -
- * not a URL, and misleading about what the server is bound to.
+ * The address rendered as a URL for the boot banner. An address with no host
+ * (`:8080`, every interface) is shown as `localhost`; one with a host is shown
+ * as is.
  * @param scheme {string} "http" or "https"
  * @param addr {string} the listen address
  * @return {string} a URL to print
@@ -611,9 +579,8 @@ export func displayUrl(scheme as string, addr as string) {
 
 # secretFile reads the file a `*_FILE` variable points at, trimmed of the
 # trailing newline an editor or `docker secret create` leaves behind. An unset
-# variable or an unreadable file yields "", which reads as "not configured"
-# rather than as an empty secret - a registry that silently signed tokens with an
-# empty key would accept forged ones.
+# variable or an unreadable file yields "", meaning "not configured", since an
+# empty signing key would accept forged tokens.
 func secretFile(name as string) {
     def path as string init strings.trim(os.getEnv($name));
     if ($path == "") {
@@ -630,8 +597,8 @@ func secretFile(name as string) {
 /**
  * What reading the environment produced.
  * @field values {map of string to string} the variables that were set
- * @field deprecated {list of string} names found only under the old prefix, for
- *     the caller to warn about
+ * @field deprecated {list of string} one `OLD (use NEW)` entry per variable found
+ *     only under its old name, for the caller to warn about
  */
 export def struct EnvRead {
     values as map of string to string,
@@ -639,12 +606,8 @@ export def struct EnvRead {
 };
 
 /**
- * Read the named variables, falling back to their pre-rename names.
- *
- * The one impure function here. It is in this module rather than in each entry
- * point so the fallback exists in exactly one place: three programs quietly
- * disagreeing about whether the old names still work is how a deployment ends up
- * half-migrated.
+ * Read the named variables, falling back to their pre-rename names. Impure. It
+ * lives here so every entry point applies the same fallback.
  * @param names {list of string} the current variable names to read
  * @return {EnvRead} the values, and which of them came from a deprecated name
  */
@@ -657,11 +620,9 @@ export func readEnv(names as list of string) {
             $values[$name] = $value;
             continue;
         }
-        # `NAME_FILE` names a file to read the value out of, which is how an
-        # orchestrator hands over a secret: Docker Swarm and Kubernetes both
-        # mount secrets as files, and neither can put one into the environment
-        # without it also appearing in `docker inspect` and every child process.
-        # A secret in a file is readable by this process and nothing else.
+        # `NAME_FILE` names a file holding the value. Docker Swarm and Kubernetes
+        # mount secrets as files; in the environment a secret would also appear
+        # in `docker inspect` and every child process.
         def fromFile as string init secretFile($name + "_FILE");
         if (not ($fromFile == "")) {
             $values[$name] = $fromFile;

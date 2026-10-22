@@ -6,9 +6,7 @@
 #
 #     jennifer test src/scopeview_test.j
 #
-# The decisions live in scope.j and are tested there. What is tested here is the
-# translation: which status a caller gets, and whether the answer tells them
-# something they can act on.
+# The decisions are tested in scope_test.j; these test the statuses and bodies.
 
 use testing;
 use json;
@@ -57,8 +55,7 @@ func testAClaimSucceedsUnderDerived() {
 }
 
 func testTheThreeRefusalsAreDistinguishable() {
-    # answering 403 to all of these tells a caller their credentials are wrong
-    # when the truth is a typo, a taken name, or a policy that never allows it
+    # a typo, a taken name and a policy refusal each get their own status
     testing.assertEqual(claimStatus("@a--b is not a valid scope name"), 400);
     testing.assertEqual(claimStatus("@alice is already yours"), 409);
     testing.assertEqual(claimStatus("@x is claimed by another account; ..."), 409);
@@ -164,15 +161,13 @@ func testTheListingReportsOwnedAndReserved() {
 }
 
 func testTheListingDoesNotPublishAccountIds() {
-    # a login is on every deck page already; an account id is what ownership
-    # binds to, and a public list of them is a list of what an impersonator needs
+    # account ids are what ownership binds to; a public list helps an impersonator
     def out as ScopeReply init listScopes(owned());
     testing.assertFalse(strings.contains(json.encode($out.body), "1234567"));
 }
 
 func testACoOwnerCannotChangeTheCoOwners() {
-    # any co-owner could, and one compromised account could then plant others
-    # that outlived its own removal, or lock the rest out
+    # otherwise a compromised co-owner could plant accounts or lock the rest out
     def db as flatdb.DB init owners(owned(), alice(), "alice", "999", true, NOW).db;
     def bob as identity.Subject init stranger();
     $bob.id = "999";

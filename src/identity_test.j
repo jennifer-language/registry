@@ -13,8 +13,7 @@ func testSuccessIsOk() {
 }
 
 func testWaitingStatesAreDistinguished() {
-    # both mean keep waiting, but slow_down also means widen the interval, which
-    # the registry passes on as a 429 rather than another 202
+    # slow_down also means widen the interval, answered with 429 instead of 202
     testing.assertEqual(pollState("authorization_pending"), STATE_PENDING);
     testing.assertEqual(pollState("slow_down"), STATE_SLOWDOWN);
 }
@@ -25,8 +24,7 @@ func testTerminalStatesAreDistinguished() {
 }
 
 func testAnUnrecognisedErrorIsTerminal() {
-    # waiting cannot recover from an error we do not know, and treating it as
-    # pending would spin a client until its device code expired
+    # treating it as pending would spin a client until its device code expired
     testing.assertEqual(pollState("incorrect_client_credentials"), STATE_DENIED);
     testing.assertEqual(pollState("something_added_later"), STATE_DENIED);
 }
@@ -42,8 +40,6 @@ func testEndpointPrefersTheConfiguredBase() {
 }
 
 func testEndpointToleratesATrailingSlash() {
-    # self-hosted instances differ only here, so this is where a whole class of
-    # per-provider bug would otherwise live
     testing.assertEqual(
         endpoint("https://git.example.test/", "https://x", "/login"),
         "https://git.example.test/login");

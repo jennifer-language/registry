@@ -2,20 +2,16 @@
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
 # pragma-jennifer-version: >=0.25.0
 #
-# White-box tests for identity.j. Run with:
+# White-box tests for token.j. Run with:
 #
-#     jennifer test src/identity_test.j
-#
-# `now` is a parameter everywhere in identity.j, so expiry is tested by moving
-# the clock rather than by sleeping.
+#     jennifer test src/token_test.j
 
 use testing;
 use convert;
 use strings;
 
-# A token carries a real `exp`, and jwt.verify enforces it against the real
-# clock, so a token that must verify has to be minted around now. Only the
-# expiry test uses a fixed past instant.
+# jwt.verify checks `exp` against the real clock, so tokens that must verify
+# are minted around now; only the expiry test uses this past instant.
 def const PAST as int init 1700000000;
 def const ACCOUNT as int init 1234567;
 
@@ -48,8 +44,7 @@ func testTokenIsACompactJwt() {
 }
 
 func testSubjectIsTheAccountIdNotTheLogin() {
-    # ownership binds to the numeric id, because a login can be re-registered by
-    # somebody else after a rename
+    # a login can be re-registered after a rename, so ownership binds to the id
     def a as string init mint(key(), ACCOUNT, "alice", {}, 0, 3600, nowish());
     def b as string init mint(key(), ACCOUNT, "alice-renamed", {}, 0, 3600, nowish());
     testing.assertEqual(verify(key(), $a).accountId, verify(key(), $b).accountId);
@@ -93,8 +88,7 @@ func testExpiryIsEnforced() {
     testing.assertTrue($threw);
 }
 
-# throwsOnNoExpiry signs, with the right key, a token that never expires, the
-# kind a bug in minting or a leaked key would produce.
+# throwsOnNoExpiry signs, with the right key, a token that never expires.
 func throwsOnNoExpiry() {
     def claims as json.Value init json.map();
     $claims = json.set($claims, "/sub", convert.toString(ACCOUNT));

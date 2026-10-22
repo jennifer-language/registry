@@ -10,9 +10,8 @@
 # registry, so there is nothing to seed.
 #
 # The same directory holds registry.log, which both the server and deckadmin
-# append to. Read it on the host with `tail -f data/registry.log`; that is the
-# one view showing publishes and requests together. Nothing rotates it, so a
-# long-lived deployment should point logrotate at it.
+# append to; `tail -f data/registry.log` on the host shows publishes and
+# requests together. Nothing rotates it; point logrotate at it.
 
 services:
   jvc:
@@ -20,55 +19,53 @@ services:
       context: .
       args:
         # Who the server runs as inside the container. ./data is bind-mounted
-        # below, so the host keeps its own ownership and the container's uid has
-        # to match it or every write is denied. Defaults suit a rootless setup;
-        # override for any other host user:
+        # below and keeps host ownership, so the container's uid must match it
+        # or every write is denied. Defaults suit a rootless setup; override for
+        # any other host user:
         #
         #     REGISTRY_UID=$(id -u) REGISTRY_GID=$(id -g) docker compose up -d --build
         #
         # Not named UID/GID because bash makes UID readonly and does not export
-        # it, so ${UID} here would silently resolve to nothing.
+        # it, so ${UID} here would resolve to nothing.
         UID: ${REGISTRY_UID:-1000}
         GID: ${REGISTRY_GID:-1000}
     image: jvc-repository:latest
     container_name: jvc-repository
     ports:
       - "8080:8080"
-      # Uncomment with TLS enabled. Port 80 is not optional for the HTTP-01
-      # challenge: it is the port the CA connects to, and it must reach the
-      # plain listener rather than a redirect.
+      # Uncomment with TLS enabled. The HTTP-01 challenge requires port 80: the
+      # CA connects there, and it must reach the plain listener, not a redirect.
       # - "80:8080"
       # - "443:8443"
     environment:
       REGISTRY_ADDR: ":8080"
       REGISTRY_DB: "/app/data/decks.json"
 
-      # The operational log. It goes to the container's stdout (so `docker
-      # compose logs` shows it) *and* to a file beside the database, which is
-      # the only place both this server and a `deckadmin` run through `docker
-      # compose exec` can write. That shared file is the point: the server never
-      # sees a publish, and deckadmin never sees a request, so neither log alone
-      # says what happened to this registry.
+      # The operational log. It goes to the container's stdout (`docker compose
+      # logs`) and to a file beside the database, the one place both this
+      # server and a `deckadmin` run through `docker compose exec` can write.
+      # The server never sees a publish and deckadmin never sees a request, so
+      # only the shared file shows both.
       REGISTRY_LOG: "/app/data/registry.log"
 
-      # debug adds nothing by itself here; the access log has its own switch
-      # below, because it is wanted at info far more often than the rest of debug.
+      # debug adds nothing here by itself; the access log has its own switch
+      # below, since it is wanted at info far more often than the rest of debug.
       REGISTRY_LOG_LEVEL: "info"
 
-      # logfmt for the file, which something else will parse later. The console
-      # is always human-readable text regardless. Set "json" to ship it onward.
+      # logfmt for the file, for later parsing. The console is always
+      # human-readable text. Set "json" to ship it onward.
       REGISTRY_LOG_FORMAT: "logfmt"
 
       # One line per request. Off by default: the healthcheck below polls every
-      # 30s forever, and in an idle deployment that is the entire log. Turn it on
-      # while debugging a client, or when something else rotates the file.
+      # 30s, and in an idle deployment that is the entire log. Turn it on while
+      # debugging a client, or when something else rotates the file.
       REGISTRY_LOG_REQUESTS: "0"
 
-      # The token exchange, off unless BOTH of the next two are non-empty. They
-      # come from .env, which is gitignored; without it they substitute to empty
-      # and the registry stays read-only, which is the right default and needs no
-      # edit here. Register the OAuth app at github.com/settings/applications/new,
-      # enable its device flow, then `cp .env.example .env` and fill it in.
+      # The token exchange, off unless both of the next two are non-empty. They
+      # come from .env (gitignored); without it they substitute to empty and the
+      # registry stays read-only. Register the OAuth app at
+      # github.com/settings/applications/new, enable its device flow, then
+      # `cp .env.example .env` and fill it in.
       #
       # No client secret: the device grant is a public-client flow and sends
       # none. REGISTRY_IDENTITY_SECRET exists only for providers that require one.
@@ -78,21 +75,21 @@ services:
 
       # Which forge a publish reads repositories from: resolving a tag to a
       # commit and reading deck.toml at it. Independent of identity above; the
-      # two only coincide on github.com.
+      # two coincide only on github.com.
       REGISTRY_FORGE: "github"
 
-      # Publishing from CI with no stored credential (specification 8.9). Set
-      # the audience to something specific to this registry - its hostname is a
-      # good choice - and a CI job can publish by presenting the identity token
-      # its runner mints, with no secret in the pipeline at all. Not confidential:
-      # it is advertised in the discovery document, because a job has to name it
-      # when minting the token. Unset leaves trusted publishing off.
+      # Publishing from CI with no stored credential (specification 8.9). With
+      # the audience set to something specific to this registry (its hostname,
+      # for example), a CI job publishes by presenting the identity token its
+      # runner mints, with no secret in the pipeline. Not confidential: the
+      # discovery document advertises it, since a job names it when minting the
+      # token. Unset leaves trusted publishing off.
       REGISTRY_TRUSTPUB_AUDIENCE: "${REGISTRY_TRUSTPUB_AUDIENCE:-}"
       REGISTRY_TRUSTPUB_PROVIDER: "github-actions"
       # HTTPS with a Let's Encrypt certificate, stored in the data volume beside
-      # the database. Off by default. The plain listener must be reachable from
-      # the internet on port 80 for the HTTP-01 challenge, which is why the port
-      # mapping below publishes 80 rather than only 8080 when TLS is on.
+      # the database. Off by default. The HTTP-01 challenge needs the plain
+      # listener reachable from the internet on port 80, so with TLS on uncomment
+      # the port mappings above to publish 80 and 443 as well as 8080.
       #
       # Point REGISTRY_ACME_DIRECTORY at staging until the DNS and firewall are right;
       # production rate limits are per domain per week.
@@ -104,8 +101,8 @@ services:
       REGISTRY_TLS_ADDR: ":8443"
     volumes:
       - ./data:/app/data
-      # A config.toml, if the deployment has one. Everything it sets can also be
-      # set above, and the environment wins, so this is optional.
+      # Optional config.toml. Everything it sets can also be set above, and the
+      # environment wins.
       # - ./config.toml:/app/config.toml:ro
     healthcheck:
       # The interpreter image has no curl; the probe is a Jennifer program.

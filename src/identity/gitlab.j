@@ -4,19 +4,17 @@
 # pragma-jennifer-capability: net
 
 /**
- * GitLab as an identity provider, hosted or self-hosted: the two differ only in
- * `baseUrl`, which is why there is one module rather than two
- * (specification 12.3).
+ * GitLab as an identity provider, hosted or self-hosted; the two differ only in
+ * `baseUrl` (specification 12.3).
  *
  * GitLab speaks standard OAuth 2.0, so the device-grant vocabulary is the one in
- * `identity.j`. Two things differ from the forge modules elsewhere: the user
- * endpoint is `/api/v4/user`, and GitLab calls the username `username` rather
- * than `login`.
+ * `identity.j`. The user endpoint is `/api/v4/user`, and the username field is
+ * `username`, not `login`.
  *
- * > **Unverified.** The device-grant endpoint path here is taken from GitLab's
- * > documented OAuth surface and has **not** been exercised against a live
- * > instance. Confirm it, and confirm that the instance has the device grant
- * > enabled at all, before relying on this module; `authcode` is the fallback.
+ * > **Unverified.** The device-grant endpoint path is taken from GitLab's
+ * > documentation and has not been exercised against a live instance. Confirm
+ * > it, and that the instance has the device grant enabled, before relying on
+ * > this module; `authcode` is the fallback.
  * @module gitlab
  * @example
  * import "./gitlab.j" as gitlab;
@@ -34,8 +32,7 @@ import "../identity.j" as identity;
 def const TIMEOUT_MS as int init 10000;
 def const MAX_BYTES as int init 65536;
 
-# Gitea's default scope set. `read:user` is the only one the registry needs;
-# organisation reads come later, with the org surface.
+# The hosted instance, used when `baseUrl` is unset.
 def const HOSTED_BASE as string init "https://gitlab.com";
 
 # `read_user` is GitLab's spelling, with an underscore.
@@ -59,8 +56,7 @@ func optInt(doc as json.Value, field as string, fallback as int) {
     return $fallback;
 }
 
-# baseFor falls back to gitlab.com, which unlike Gitea is a real hosted service
-# a deployment may legitimately mean.
+# baseFor falls back to gitlab.com, a hosted service a deployment may mean.
 func baseFor(cfg as identity.Config) {
     if (strings.trim($cfg.baseUrl) == "") {
         return HOSTED_BASE;
@@ -244,8 +240,8 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
 }
 
 # membershipsOf reports no organisations. Organisation scopes are implemented for
-# GitHub only (8.7), and an empty answer makes an organisation scope unwritable
-# through this provider rather than writable by anybody.
+# GitHub only (8.7); an empty answer makes an organisation scope unwritable
+# through this provider.
 func membershipsOf(cfg as identity.Config, accessToken as string) {
     def none as map of string to string init {};
     return $none;

@@ -4,28 +4,24 @@
 # pragma-jennifer-capability: net
 
 /**
- * A generic OpenID Connect identity provider, which is the one that matters
- * most: it covers **Authelia**, Keycloak, Dex, and anything else standards
- * compliant, without a module of its own. A bespoke provider is worth writing
- * only where a service deviates from the standard or offers something extra
+ * A generic OpenID Connect identity provider, covering Authelia, Keycloak, Dex
+ * and any other standards-compliant service. A bespoke provider is needed only
+ * where a service deviates from the standard or offers something extra
  * (specification 12.2).
  *
- * Endpoints are read from the provider's **discovery document** at
- * `/.well-known/openid-configuration`, so a deployment configures a `baseUrl`
- * and nothing else. That is the whole reason to prefer OIDC over a hand-written
- * integration: the endpoints are self-describing.
+ * Endpoints are read from the discovery document at
+ * `/.well-known/openid-configuration`, so a deployment configures only a
+ * `baseUrl`.
  *
- * **The subject is the `sub` claim**, which is an opaque string rather than a
- * number, and is exactly what specification 8.1 means by a stable subject
- * identifier. The username, where the provider supplies one, comes from
+ * The subject is the `sub` claim, an opaque string and the stable subject
+ * identifier of specification 8.1. The username, where supplied, comes from
  * `preferred_username` and is a display label only.
  *
  * > **Flow support varies.** The device grant is optional in OIDC. Authelia
- * > appears to implement it, since it carries a `device_code` lifespan setting,
- * > but its documentation does not enumerate grant types; other providers may
- * > offer only authorization code. This module advertises `device` when the
- * > discovery document lists the device endpoint and `authcode` otherwise, so
- * > the decision is taken from the provider rather than assumed.
+ * > appears to implement it (it has a `device_code` lifespan setting), but its
+ * > documentation does not enumerate grant types; other providers may offer only
+ * > authorization code. This module advertises `device` when the discovery
+ * > document lists the device endpoint and `authcode` otherwise.
  * @module oidc
  * @example
  * import "./oidc.j" as oidc;
@@ -91,8 +87,7 @@ export func discoveryUrl(cfg as identity.Config) {
 }
 
 /**
- * Read one endpoint out of a fetched OIDC discovery document. Pure, so the
- * mapping is testable against a recorded document rather than a live provider.
+ * Read one endpoint out of a fetched OIDC discovery document. Pure.
  * @param doc {json.Value} the decoded discovery document
  * @param field {string} the metadata field, e.g. `token_endpoint`
  * @return {string} the URL, or "" when the provider does not advertise it
@@ -107,9 +102,7 @@ export func endpointFrom(doc as json.Value, field as string) {
 /**
  * Which flow a provider supports, from its discovery document. Pure.
  *
- * `device` when the device endpoint is advertised, `authcode` otherwise. Taking
- * this from the document rather than assuming it is what lets one module serve
- * providers with different capabilities.
+ * `device` when the device endpoint is advertised, `authcode` otherwise.
  * @param doc {json.Value} the decoded discovery document
  * @return {string} "device" or "authcode"
  */
@@ -123,8 +116,8 @@ export func flowFrom(doc as json.Value) {
 /**
  * Build a `Subject` from an OIDC `userinfo` payload. Pure.
  *
- * The `sub` claim is required by the standard, and is the only field this
- * registry treats as authoritative.
+ * The `sub` claim is required by the standard and is the only authoritative
+ * field.
  * @param cfg {identity.Config} the provider configuration, for its name
  * @param doc {json.Value} the decoded userinfo response
  * @return {identity.Subject} the caller
@@ -302,8 +295,8 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
 }
 
 # membershipsOf reports no organisations. Organisation scopes are implemented for
-# GitHub only (8.7), and an empty answer makes an organisation scope unwritable
-# through this provider rather than writable by anybody.
+# GitHub only (8.7); an empty answer makes an organisation scope unwritable
+# through this provider.
 func membershipsOf(cfg as identity.Config, accessToken as string) {
     def none as map of string to string init {};
     return $none;

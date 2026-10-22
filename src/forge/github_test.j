@@ -6,9 +6,8 @@
 #
 #     jennifer test src/forge/github_test.j
 #
-# The network calls are not covered: they need GitHub and a token. What is
-# covered is every decision made about a response, which is why the parsing is
-# separated from the request in the first place.
+# The network calls are not covered (they need GitHub and a token); every
+# decision made about a response is.
 
 use testing;
 use json;
@@ -50,8 +49,7 @@ func testNoPushIsARefusalNotAnUnknown() {
 }
 
 func testAMissingPermissionsBlockIsUnknown() {
-    # the caller may simply be unauthenticated; that is not a refusal, and 7.1
-    # requires it to be treated as unverified rather than as granted
+    # an unauthenticated caller is unverified (7.1), not refused or granted
     def p as forge.Permission init permissionFrom(doc('{"name":"deck"}'));
     testing.assertFalse($p.known);
     testing.assertFalse($p.push);

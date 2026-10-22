@@ -4,18 +4,13 @@
 # pragma-jennifer-capability: net
 
 /**
- * The token-exchange endpoints (specification 8.3), as pure data. Same shape as
- * `apiview` one layer along: each function maps a request to an `AuthReply` - a
- * `Reply` plus the store it wants persisted - with no dependency on the web
- * engine, so `bin/serve` stays a handler that reads a body and sends a reply.
+ * The token-exchange endpoints (specification 8.4), as pure data. Each function
+ * maps a request to an `AuthReply` (a reply plus the store to persist) with no
+ * dependency on the web engine.
  *
- * Only two lines here touch the network, both in `token`: the poll to GitHub and
- * the account read. Everything else - parsing, the status mapping, minting,
- * rotating, refreshing - is a pure function of its arguments and the store, and
- * is covered by the overlay.
- *
- * `now` is a parameter everywhere rather than a clock read, so a test can place
- * a token either side of its expiry.
+ * Only the provider calls in `device` and `login` touch the network; the rest is a pure
+ * function of its arguments and the store. `now` is a parameter so tests can
+ * place a token either side of its expiry.
  * @module authview
  * @example
  * import "./authview.j" as authview;
@@ -35,15 +30,12 @@ import "./forgecred.j" as forgecred;
 import "./identity.j" as identity;
 
 /**
- * What the registry needs in order to issue tokens at all. An empty client id or
- * signing key disables the whole surface: the routes are not served and the
- * discovery document advertises no `auth` object, which is what tells a client
- * this registry accepts no logins.
+ * The configuration for issuing tokens. An empty client id or signing key
+ * disables the surface: the routes are not served and the discovery document
+ * advertises no `auth` object.
  *
- * **The provider arrives as a struct of `func` values, not as a name.** This
- * module never learns which identity provider it is talking to, so adding one is
- * a new module under `identity/` and a line in the entry program, with nothing
- * to change here (specification 12.2).
+ * The provider is a struct of `func` values, so this module does not know which
+ * identity provider it calls (specification 12.2).
  * @field provider {identity.Provider} the identity provider's vtable
  * @field providerConfig {identity.Config} where that provider lives and its OAuth app
  * @field signingKey {bytes} the HMAC secret the bearer token is signed with
@@ -64,9 +56,7 @@ export def struct Config {
 };
 
 /**
- * A reply plus the store it wants persisted. Issuing a token records a refresh
- * token, and refreshing rotates one, so these endpoints write; the caller saves
- * when `changed` is set.
+ * A reply plus the store to persist. The caller saves when `changed` is set.
  * @field status {int} the HTTP status code
  * @field body {json.Value} the JSON response body
  * @field db {flatdb.DB} the resulting store
@@ -94,9 +84,8 @@ func pending(db as flatdb.DB) {
 }
 
 /**
- * Report whether a configuration can issue tokens. Both halves are required:
- * without a client id there is no OAuth application to run the flow against,
- * and without a signing key nothing could be verified afterwards.
+ * Report whether a configuration can issue tokens: it needs both a client id and
+ * a signing key.
  * @param cfg {Config} the configuration to test
  * @return {bool} true when the auth surface should be served
  */
@@ -106,8 +95,7 @@ export func enabled(cfg as Config) {
 
 /**
  * Read a required string field from a request body. A malformed body and a
- * missing field are the same answer to a client - the request was not usable -
- * so both yield "".
+ * missing field both yield "".
  * @param body {string} the raw request body
  * @param field {string} the field name
  * @return {string} the value, or "" when absent or unparseable
@@ -125,10 +113,10 @@ export func bodyField(body as string, field as string) {
 }
 
 /**
- * Map a poll state onto the reply a client polls against. The outcome rides on
- * the **status code** so a client can branch without reading prose.
+ * Map a poll state onto the reply a client polls against. The outcome is in the
+ * status code, so a client can branch without reading the message.
  * @param db {flatdb.DB} the store, returned untouched
- * @param state {string} a `github.Poll` state other than "ok"
+ * @param state {string} an `identity.Poll` state other than "ok"
  * @return {AuthReply} the reply for that state
  */
 export func stateReply(db as flatdb.DB, state as string) {
@@ -145,10 +133,8 @@ export func stateReply(db as flatdb.DB, state as string) {
 
 /**
  * Issue a bearer token and a refresh token for an account, recording the
- * refresh token by fingerprint and dropping any that have expired.
- *
- * This is where a login and a refresh converge, so both produce exactly the same
- * response shape and neither can drift.
+ * refresh token by fingerprint and dropping any that have expired. Login and
+ * refresh both answer through here, so their response shape is the same.
  * @param cfg {Config} the issuing configuration
  * @param db {flatdb.DB} the store to record the refresh token in
  * @param accountId {int} the numeric GitHub account id
@@ -200,20 +186,11 @@ export func issue(
 /**
  * The organisation logins a token carries, sorted.
  *
- * Reported back at login because the alternative is a silent shortfall. An
- * identity provider hands over the organisations it is *willing* to disclose,
- * not the ones the account belongs to: on GitHub an organisation that enforces
- * third-party application restrictions is simply absent from the response until
- * somebody approves this registry for it. The account looks like a non-member,
- * a claim under that scope is refused with a message about names not matching,
- * and nothing anywhere says which organisations were actually seen.
- *
- * So the token exchange answers with them. A client can print "you can claim:
- * ..." and the person recognises immediately that one of theirs is missing,
- * which turns a confusing refusal later into an obvious omission now. The
- * **logins** are returned and the ids are not, for the same reason `listScopes`
- * reports logins: an id is what ownership binds to, and a login is what a claim
- * is typed as.
+ * Returned at login because a provider discloses only the organisations it is
+ * willing to: on GitHub an organisation with third-party application
+ * restrictions is absent until it approves this registry, and the account then
+ * looks like a non-member. Showing the list lets a person spot the missing one.
+ * Logins are returned rather than ids because a claim is typed as a login.
  * @param orgs {map of string to string} folded login to provider id
  * @return {json.Value} the logins as a sorted JSON list
  */
@@ -226,8 +203,8 @@ export func orgNames(orgs as map of string to string) {
 }
 
 /**
- * `POST /auth/device` - begin a device authorization. The only outbound call is
- * to GitHub; nothing is stored, because nothing is decided yet.
+ * `POST /auth/device`: begin a device authorization. Calls the provider and
+ * stores nothing.
  * @param cfg {Config} the issuing configuration
  * @param db {flatdb.DB} the store, returned untouched
  * @return {AuthReply} a 200 carrying the codes to show the user
@@ -252,8 +229,8 @@ export func device(cfg as Config, db as flatdb.DB) {
 }
 
 /**
- * What the network half of a token exchange learned: either an early answer
- * (`ok` false, with `reply` ready to send), or the account it identified.
+ * The result of the network half of a token exchange: an early answer (`ok`
+ * false, `reply` ready to send) or the identified account.
  * @field ok {bool} true when the provider identified an account
  * @field reply {AuthReply} the answer to send when `ok` is false
  * @field accountId {int} the provider's numeric account id
@@ -271,9 +248,8 @@ export def struct Login {
     accessToken as string
 };
 
-# noStore is the store an early `Login` reply carries. It is empty, read-only,
-# and never saved (`changed` is false): the network half runs without the write
-# lock, so it must not hold, let alone hand back, a copy of the real registry.
+# noStore is the empty, never-saved store an early `Login` reply carries. The
+# network half runs without the write lock, so it must not hold the real registry.
 func noStore() {
     return flatdb.openString('{}');
 }
@@ -288,11 +264,9 @@ func early(reply as AuthReply) {
  * The network half of `POST /auth/token`: poll the provider with the device
  * code and, once approved, identify the account and read its memberships.
  *
- * Kept apart from `issueLogin` so the caller can make these calls **without
- * the registry write lock**. A poll arrives every few seconds per login and may
- * wait on several provider round trips; holding the lock across them would let
- * one slow provider, or anybody polling with a made-up code, stall every
- * publish on the server.
+ * Separate from `issueLogin` so these calls run without the write lock;
+ * holding it across them would let a slow provider, or anybody polling with a
+ * made-up code, stall every publish.
  * @param cfg {Config} the issuing configuration
  * @param body {string} the raw request body, carrying `deviceCode`
  * @return {Login} the identified account, or an early answer
@@ -325,14 +299,10 @@ export func login(cfg as Config, body as string) {
             "the provider could not identify the account: " +
                 $err.message));
     }
-    # The registry issues its own credential rather than handing the provider's
-    # around (specification 8.4). The provider token is passed on only so that
-    # `issueLogin` can keep it sealed where it is the one credential the forge
-    # accepts (7.1 route A); it is never part of a reply.
-    # Memberships are read here and nowhere else. The provider token is about to
-    # be discarded, so this is the only moment the registry can ask which
-    # organisations this account acts for (8.7). A provider that cannot answer
-    # returns none, which makes an organisation scope unwritable rather than
+    # The registry issues its own credential (specification 8.4); the provider
+    # token goes to `issueLogin` only to be kept sealed for 7.1 route A, never
+    # into a reply. Memberships are read only here (8.7). A provider that cannot
+    # answer returns none, so an organisation scope is unwritable rather than
     # writable by anybody.
     def orgs as map of string to string init {};
     try {
@@ -341,15 +311,10 @@ export func login(cfg as Config, body as string) {
         def none as map of string to string init {};
         $orgs = $none;
     }
-    # Tokens and refresh records carry the account id as an int, which holds for
-    # GitHub, GitLab and Gitea but not for OIDC, whose `sub` is an opaque string
-    # (a UUID on Keycloak and Authelia). Until the id is a string end to end,
-    # which changes stored records, such an account is refused plainly here
-    # instead of failing the request with an uncaught conversion error.
-    #
-    # The number must also read back as the same text: `convert.toInt` takes
-    # "07" and "+7" as 7, so two distinct OIDC subjects would become one account
-    # and share its scopes.
+    # Account ids are ints, but an OIDC `sub` is an opaque string (a UUID on
+    # Keycloak and Authelia); until ids are strings in the store, such an account
+    # is refused here. The number must also read back as the same text:
+    # `convert.toInt` takes "07" and "+7" as 7, which would merge two subjects.
     def accountId as int init accountIdOf($who.id);
     if ($accountId == 0) {
         return early(fail(
@@ -388,10 +353,9 @@ func accountIdOf(id as string) {
  * found, or pass its early answer through. No network call; the caller holds
  * the write lock and passes a store opened under it.
  *
- * Where `keepForgeToken` is set, the provider's token is recorded **sealed**
- * against the account, replacing any earlier one, so a later publish can ask
- * the forge whether this account may push (7.1 route A). It is the newest
- * credential the provider issued, and it goes when the account is revoked.
+ * With `keepForgeToken` set, the provider's token is stored sealed against the
+ * account, replacing any earlier one, so a publish can ask the forge whether
+ * the account may push (7.1 route A). Revoking the account drops it.
  * @param cfg {Config} the issuing configuration
  * @param db {flatdb.DB} the store to record the refresh token in
  * @param got {Login} what `login` returned
@@ -414,9 +378,9 @@ export func issueLogin(cfg as Config, db as flatdb.DB, got as Login, now as int)
 }
 
 /**
- * `POST /auth/token` - exchange an approved device code for a registry token.
- * Polled by the client until it resolves. `login` then `issueLogin`, for a
- * caller that does not need the lock out of the way of the network calls.
+ * `POST /auth/token`: exchange an approved device code for a registry token.
+ * `login` then `issueLogin`, for a caller that does not need the network calls
+ * outside the lock.
  * @param cfg {Config} the issuing configuration
  * @param db {flatdb.DB} the store to record the refresh token in
  * @param body {string} the raw request body, carrying `deviceCode`
@@ -430,23 +394,19 @@ export func token(cfg as Config, db as flatdb.DB, body as string, now as int) {
 /**
  * How long a login lasts however often it is refreshed, in seconds: 30 days.
  *
- * Without it a refresh chain never ended, and everything captured at login rode
- * along for as long as the client kept refreshing: the organisation memberships
- * an org scope is authorised by (a departed member kept publishing), and the
- * login a forge service account is asked about (a renamed account kept its old
- * name). Counted from `orgsCheckedAt`, which is the login time and which a
- * refresh never advances; a record from before that field reads as 0 and so
- * needs one fresh login.
+ * Bounds how long login-time data stays in use: org memberships (a departed
+ * member could keep publishing) and the login asked of a forge (a renamed
+ * account). Counted from `orgsCheckedAt`, which a refresh never advances; a
+ * record without that field reads as 0 and needs a fresh login.
  */
 export def const MAX_SESSION_SECONDS as int init 2592000;
 
 /**
- * `POST /auth/refresh` - exchange a refresh token for a new token pair.
+ * `POST /auth/refresh`: exchange a refresh token for a new token pair. No
+ * network call.
  *
- * The presented token is **rotated**: it is deleted before the replacement is
- * recorded, so a captured refresh token is spent the first time it is used and
- * the theft is visible as an unexpected logout rather than as silent, unbounded
- * access. No network call is involved.
+ * The presented token is deleted before its replacement is recorded, so a
+ * captured token works once and the theft shows as an unexpected logout.
  * @param cfg {Config} the issuing configuration
  * @param db {flatdb.DB} the store holding the refresh tokens
  * @param body {string} the raw request body, carrying `refreshToken`
@@ -482,17 +442,13 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int) 
         return AuthReply{status: $over.status, body: $over.body, db: $ended, changed: true};
     }
     def rotated as flatdb.DB init store.deleteRefresh($db, $print);
-    # A refresh reissues the memberships it was given and **does not advance
-    # `orgsCheckedAt`**. Refreshing proves possession of a refresh token, not
-    # continued membership of an organisation, and letting the timestamp move
-    # would make a stale membership renewable forever - which is exactly the
-    # failure a co-owner list has and organisation scopes exist to avoid.
+    # Keep `orgsCheckedAt`: a refresh proves possession of a token, not continued
+    # membership, so advancing it would make a stale membership renewable forever.
     return issue($cfg, $rotated, $rec.accountId, $rec.login, $rec.orgs, $rec.orgsCheckedAt, $now);
 }
 
 /**
- * Authenticate a request's `Authorization` header, for the write endpoints that
- * will come to need it.
+ * Authenticate a request's `Authorization` header.
  * @param cfg {Config} the issuing configuration
  * @param header {string} the raw `Authorization` header value
  * @return {token.Identity} the caller

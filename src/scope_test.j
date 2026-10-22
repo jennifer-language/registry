@@ -6,10 +6,8 @@
 #
 #     jennifer test src/scope_test.j
 #
-# This module carries the decisions section 8 is about, so the tests are written
-# against the properties rather than the implementation: a rename must not move a
-# scope, a released username must not inherit one, and a refusal must say which
-# of several causes applied.
+# The tests assert section 8's properties: a rename does not move a scope, a
+# released username does not inherit one, and a refusal names its cause.
 
 use testing;
 import "./policy/derived.j" as derived;
@@ -38,8 +36,7 @@ func alice() {
     };
 }
 
-# mallory holds the *same username* alice used to have, on a different account.
-# This is the case section 8.1 exists for.
+# mallory holds alice's former username on a different account (section 8.1).
 func mallory() {
     return identity.Subject{
         provider: "github",
@@ -150,8 +147,7 @@ func claimed() {
 }
 
 func testWhoeverTakesAReleasedUsernameDoesNotInheritTheScope() {
-    # the whole reason ownership binds to an id: mallory holds the username
-    # "alice" now, and derived policy would happily let them derive @alice
+    # ownership binds to an id: derived policy alone would let mallory take @alice
     def out as ClaimResult init claim(
         claimed(),
         derived.policy(),
@@ -209,8 +205,7 @@ func testSheMayAlsoClaimTheNewName() {
 # --- operator grants --------------------------------------------------------
 
 func testAGrantBypassesThePolicy() {
-    # what covers a name the provider does not have: the jennifer-language org
-    # cannot derive @jennifer, so an operator binds it
+    # the jennifer-language org cannot derive @jennifer, so an operator binds it
     def out as ClaimResult init grant(emptyDb(), "jennifer", "github", "42", "orgbot", NOW);
     testing.assertTrue($out.allowed);
     testing.assertTrue(store.ownsNamespace($out.db, "jennifer", "github", "42"));
@@ -316,8 +311,7 @@ func testMembershipOfAnotherOrgDoesNotHelp() {
 }
 
 func testWhoeverGrantedItGetsNothingPersonally() {
-    # the point of 8.7: the scope is the organisation's, not the claimant's, so
-    # an id that merely matches the caller is not ownership here
+    # 8.7: an org scope is the organisation's, so a matching caller id is not ownership
     def who as identity.Subject init identity.Subject{
         provider: "github",
         id: ORG_ID,
@@ -329,8 +323,7 @@ func testWhoeverGrantedItGetsNothingPersonally() {
 }
 
 func testAnOrgScopeIgnoresTheOwnerComparison() {
-    # a user scope would allow this caller; an org scope must not, or the kind
-    # would be decorative
+    # a user scope allows this caller; an org scope must not
     def userScope as flatdb.DB init grantAs(
         emptyDb(),
         "acme",
@@ -364,8 +357,7 @@ func testAnOrgOnAnotherProviderIsRefused() {
 }
 
 func testAUserScopeIsTheDefaultKind() {
-    # an unrecognised or absent kind must read as the narrower one, or a typo
-    # turns a personal scope into one a whole organisation can write to
+    # an unrecognised or absent kind reads as the narrower one
     def db as flatdb.DB init grant(emptyDb(), "acme", "github", "1234567", "alice", NOW).db;
     testing.assertEqual(store.getNamespace($db, "acme").kind, store.SCOPE_USER);
 }

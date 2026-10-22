@@ -3,30 +3,21 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * The policy interface: what a deployment permits, as opposed to what the
- * outside world reports.
+ * The policy interface: what a deployment permits.
  *
- * A deployment names three modules - an identity provider, a forge, and a policy
- * (specification 12.6). The first two talk to services. **A policy does not.**
- * It receives facts already gathered - the authenticated subject, the scope being
- * asked for, the outcome of the source-authority check - and answers allow or
- * deny. Two things follow, and both are the point: every decision about who may
- * publish what lands in one small auditable module, and the whole of it is
- * testable without a network.
+ * A deployment names an identity provider, a forge, and a policy (specification
+ * 12.6). A policy does no I/O: it receives facts already gathered (the subject,
+ * the requested scope, the source-authority outcome) and answers allow or deny,
+ * so every publishing decision sits in one auditable, network-free module.
  *
- * The structs live here rather than in each policy module because a Jennifer
- * struct type is identified by `(module, name)`: three modules each declaring
- * their own `Policy` would declare three incompatible types, and the core could
- * not hold one without knowing which it had.
+ * The structs live here because a struct type is identified by
+ * `(module, name)`: a `Policy` declared in each policy module would be three
+ * incompatible types. For the same reason the subject is `identity.Subject`,
+ * not redeclared.
  *
- * For that same reason the **subject comes from `identity.j`** and is not
- * redeclared here: it is the value an identity provider produced, and a second
- * declaration of the same shape would be a different type that no provider
- * could satisfy.
- *
- * A policy **may only subtract**. It can refuse a claim this document would
- * allow; it can never permit a name outside the naming grammar, because that
- * would emit records a conforming client cannot install.
+ * A policy may only subtract. It can refuse a claim the specification allows,
+ * never permit a name outside the naming grammar, since a conforming client
+ * could not install the record.
  * @module policy
  * @example
  * import "./policy/derived.j" as derived;
@@ -37,9 +28,8 @@
 use strings;
 
 /**
- * An answer, with the reason it was reached. A refusal carries its own
- * explanation because the specification requires refusals to say which of
- * several possible causes applied, rather than returning a bare 403.
+ * An answer, with its reason. The specification requires a refusal to name its
+ * cause.
  * @field allowed {bool} whether the action is permitted
  * @field reason {string} why, phrased for the person who will read it
  */
@@ -54,10 +44,12 @@ export def struct Decision {
  * @field mayClaim {func} `func(identity.Subject, scope, reserved) -> Decision`:
  *     may this subject self-claim this scope? Operator grants skip this.
  * @field nameOk {func} `func(scope, deck) -> Decision`: does this deployment
- *     accept this name? May narrow the grammar, never widen it.
+ *     accept this name? May narrow the grammar, never widen it. Not consulted
+ *     by any caller yet.
  * @field sourceStance {func} `func() -> string`: "verify" to refuse a publish
  *     whose source authority cannot be established, "record" to accept it and
- *     mark the source unverified.
+ *     mark the source unverified. Not consulted yet: `publishview` refuses an
+ *     unestablished source under every policy.
  */
 export def struct Policy {
     name as string,
@@ -102,8 +94,7 @@ export func isReserved(scope as string, reserved as list of string) {
 }
 
 /**
- * The shared refusal for a reserved scope. Every policy refuses these, so the
- * wording is here rather than repeated three times.
+ * The refusal every policy gives for a reserved scope.
  * @param scope {string} the scope being asked for
  * @return {Decision} a refusing decision naming the cause
  */

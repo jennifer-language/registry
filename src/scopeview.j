@@ -6,19 +6,8 @@
  * The scope surface over HTTP, as pure data: claiming one, listing them, and
  * changing who may write under one.
  *
- * Until this existed a logged-in caller could do nothing at all - every scope
- * came from an operator running `deckadmin`, so a token bought the right to
- * publish under scopes you did not have. These are the three operations that
- * make a login worth having.
- *
- * The decisions are not made here. `scope.claim` already knows the order a claim
- * is judged in, and `scope.authorise` already knows who may write; this module
- * turns their answers into statuses and bodies, which is the same split
- * `apiview` and `publishview` use. What it adds is the mapping from a refusal to
- * a status code, and that mapping is the part worth testing: a claim refused
- * because a name is taken is a different thing from one refused because the
- * policy forbids it, and a caller can only act on the difference if the status
- * and the message carry it.
+ * `scope.claim` and `scope.authorise` make the decisions; this module maps their
+ * answers to statuses and bodies, as `apiview` and `publishview` do.
  * @module scopeview
  * @example
  * import "./scopeview.j" as scopeview;
@@ -60,18 +49,9 @@ func refuse(db as flatdb.DB, status as int, reason as string) {
 }
 
 /**
- * Which status a refused claim deserves.
- *
- * A claim fails for three different reasons and they are not interchangeable. A
- * malformed name is the caller's mistake and fixable by them (`400`). A name
- * somebody else holds is nobody's mistake and will never succeed by retrying
- * (`409`, the same code a duplicate publish gets). Anything else is the policy
- * declining, which is a permissions answer (`403`).
- *
- * Returning `403` for all three, which is the easy thing, tells a caller their
- * credentials are wrong when the real answer is "that name has a typo" or "that
- * name is taken". Exported so the mapping is tested directly rather than only
- * through a whole request.
+ * The HTTP status for a refused claim: `400` for a malformed name, `409` for a
+ * name already held (as for a duplicate publish), `403` for a policy refusal.
+ * Exported so the mapping is tested directly.
  * @param reason {string} the refusal from `scope.claim`
  * @return {int} the HTTP status to answer with
  */
@@ -94,9 +74,9 @@ export func claimStatus(reason as string) {
 /**
  * Claim a scope for the authenticated caller (specification 8.2).
  *
- * The policy decides whether a self-service claim is allowed at all; under
- * `derived` that means the scope whose folded name equals the caller's login,
- * and under `operator` it means never.
+ * The policy decides whether a self-service claim is allowed: under `derived`,
+ * only the caller's own login or an organisation it belongs to; under
+ * `firstcome`, any unreserved scope; under `operator`, never.
  * @param db {flatdb.DB} the store
  * @param pol {policy.Policy} the deployment's claim policy
  * @param who {identity.Subject} the authenticated caller
@@ -133,13 +113,9 @@ export func claim(
 }
 
 /**
- * Add or remove a co-owner. Only the scope's **owner** may change who else can
- * write under it (specification 2.2), which makes this the one operation here
- * that is authorised by the scope record rather than by the policy.
- *
- * A co-owner may not. When any of them could, one compromised or departing
- * co-owner could add accounts of their own, which kept write access after the
- * operator removed that co-owner, and could remove the others.
+ * Add or remove a co-owner. Only the scope's owner may change the list
+ * (specification 2.2); a compromised co-owner could otherwise add accounts that
+ * keep write access after its removal, or remove the others.
  * @param db {flatdb.DB} the store
  * @param who {identity.Subject} the authenticated caller
  * @param name {string} the scope
@@ -193,8 +169,8 @@ export func owners(
         $out = store.removeCoOwner($db, $folded, strings.trim($subject));
     }
     if (len(store.ownersOf($out, $folded)) == $before) {
-        # Nothing moved: adding somebody already there, or removing somebody who
-        # was never there. Idempotent for the first, a 404 for the second.
+        # No change: adding an existing co-owner is idempotent; removing an
+        # absent one is a 404.
         if ($add) {
             return ScopeReply{
                 status: 200,
@@ -220,10 +196,9 @@ export func owners(
     };
 }
 
-# isSubjectId reports whether s reads as an account id the way every provider
-# here issues them: digits, no sign, no leading zero, short enough to hold.
-# Anything else would be stored as written and match nobody, or worse, match a
-# differently spelled id.
+# isSubjectId reports whether s is a canonical account id: digits, no sign, no
+# leading zero, at most 18 digits. A non-canonical spelling would match nobody,
+# or a differently spelled id.
 func isSubjectId(s as string) {
     if (len($s) == 0 or len($s) > 18 or (len($s) > 1 and strings.startsWith($s, "0"))) {
         return false;
@@ -254,11 +229,9 @@ func ownersBody(db as flatdb.DB, folded as string) {
 /**
  * Every registered scope, with who holds it.
  *
- * The **login** is reported and the subject id is not. A login is already
- * visible on every deck page, whereas an account id is the thing ownership binds
- * to, and a public list of them is a list of exactly what an attacker would need
- * to know to impersonate convincingly. A caller who needs the id has it: it is
- * their own, in their own token.
+ * Reports the login, not the subject id: the login is already public on deck
+ * pages, while a public list of the ids ownership binds to would help an
+ * impersonator. A caller's own id is in their token.
  * @param db {flatdb.DB} the store
  * @return {ScopeReply} a 200 listing the scopes
  */

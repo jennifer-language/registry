@@ -3,22 +3,19 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * Deck search over the registry store: a case-insensitive substring scan of the
- * deck names and descriptions, which is exact and needs no text index.
+ * Deck search over the registry store: a case-insensitive substring scan of
+ * deck names and descriptions, with no text index.
  *
- * What does need building once is the **summary** of each deck the scan and
- * every listing show: its newest live version, how many it has, its tags. That
- * means sorting each deck's versions, which at 5,000 decks was about 0.9 s of
- * every search, browse, tag and scope page. `index` builds the summaries once
- * as a JSON list, `select` scans it, and the server keeps one index per version
- * of the file, shared by every reader the way the store itself is.
+ * `index` builds a summary of each deck (newest live version, version count,
+ * tags) once as a JSON list; `select` scans it. Building it sorts each deck's
+ * versions, about 0.7 s at 5,000 decks, so the server keeps one index per
+ * version of the file, shared by every reader like the store.
  *
- * A selection is a `list of int`, positions in the index, which is cheaper to
- * keep and slice than a JSON list. Where a JSON list is needed, `entries` and
- * `index` collect the parts and convert them once with `json.list`.
+ * A selection is a `list of int` of positions in the index, cheaper to keep and
+ * slice than a JSON list. `entries` and `index` collect parts and convert them
+ * once with `json.list`.
  *
- * Pure over `store`, so the whole thing is testable without a server, and the
- * HTML and JSON views share one implementation.
+ * Pure over `store`; the HTML and JSON views share it.
  * @module search
  * @example
  * import "./search.j" as search;
@@ -35,8 +32,8 @@ import "flatdb.j" as flatdb;
 import "./store.j" as store;
 
 /**
- * The longest query a search accepts, in characters. A query is echoed back on
- * the results page, so an unbounded one turned a 1 MB request into a 3 MB page.
+ * The longest query a search accepts, in characters. The results page echoes
+ * the query, so without a bound a 1 MB request produced a 3 MB page.
  */
 export def const MAX_QUERY as int init 200;
 
@@ -44,11 +41,11 @@ export def const MAX_QUERY as int init 200;
  * One search result: a deck, summarised.
  * @field name {string} the deck name
  * @field description {string} the deck's description ("" when it has none)
- * @field latest {string} the highest published version ("" when none are)
+ * @field latest {string} the newest live version, or the newest when every
+ *     version is yanked ("" when none are published)
  * @field versions {int} how many versions are published
- * @field live {bool} whether any version is installable, i.e. not yanked. A
- *     listing that shows a yanked version as a deck's "latest" is telling a
- *     reader the opposite of what a resolver will do with it.
+ * @field live {bool} whether any version is not yanked, so a listing does not
+ *     present a version the resolver refuses as "latest"
  */
 export def struct Hit {
     name as string,
@@ -58,17 +55,16 @@ export def struct Hit {
     live as bool
 };
 
-# entryFor summarises one deck as an index entry: the Hit fields, plus the
+# entryFor summarises one deck as an index entry: the Hit fields plus the
 # newest version's keywords, which the tag pages group by.
 #
-# `latest` is the newest **live** version where there is one, because that is the
-# version a reader would install. A deck whose every version is yanked still
-# reports its newest, with `live` false to say what it is: hiding it would make
-# the deck look unpublished rather than withdrawn. The keywords come from the
-# newest version whatever its state, because a tag describes what a deck is now.
+# `latest` is the newest live version, the one a reader would install. A deck
+# with every version yanked reports its newest with `live` false, so it reads
+# as withdrawn rather than unpublished. Keywords come from the newest version
+# whatever its state.
 func entryFor(db as flatdb.DB, name as string) {
-    # One sort, and the live versions filtered out of it: the order is the same,
-    # and sorting twice per deck doubled the cost of every listing.
+    # Sort once and filter the live versions from it; a second sort per deck
+    # doubled the cost of every listing.
     def all as list of string init store.listVersionsDescending($db, $name);
     def live as list of string init [];
     for (def v in $all) {
@@ -96,12 +92,9 @@ func entryFor(db as flatdb.DB, name as string) {
 }
 
 /**
- * Summarise every deck, ordered by name: the list every listing and search
- * reads. Each entry is an object with `name`, `description`, `latest`,
- * `versions`, `live` and `keywords`, the shape `GET /search` answers with.
- *
- * This is the expensive step, so a caller serving many requests builds it once
- * per version of the store and passes it around; see `select`.
+ * Summarise every deck, ordered by name. Each entry has `name`, `description`,
+ * `latest`, `versions`, `live` and `keywords`, the shape `GET /search` answers
+ * with. Expensive: a server builds it once per version of the store.
  * @param db {flatdb.DB} the registry to read
  * @return {json.Value} a list of deck entries, alphabetical
  */
@@ -129,8 +122,7 @@ export func matchesName(name as string, query as string) {
 
 /**
  * Report whether a deck matches a query in its description. Case-insensitive;
- * an empty query does not count as a description match, so the two ranks stay
- * distinct when everything matches.
+ * an empty query never matches, so the two ranks stay distinct.
  * @param description {string} the deck's description
  * @param query {string} the search query
  * @return {bool} true when the description matches
@@ -150,10 +142,8 @@ func at(i as int) {
 
 /**
  * The positions of the entries whose name or description contains `query`,
- * case-insensitively. An **empty query selects every deck**.
- *
- * Name matches come before description-only matches, alphabetically within each
- * group because the index is, so the likeliest target is first.
+ * case-insensitively. An empty query selects every deck. Name matches come
+ * before description-only matches, each group in index (alphabetical) order.
  * @param index {json.Value} an index from `index`
  * @param query {string} the search query ("" for everything)
  * @return {list of int} positions in the index, best first
@@ -180,8 +170,7 @@ export func select(index as json.Value, query as string) {
 }
 
 /**
- * The selected entries as one JSON list, in selection order: what a JSON reply
- * carries.
+ * The selected entries as one JSON list, in selection order.
  * @param index {json.Value} an index from `index`
  * @param positions {list of int} a selection from it
  * @return {json.Value} the entries
@@ -195,9 +184,8 @@ export func entries(index as json.Value, positions as list of int) {
 }
 
 /**
- * The entries one listing page shows, as Hits: `count` of the selected ones from
- * `from` on, fewer at the end. Only these are converted, so a page of a large
- * listing costs the page, not the listing.
+ * One listing page as Hits: up to `count` selected entries from `from` on. Only
+ * these are converted, so the cost is per page.
  * @param index {json.Value} an index from `index`
  * @param positions {list of int} a selection from it
  * @param from {int} the first of the selection to show, 0-based
@@ -274,8 +262,8 @@ export func under(index as json.Value, scope as string) {
 
 /**
  * Find every deck whose name or description contains `query`,
- * case-insensitively, as Hits: `select` over a fresh `index`, for a caller with
- * one store and one question. An **empty query matches every deck**.
+ * case-insensitively, as Hits: `select` over a fresh `index`. An empty query
+ * matches every deck.
  * @param db {flatdb.DB} the registry to read
  * @param query {string} the search query ("" for everything)
  * @return {list of Hit} the matching decks, best first

@@ -1,11 +1,10 @@
-# Grimoire book configuration for the **manual**: short task-shaped guides for
-# people using the registry, as distinct from the reference, which describes the
-# API and the specifications.
+# Grimoire book configuration for the manual: short task-shaped guides for
+# people using the registry. The reference describes the API.
 #
 #     grimoire build --config grimoire-manual.toml
 #
-# Keep the two apart. A page that answers "how do I do X" belongs here; a page
-# that answers "what exactly does the server return" belongs in reference/.
+# A page that answers "how do I do X" belongs here; a page that answers "what
+# exactly does the server return" belongs in reference/.
 
 [book]
 title = "Jennifer Deck Registry - End user manual"

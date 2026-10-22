@@ -4,13 +4,10 @@
 # pragma-jennifer-version: >=0.25.0
 # pragma-jennifer-capability: net
 #
-# healthcheck - the container's HEALTHCHECK probe. Exits 0 when the server
-# answers /health, non-zero otherwise. It exists because the interpreter image
-# is a slim Debian with no curl, and adding one purely to poll a local port
-# would be a package and an attack surface for one HTTP GET the language can
-# already do.
+# healthcheck: the container's HEALTHCHECK probe. Exits 0 when the server
+# answers /health with 200, 1 otherwise. The base image has no curl.
 #
-# The URL defaults to the port serve listens on; REGISTRY_HEALTHURL overrides it
+# The URL defaults to serve's default port; REGISTRY_HEALTHURL overrides it
 # (JVC_HEALTHURL still works, deprecated).
 #
 #     jennifer run bin/healthcheck
@@ -26,9 +23,8 @@ def url as string init "http://127.0.0.1:8080/health";
 if (not (os.getEnv("REGISTRY_HEALTHURL") == "")) {
     $url = os.getEnv("REGISTRY_HEALTHURL");
 } elseif (not (os.getEnv("JVC_HEALTHURL") == "")) {
-    # The pre-rename name. Read without a warning: this probe's output is a
-    # health verdict that something else parses, and a deprecation notice on
-    # stderr every 30 seconds is noise in a container log.
+    # The deprecated name, read without a warning to keep the probe's output
+    # free of a notice on every run.
     $url = os.getEnv("JVC_HEALTHURL");
 }
 

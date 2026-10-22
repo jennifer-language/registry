@@ -3,18 +3,14 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * Claiming a scope, and authorising a write under one. This is where the three
- * halves finally meet: the **store** holds the binding, the **policy** decides
- * whether a self-claim is allowed, and an **identity provider** supplied the
- * subject.
+ * Claiming a scope, and authorising a write under one. The store holds the
+ * binding, the policy decides whether a self-claim is allowed, and an identity
+ * provider supplies the subject.
  *
- * Two operations, and the distinction between them is the whole of section 8:
- *
- * - **`claim`** is a one-time proof, gated by policy. It runs once per scope.
- * - **`authorise`** runs on every later write and never consults the policy or
- *   the provider again - only the recorded binding. That is what makes a rename
- *   a non-event and stops whoever later takes a released username inheriting a
- *   scope (8.1, 8.3).
+ * - `claim` is a one-time proof, gated by policy.
+ * - `authorise` runs on every later write and consults only the recorded
+ *   binding, never the policy or the provider, so a rename changes nothing and
+ *   whoever takes a released username does not inherit a scope (8.1, 8.3).
  *
  * Pure except for the store: no network, no clock. `now` is a parameter.
  * @module scope
@@ -53,12 +49,9 @@ func refuse(db as flatdb.DB, reason as string) {
 /**
  * Attempt a self-service claim of a scope.
  *
- * The order matters and is normative-ish: the name is checked first, then
- * whether the scope is already taken, then the policy. A caller asking for a
- * malformed name should be told that, not told it is unavailable; and a caller
- * asking for somebody else's scope should be told **that**, rather than being
- * refused by a policy that would otherwise have allowed it. Conflating those
- * two is how a registry ends up returning a bare 403 to a legitimate question.
+ * Checks run in order: the name, then whether the scope is taken, then the
+ * policy, so a malformed name or somebody else's scope is reported as such
+ * rather than as a policy refusal.
  * @param db {flatdb.DB} the store to read and edit
  * @param pol {policy.Policy} the deployment's policy
  * @param who {identity.Subject} the authenticated caller
@@ -82,15 +75,12 @@ export func claim(
         return refuse($db, "an unauthenticated caller cannot claim a scope");
     }
     if (store.hasNamespace($db, $folded)) {
-        # Already bound. Say so specifically: the caller may legitimately hold
-        # that username today while an earlier holder still owns the scope
-        # (specification 8.2), and a generic refusal would read as a bug.
+        # The caller may hold that username today while an earlier holder still
+        # owns the scope (specification 8.2), so the refusal says which case.
         if (store.ownsNamespace($db, $folded, $who.provider, $who.id)) {
             return refuse($db, "@" + $folded + " is already yours");
         }
-        # A registered scope with no owner is *reserved*, not taken. Saying
-        # "another account" there would be false and would send the caller
-        # looking for a person who does not exist.
+        # A registered scope with no owner is reserved, not claimed by anyone.
         if (store.getNamespace($db, $folded).subject == "") {
             return refuse(
                 $db,
@@ -106,11 +96,8 @@ export func claim(
     if (not $verdict.allowed) {
         return refuse($db, $verdict.reason);
     }
-    # Which principal the scope binds to. Claiming an organisation binds it to
-    # the **organisation's** id, not the claimant's: the claim proves they can
-    # act for it today, and grants them nothing personally (8.7). Every later
-    # write re-asks whether the caller still belongs to it, so a departure needs
-    # no bookkeeping.
+    # Claiming an organisation binds the scope to the organisation's id, not the
+    # claimant's (8.7); every later write re-checks membership.
     def owner as string init $who.id;
     def label as string init $who.login;
     def kind as string init store.SCOPE_USER;
@@ -134,13 +121,12 @@ export func claim(
 }
 
 /**
- * Grant a scope to a principal, as an operator. **Bypasses the policy**, because
- * an operator grant is the mechanism by which a deployment covers what
- * derivation cannot: a name the provider does not have, an organisation, a
- * dispute, or a reassignment (specification 8.2).
+ * Grant a scope to a principal, as an operator. Bypasses the policy: an operator
+ * grant covers what derivation cannot, such as a name the provider does not
+ * have, an organisation, a dispute, or a reassignment (specification 8.2).
  *
- * An empty `subject` registers the scope **operator-held**: nobody may claim it
- * and nobody may write under it, which is how a name is reserved.
+ * An empty `subject` registers the scope operator-held: nobody may claim it or
+ * write under it.
  * @param db {flatdb.DB} the store to edit
  * @param scope {string} the scope to grant
  * @param provider {string} the identity provider that issued the subject
@@ -162,11 +148,9 @@ export func grant(
 /**
  * Grant a scope, saying whether its principal is a person or an organisation.
  *
- * The kind decides which question every later write asks: a user scope compares
- * the caller's own id, an organisation scope asks whether they are an active
- * member (8.7). Getting it wrong in the permissive direction would let anyone in
- * some organisation write under a person's scope, which is why `store` defaults
- * an unrecognised kind to `user` rather than to `org`.
+ * A user scope compares the caller's own id; an organisation scope asks whether
+ * they are an active member (8.7). `store` reads an unrecognised kind as `user`,
+ * the narrower one.
  * @param db {flatdb.DB} the store to edit
  * @param scope {string} the scope to grant
  * @param provider {string} the identity provider that issued the subject
@@ -210,11 +194,9 @@ export func grantAs(
 }
 
 /**
- * May this caller write under this scope? The question every publish, yank, and
- * owner change asks.
- *
- * Answered from the recorded binding alone. The policy is not consulted: policy
- * governs who may *acquire* a scope, never what its owner may then do with it.
+ * Whether the caller may write under a scope; asked by every publish, yank, and
+ * owner change. Answered from the recorded binding alone: policy governs who may
+ * acquire a scope, not what its owner does with it.
  * @param db {flatdb.DB} the store to read
  * @param who {identity.Subject} the authenticated caller
  * @param scope {string} the scope being written under
@@ -245,18 +227,13 @@ export func authorise(db as flatdb.DB, who as identity.Subject, scope as string)
 
 # authoriseOrg answers for a scope owned by an organisation (specification 8.7).
 #
-# The question is not "did this caller claim it" but "may this caller act for
-# that organisation", and the answer comes from the memberships captured when
-# they logged in - the only moment the registry ever holds a provider token
-# (8.4). Any **active** member qualifies, which is this deployment's answer to
-# 8.7's open question; `pending` invitations and `billing_manager` are excluded
-# by the provider module before they ever reach here.
-#
-# What this buys over a co-owner list is that leaving the organisation revokes
-# access with no bookkeeping. What it costs is that the answer is only as fresh
-# as the caller's last login, so `orgsCheckedAt` is checked against a window: a
-# refresh reissues memberships without renewing that stamp, or a departed member
-# could refresh their way to indefinite access.
+# Any active member qualifies, from the memberships captured at login (8.4);
+# the provider module already excludes `pending` invitations and
+# `billing_manager`. Memberships are only as fresh as the last login, and this
+# function does not look at `orgsCheckedAt` (8.7's configured window is not
+# built). Staleness is bounded upstream instead: `authview.refresh` refuses a
+# login older than `MAX_SESSION_SECONDS` (a refresh never advances
+# `orgsCheckedAt`), so memberships age out within that plus one bearer TTL.
 func authoriseOrg(ns as store.Namespace, who as identity.Subject, folded as string) {
     if (not ($ns.provider == $who.provider)) {
         return policy.deny("@" + $folded + " belongs to an organisation on " +
@@ -276,8 +253,8 @@ func authoriseOrg(ns as store.Namespace, who as identity.Subject, folded as stri
 }
 
 /**
- * The scope half of a deck name, folded - the scope an operation on that deck
- * is authorised against.
+ * The folded scope of a deck name, which an operation on that deck is
+ * authorised against.
  * @param name {string} the deck name
  * @return {string} the folded scope, or "" for a bare name
  */

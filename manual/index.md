@@ -4,10 +4,9 @@ A **deck** is a distributable, versioned bundle of Jennifer modules. You import
 it; you never run it. This registry is where jvc, Jennifer's deck manager, looks
 decks up.
 
-These pages are task-shaped: finding a deck, depending on one, and getting your
-own published. If you want the exact shape of an HTTP response, that is the
-[administrator manual](/reference/); if you want the rules any registry must
-implement, that is the [specifications](/specs/).
+These pages cover finding a deck, depending on one, and publishing your own. The
+exact shape of an HTTP response is in the [administrator manual](/reference/);
+the rules any registry must implement are in the [specifications](/specs/).
 
 | | |
 | - | - |
@@ -20,9 +19,7 @@ implement, that is the [specifications](/specs/).
 **It indexes; it does not host.** Your deck's code stays in your git repository.
 The registry stores metadata and the coordinates that identify exactly which
 commit a version is, and jvc fetches the code from your repository directly.
-
-Two things follow from that, and they are worth knowing before you depend on
-anything:
+Two things follow:
 
 - A published version is pinned to a **commit**, not to a tag. If an author
   force-pushes `v1.0.0` to different code after publishing, your install is
@@ -36,42 +33,38 @@ installs from choosing it while leaving existing lockfiles working.
 
 ## The registry does not see your installs
 
-This follows from indexing rather than hosting, and it is worth stating on its
-own, because it is the part with consequences for you rather than for your
-dependencies.
+This also follows from indexing rather than hosting.
 
-**When you install a deck, the registry is not in the loop.** jvc fetches the
-code from the deck's own repository. We do not proxy it, redirect it, or receive
-a notification about it. There is no request to this server that says a
-particular machine installed a particular deck, because no such request exists to
-make.
+When you install a deck, jvc fetches the code from the deck's own repository.
+The registry does not proxy it, redirect it, or receive a notification about it.
+No request to this server says that a particular machine installed a particular
+deck.
 
 So there is no install history here to leak, subpoena, sell, or breach:
 
 - **No record of who installed what.** Not anonymised, not aggregated, not
-  retained for 30 days. It is not collected, which is a stronger guarantee than
-  any retention policy, because a policy can be changed and a deployment that
-  never receives the data cannot change its mind about it.
+  retained for 30 days: it is not collected. A retention policy can be changed;
+  a deployment that never receives the data cannot change its mind about it.
 - **No account is needed to consume anything.** Reading, searching, resolving,
   and installing are all unauthenticated. You log in only to *publish*, and even
-  then the registry holds an account id and a login name, never a password.
+  then the registry holds your account id, login name, and organisation
+  memberships, plus, where it asks your forge with your own credential whether
+  you may push to a repository, that forge token, encrypted. Never a password.
 - **No tracking on the website.** The pages carry no analytics, no third-party
   requests, and no cookies. The only script is the light/dark switch, and the
   only thing stored in your browser is which of the two you picked.
 
-What the registry *does* see is a client asking **where** a deck lives - the
-metadata lookup that precedes a fetch. Those are counted per deck, in aggregate,
-and shown on the deck page as **resolutions**. That count is a number per deck
-per hour and nothing else: no address, no account, no user agent, nothing that
-distinguishes one client from another, so it cannot be turned back into who
-asked.
+What the registry does see is a client asking where a deck lives: the metadata
+lookup that precedes a fetch. Those lookups are counted per deck, in aggregate,
+and shown on the deck page as **resolutions**. The count is a number per deck
+per hour, day, and month, and nothing else: no address, no account, no user
+agent, nothing that distinguishes one client from another, so it cannot be traced
+back to who asked.
 
-That is also why deck pages do not show a download count, and why you should be
-suspicious if they ever start to. Counting real downloads would require putting
-this server in the path of every install - which would mean seeing every install,
-and being able to log it. The absence of that number is the privacy property
-working as intended.
+For the same reason deck pages show no download count; be suspicious if they
+ever start to. Counting real downloads would require putting this server in the
+path of every install, where it could see and log every install.
 
 Your dependencies' repositories are a different matter: fetching from a forge is
-a request to that forge, and it sees it. That is between you and them, and no
-registry can promise otherwise.
+a request to that forge, and the forge sees it. No registry can promise
+otherwise.

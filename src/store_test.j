@@ -4,7 +4,7 @@
 #
 # White-box tests for store.j. Run with:
 #
-#     JENNIFER_SYSMODDIR=../jennifer-lang/modules jennifer test server/store_test.j
+#     jennifer test src/store_test.j
 #
 # store.j `use`s json and imports flatdb, so the overlay reaches DeckVersion /
 # Resolution by bare name and flatdb.DB via the flatdb namespace.
@@ -269,11 +269,8 @@ func testRefreshRoundTrips() {
 }
 
 func testTheOrganisationsOnARefreshRoundTrip() {
-    # Every other test built a record with no organisations, so the map was
-    # written and never read back, and reading it back was broken. A refresh is
-    # the only path that reissues a token without asking the provider again -
-    # losing the map here would silently strip a caller of every organisation
-    # scope the moment their first token expired.
+    # A refresh reissues memberships without asking the provider, so a lost map
+    # would strip every organisation scope at the first token expiry.
     def db as flatdb.DB init emptyStore();
     $db = putRefresh(
         $db,
@@ -345,7 +342,7 @@ func testRevokingAnAccountDropsItsForgeToken() {
 }
 
 func testCountRefreshCountsOnlyThatAccount() {
-    # asked before a revoke so the log records what was actually dropped
+    # asked before a revoke so the log records what was dropped
     def db as flatdb.DB init emptyStore();
     testing.assertEqual(countRefresh($db, 42), 0);
     $db = putRefresh($db, "aaaa", aRefresh(42, 1800000000));
@@ -353,7 +350,6 @@ func testCountRefreshCountsOnlyThatAccount() {
     $db = putRefresh($db, "cccc", aRefresh(99, 1800000000));
     testing.assertEqual(countRefresh($db, 42), 2);
     testing.assertEqual(countRefresh($db, 99), 1);
-    # a count of zero usually means the operator has the wrong account id
     testing.assertEqual(countRefresh($db, 7), 0);
 }
 
@@ -395,8 +391,8 @@ func testOnlyTheFoldedNameIsRecorded() {
 }
 
 func testTwoCasingsAreOneDeckNotTwo() {
-    # the collision that would otherwise appear only on a case-insensitive
-    # filesystem, at install time, on somebody else's machine
+    # otherwise the collision surfaces at install time on a case-insensitive
+    # filesystem
     def db as flatdb.DB init emptyStore();
     $db = putVersion($db, "@acme/tool", "", sampleVersion("1.0.0", "u1"));
     $db = putVersion($db, "@ACME/TOOL", "", sampleVersion("2.0.0", "u2"));
@@ -430,7 +426,7 @@ func testAYankedVersionIsNotChosenByAResolution() {
 }
 
 func testAYankedVersionStaysFetchable() {
-    # the whole point: an existing lockfile pins it and must keep installing
+    # an existing lockfile pins it and must keep installing
     def db as flatdb.DB init yankedStore();
     testing.assertTrue(hasVersion($db, "ansi", "1.4.3"));
     testing.assertEqual(getVersionRecord($db, "ansi", "1.4.3").url, "u2");
@@ -461,8 +457,7 @@ func testUnyankRestores() {
 }
 
 func testARecordWrittenBeforeYankingExistedIsLive() {
-    # the field is additive: absent reads as false, which is what those records
-    # always meant
+    # absent reads as false
     def db as flatdb.DB init emptyStore();
     $db = putVersion($db, "ansi", "", sampleVersion("1.0.0", "u"));
     def rec as json.Value init getVersionJson($db, "ansi", "1.0.0");
@@ -478,9 +473,8 @@ func lockPath() {
     return os.tempDir() + "/jvc_lock_test.json";
 }
 
-# freshLock clears any lock a previously failed run left behind. Without this a
-# single failing assertion wedges every later run of this file for the length of
-# the stale window, which turns one broken test into a broken suite.
+# freshLock clears any lock a previously failed run left behind, which would
+# otherwise wedge later runs for the stale window.
 func freshLock() {
     try {
         fs.remove(lockPath() + ".lock");
@@ -492,8 +486,7 @@ func freshLock() {
 
 func testALockIsExclusive() {
     freshLock();
-    # flatdb has no locking of its own, so this is the only thing standing
-    # between two writers and a silently lost edit
+    # flatdb.save does not lock; this prevents a lost edit between two writers
     def held as Lock init lock(lockPath());
     testing.assertThrows("takesASecondLock", "store");
     unlock($held);
@@ -536,8 +529,7 @@ func testUnlockingTwiceIsHarmless() {
 
 func testAnAbandonedLockIsBroken() {
     freshLock();
-    # a writer killed mid-write leaves its lock behind; past the stale window the
-    # next writer takes over rather than the registry wedging for good
+    # a killed writer's lock is broken past the stale window
     fs.writeString(lockPath() + ".lock", "crashed-writer 1");
     def held as Lock init lock(lockPath());
     testing.assertEqual(lockHolder(lockPath()), $held.holder);
@@ -545,7 +537,7 @@ func testAnAbandonedLockIsBroken() {
 }
 
 func testALockThatCannotBeCreatedSaysSo() {
-    # a missing or read-only directory is not contention, and must not read as it
+    # a missing or read-only directory must not read as contention
     def message as string init "";
     try {
         lock("/no/such/registry/dir/registry.json");
@@ -557,8 +549,8 @@ func testALockThatCannotBeCreatedSaysSo() {
 
 # --- object-id-shaped names ---------------------------------------------------
 #
-# A ref of this shape is the Plugin4Shell class: a name that stands in front of
-# the object of the same id wherever a name is resolved first.
+# A ref of this shape shadows the object of the same id wherever a name
+# resolves first (Plugin4Shell).
 
 func testAFullCommitShaIsObjectIdLike() {
     testing.assertTrue(isObjectIdLike(SAMPLE_COMMIT));
@@ -571,21 +563,19 @@ func testAnAbbreviatedShaIsObjectIdLike() {
 }
 
 func testUppercaseHexIsObjectIdLikeToo() {
-    # git's hex parsing takes either case, so folding is not optional here
+    # git's hex parsing takes either case
     testing.assertTrue(isObjectIdLike("9F2C1D4E5A6B7C8D9E0F1A2B3C4D5E6F70819293"));
     testing.assertTrue(isObjectIdLike("9F2c1D4"));
 }
 
 func testASha256ObjectIdIsObjectIdLike() {
-    # a repository on SHA-256 has 64-character ids, and the ceiling is there for
-    # exactly that
+    # a SHA-256 repository has 64-character ids
     def id as string init SAMPLE_COMMIT + SAMPLE_COMMIT;
     testing.assertTrue(isObjectIdLike(strings.substring($id, 0, 64)));
 }
 
 func testShortHexIsNotObjectIdLike() {
-    # below git's abbreviation floor a name cannot be read as an id, and refusing
-    # it would cost real tags for nothing
+    # below git's abbreviation floor a name cannot be read as an id
     testing.assertFalse(isObjectIdLike("cafe"));
     testing.assertFalse(isObjectIdLike("abc123"));
     testing.assertFalse(isObjectIdLike(""));
@@ -603,7 +593,7 @@ func testTooLongToBeAnObjectIdIsNotObjectIdLike() {
 }
 
 func testAVersionTooLargeToCompareSortsLastWithoutThrowing() {
-    # one such record, however it got there, must not make its deck unlistable
+    # one such record must not make its deck unlistable
     def db as flatdb.DB init emptyStore();
     $db = putVersion($db, "ansi", "", sampleVersion("1.0.0", "u"));
     $db = putVersion($db, "ansi", "", sampleVersion("99999999999999999999.0.0", "u"));

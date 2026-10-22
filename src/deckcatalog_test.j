@@ -3,14 +3,13 @@
 # pragma-jennifer-version: >=0.25.0
 #
 # White-box tests for deckcatalog.j: the store-to-catalog adapter and the
-# server's fetch loop around the shared resolver. Run with:
+# server's resolution over it. Run with:
 #
-#     jennifer test server/deckcatalog_test.j
+#     jennifer test src/deckcatalog_test.j
 #
-# deckcatalog.j imports store / flatdb / catalog / resolver, so the overlay
-# reaches them through those aliases, and GraphResult / addDeck / resolveGraph by
-# bare name. The resolution *rules* are tested in cli/resolver_test.j against a
-# plain catalog; what matters here is that the store feeds them correctly.
+# The overlay reaches store, flatdb, catalog and resolver through their aliases
+# and deckcatalog.j's own names bare. The resolution rules are tested in
+# src/resolver_test.j; these tests cover the store feeding them.
 
 use testing;
 
@@ -68,8 +67,7 @@ func testAddDeckCarriesDeliveryFields() {
     def c as catalog.Candidate init catalog.get($cat, "ansi", "1.2.0");
     testing.assertEqual($c.url, "u/1.2.0");
     testing.assertEqual($c.kind, store.KIND_GIT);
-    # the git pin must survive the store -> catalog hop: the resolver hands it to
-    # the client, which fetches the commit rather than the mutable tag
+    # the git pin survives the store -> catalog hop; clients fetch the commit
     testing.assertEqual($c.ref, "v1.2.0");
     testing.assertEqual($c.commit, "9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f70819293");
 }
@@ -203,7 +201,7 @@ func testAYankedVersionIsNotACandidate() {
 }
 
 func testADeckWithEveryVersionYankedIsNotMissing() {
-    # it exists, it has nothing selectable: "no such deck" was the wrong answer
+    # the deck exists with nothing selectable, so it is not "no such deck"
     def db as flatdb.DB init emptyDb();
     def none as map of string to string init {};
     $db = store.putVersion($db, "@acme/gone", "", ver("1.0.0", $none));
@@ -224,7 +222,7 @@ func testARootIsFoldedLikeTheStore() {
 }
 
 func testTheGraphAResolutionMayReachIsBounded() {
-    # one anonymous request must not decide how much of the registry is walked
+    # an anonymous request must not walk an unbounded part of the registry
     def db as flatdb.DB init emptyDb();
     for (def i in 0..(MAX_GRAPH_DECKS + 1)) {
         def next as map of string to string init {};

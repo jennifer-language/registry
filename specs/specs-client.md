@@ -9,15 +9,14 @@ This is the contract a **client** of a deck registry must fulfil. The key words
 
 > **Scope, and who owns this document.** This half specifies what a client does:
 > negotiating an API version, fetching and verifying deck code, logging in, and
-> resolving a dependency graph. The **wire format is not specified here** - the
+> resolving a dependency graph. The wire format is not specified here: the
 > discovery document, the version record, the endpoints, and their status codes
 > are normative in [specs-server.md](specs-server.md), because the registry
 > produces them. This document references it rather than restating it, so the
 > two cannot drift.
 >
-> Both halves were split out of a single `registry-specs.md` on 2026-08-15 so
-> that each project owns its own side. **This half is intended to move to the
-> jvc repository**; the registry repository maintains only the server half.
+> Each project owns its own half. This half is intended to move to the jvc
+> repository; the registry repository maintains only the server half.
 
 ---
 
@@ -44,18 +43,16 @@ endpoint every registry must offer. The server-side `/resolve` and
 
 ## 2. Which registry
 
-**A project is not limited to one registry.** A client **MUST** support mapping a
-**scope** to a registry, which is what lets a project depend on internal decks
-and public ones at once:
+A client **MUST** support mapping a scope to a registry, so that a project can
+depend on internal and public decks at once:
 
 ```
 @acme/*  ->  https://registry.internal.example
 *        ->  https://decks.jennifer-lang.org
 ```
 
-Deck names are already scoped, so the scope is the natural unit. Everything in
-this document that speaks of "the registry" means **the registry that scope maps
-to**.
+Deck names are scoped, so the scope is the unit of mapping. Throughout this
+document, "the registry" means the registry the deck's scope maps to.
 
 ### 2.1 It is a mapping, not a search order
 
@@ -63,26 +60,23 @@ to**.
 registry when the first does not have the deck, and **MUST** report the miss
 against the mapped registry.
 
-This is not a performance preference, it is the defence against **dependency
-confusion**. If a client searched several registries for a name, anyone could
-publish `@acme/foo` on a public registry and have it preferred over, or raced
-against, the internal deck of the same name. That attack has repeatedly hit
-ecosystems whose clients merge registries into one search space. A strict mapping
-removes the ambiguity by construction: `@acme` is internal or it is public, and
-never both.
+This is the defence against dependency confusion. If a client searched several
+registries for a name, anyone could publish `@acme/foo` on a public registry and
+have it preferred over, or raced against, the internal deck of the same name.
+That attack has repeatedly hit ecosystems whose clients merge registries into one
+search space. Under a strict mapping, `@acme` is internal or public, never both.
 
 A client **SHOULD** warn when a mapping is added that shadows an already-locked
 scope, since that changes what an existing lockfile means.
 
 ### 2.2 Transitive dependencies follow the consumer's mapping
 
-A version record's `requires` names `@scope/deck` and says nothing about a
-registry, deliberately: a deck does not get to decide where its consumers fetch
-from. So **the consuming project's mapping decides**, for direct and transitive
-dependencies alike.
+A version record's `requires` names `@scope/deck` and no registry: a deck does
+not decide where its consumers fetch from. The consuming project's mapping
+decides, for direct and transitive dependencies alike.
 
-That is what makes an internal mirror or a fork of a public scope workable, and
-it is also why the mapping has to be unambiguous.
+This makes an internal mirror or a fork of a public scope workable, and is why
+the mapping has to be unambiguous.
 
 ### 2.3 The lockfile records the registry
 
@@ -91,12 +85,11 @@ preferring the `url` the registry advertises in its discovery document
 (`specs-server.md` section 4.1) over the address it happened to dial, and falling
 back to that address when the registry declares none. Without
 it, the same lockfile resolves to different code on a machine with a different
-mapping, which is the exact failure the lockfile exists to prevent.
+mapping.
 
 On install, a client **MUST** fetch each locked deck from its recorded registry,
 and **MUST** fail rather than silently substitute when the current mapping
-disagrees with the lockfile. Reporting the disagreement is the useful behaviour;
-picking a side silently is not.
+disagrees with the lockfile.
 
 ## 3. Version negotiation
 
@@ -115,10 +108,10 @@ A client **MUST**:
 2. intersect `apis[].version` with the versions it supports;
 3. use the **highest** version in that intersection, and prefix every subsequent
    request with that version's `basePath`;
-4. if the intersection is empty, **fail with a message naming both sides'
-   versions** rather than attempting a call.
+4. if the intersection is empty, fail with a message naming both sides'
+   versions rather than attempting a call.
 
-A useful failure reads like this, not like a 404:
+For example:
 
 ```
 this registry speaks API v2 and v3; jvc 0.1.0 supports v1.
@@ -140,17 +133,17 @@ that `404` as an error.
 
 ### 3.3 Features
 
-`features` names the optional operations the registry actually implements. A
-client **MUST** treat an absent feature as "not offered" and say so plainly,
-rather than provoking a `404`:
+`features` names the optional operations the registry implements. A client
+**MUST** treat an absent feature as "not offered" and say so, rather than
+provoking a `404`:
 
 ```
 this registry does not offer publishing (no `publish` feature).
 ```
 
 A client **MUST** ignore feature names it does not recognise, and **MUST** ignore
-unrecognised fields anywhere in the document. That is what makes additive
-registry changes non-breaking.
+unrecognised fields anywhere in the document. This makes additive registry
+changes non-breaking.
 
 ### 3.4 Caching and deprecation
 
@@ -177,39 +170,37 @@ A client **MUST** fetch the repository at the recorded `commit`, not at the
   is needed, and none is recorded: `checksum` is meaningless for this kind and
   **MUST NOT** be treated as an integrity signal.
 
-That second point holds **only if the client asked for an object and then
-checked what it got**, and the next subsection says why that is not the same
-sentence.
+The second point holds only if the client asked for an object and then checked
+what it got (4.1.1).
 
 #### 4.1.1 A name is not an object
 
-A git ref and a git object id occupy **one syntactic space**: nothing stops a
-branch or tag being called `4a3b1c...`, and where a name is resolved before an
-object, a ref of that name **stands in front of the commit of that id**. Git
-then verifies the hash of the object it was given, correctly and reassuringly,
-and that object is not the pin.
+A git ref and a git object id share one syntactic space: a branch or tag can be
+called `4a3b1c...`, and where a name is resolved before an object, a ref of that
+name shadows the commit of that id. Git then verifies the hash of the object it
+was given, and that object is not the pin.
 
 So, in addition to fetching at the commit:
 
 - A client **MUST**, after fetching and before using any of the tree, determine
-  the **object id of what it actually obtained** and **MUST** abort unless it is
-  equal to `commit`. Fetching "at the commit" is an intention; this is the check.
+  the object id of what it obtained and **MUST** abort unless it is equal to
+  `commit`.
 - A client **MUST NOT** rely on a name-based lookup resolving to the object when
   a ref of that name exists. `git fetch <remote> <commit>` matches the remote's
   advertised refs first, and a `?ref=`-style parameter on a forge API resolves a
-  name before an object **by definition**. Address the object: peel explicitly
+  name before an object by definition. Address the object: peel explicitly
   (`<commit>^{commit}`), and treat git's "refname is ambiguous" warning as an
   error rather than as noise.
 - A client **SHOULD** refuse a version record whose `ref` is itself shaped like
   an object id, rather than displaying it. A registry conforming to
-  [specs-server.md](specs-server.md) section 3 will not serve one, so such a
+  [specs-server.md](specs-server.md) section 3.1 will not serve one, so such a
   record means the registry is not conforming or the response was tampered with.
 
 A registry cannot make this safe on the client's behalf. It can refuse to store
-the ambiguity (which section 3 of the server specification now requires) and it
-can refuse to publish from a repository where the shadow already exists, but the
-repository is mutable after publication and the fetch happens on the client. The
-comparison above is the only place the class actually dies.
+the ambiguity (section 3.1 of the server specification requires that) and refuse
+to publish from a repository where the shadow already exists, but the repository
+is mutable after publication and the fetch happens on the client. Only the
+comparison above closes the class.
 
 The `ref` is for display and provenance. A client **MAY** show it, and **MAY**
 warn when the remote's tag no longer points at the recorded commit, since that
@@ -217,29 +208,29 @@ usually means somebody rewrote history by mistake.
 
 **A fetch that cannot produce the recorded commit MUST fail, never fall back.**
 Not to the `ref`, not to the default branch, not to a generated archive. The URL
-in a version record is only a coordinate and can come to name a **different
-party's repository** without anyone touching the registry: GitHub frees a
+in a version record is only a coordinate and can come to name a different
+party's repository without anyone touching the registry: GitHub frees a
 released username immediately, repository redirects break as soon as somebody
 recreates a repository of that name, and the new owner may hold the same history
 ([specs-server.md](specs-server.md) section 6.3). Fetching the commit turns that
-into a hard failure instead of a silent substitution, and any fallback path
-throws the protection away.
+into a hard failure instead of a silent substitution; any fallback path removes
+that protection.
 
 If a client downloads a generated archive as an optimisation, the URL **MUST**
 address the commit SHA, so the content is pinned by the URL itself, and the
-archive's own hash **MUST NOT** be treated as authoritative. **GitHub's generated
-source tarballs are not byte-stable** - their generation changed in 2023 and
+archive's own hash **MUST NOT** be treated as authoritative. GitHub's generated
+source tarballs are not byte-stable: their generation changed in 2023 and
 invalidated recorded checksums across several ecosystems at once.
 
 ### 4.2 `kind: "tar.gz"` - verify the checksum
 
 `checksum` is `sha256:` followed by 64 lowercase hex digits. A client **MUST**
-verify it against the fetched bytes **before unpacking**, and **MUST** abort on a
+verify it against the fetched bytes before unpacking, and **MUST** abort on a
 mismatch. `ref` and `commit` are meaningless for this kind.
 
 `url` **MAY** point anywhere the client can fetch over HTTPS. Clients **SHOULD**
-also accept `file://` and local paths, which is what makes a private or
-air-gapped registry usable.
+also accept `file://` and local paths, so that a private or air-gapped registry
+is usable.
 
 ### 4.3 An absent `kind`
 
@@ -249,15 +240,15 @@ An absent `kind` **MUST** be read as `"tar.gz"`, for records written before
 ### 4.4 What to install
 
 The fetched tree contains `deck.toml`, a `src/` directory, and optionally
-`template/`. A client **MUST** install **only** `src/`, into
-`vendor/<scope>/<deck>/`, and **MUST** verify that `src/<deck>.j` is present -
-for `@acme/routeros`, `src/routeros.j`. `template/` is read at scaffold time and
+`template/`. A client **MUST** install only `src/`, into
+`vendor/<scope>/<deck>/`, and **MUST** verify that `src/<deck>.j` is present
+(for `@acme/routeros`, `src/routeros.j`). `template/` is read at scaffold time and
 is not vendored. Everything else is ignored.
 
 ### 4.5 Caching
 
 Fetch rate limits land on the consumer, not on the registry: unauthenticated git
-fetches are throttled per address, which a busy CI fleet will notice. A client
+fetches are throttled per address, which affects a busy CI fleet. A client
 **SHOULD** cache fetched repositories locally, for example as a per-user bare
 mirror.
 
@@ -266,8 +257,8 @@ mirror.
 ### 5.1 No password, no form of the registry's own
 
 A client **MUST** authenticate through a delegated OAuth 2.0 flow, and the
-registry's default is the GitHub **device authorization grant**, which needs no
-web UI of the registry's own:
+registry's default is the GitHub device authorization grant, which needs no web
+UI of the registry's own:
 
 ```
 $ jvc login
@@ -276,10 +267,9 @@ logged in as @alice
 ```
 
 The user approves in a browser they are already signed into, under whatever 2FA
-GitHub already enforces. The registry never sees a password, sends no email, and
-holds no credential worth stealing. This deletes the expensive half of a package
-registry: signup, password reset, email verification, session cookies, CSRF, and
-the admin screens to support them.
+GitHub enforces. The registry never sees a password, sends no email, and holds no
+credential worth stealing, and needs no signup, password reset, email
+verification, session cookies, CSRF handling, or admin screens to support them.
 
 A client **MUST NOT** offer a username-and-password path, and **MUST NOT** ask
 the user to paste a personal access token as the primary flow.
@@ -306,26 +296,25 @@ credential a client stores is the registry's own.
 **A client learns the endpoints from the discovery document, never by
 hard-coding them.** The `auth` object
 ([specs-server.md](specs-server.md) section 4.1) carries `deviceUrl`,
-`tokenUrl`, and optionally `refreshUrl`, as absolute paths used verbatim: they
-are the one exception to prefixing requests with the negotiated `basePath`,
-because they are given whole.
+`tokenUrl`, and optionally `refreshUrl`, as absolute paths used verbatim, the
+one exception to prefixing requests with the negotiated `basePath`.
 
 **An absent `auth` object means the registry accepts no logins.** A client
-**MUST** say that plainly rather than guessing a path:
+**MUST** say so rather than guessing a path:
 
 ```
 this registry does not accept logins (no `auth` in its discovery document).
 ```
 
-That is not a hypothetical: a read-only registry, which is what the reference
-implementation is today, omits it.
+A read-only registry omits it; the reference implementation does so unless its
+login surface is configured.
 
 ### 5.3 Running the flow
 
-The registry drives the exchange against GitHub. **A client never talks to
-GitHub, and never holds a GitHub token** - it holds only the registry's own.
-That is what keeps a client free of per-registry configuration: the OAuth
-application, its client id, and its scopes all belong to the registry.
+The registry drives the exchange against GitHub. A client never talks to GitHub
+and never holds a GitHub token, only the registry's own. This keeps a client
+free of per-registry configuration: the OAuth application, its client id, and
+its scopes belong to the registry.
 
 1. `POST` to `deviceUrl` with no body. The response carries `userCode`,
    `verificationUri`, `deviceCode`, `expiresIn`, and `interval`.
@@ -362,7 +351,7 @@ Authorization: Bearer <token>
 on every write request, and **MUST NOT** send it to any host other than the
 registry it was issued for. It **SHOULD** store it with owner-only permissions.
 
-Tokens are deliberately short-lived. On a `401`, a client **SHOULD** refresh
+Tokens are short-lived. On a `401`, a client **SHOULD** refresh
 rather than fail: `POST` its stored `refreshToken` to `refreshUrl`, retry the
 request once, and fall back to a full login only if the refresh is itself
 rejected. A registry that rotates refresh tokens returns a new one each time, so
@@ -373,12 +362,12 @@ ability to obtain a new one.
 
 ### 5.5 Publishing from CI
 
-A device grant needs a human at a browser, and the most common publish there is -
-a pipeline releasing what its tests just proved - has none. A client **MUST**
+A device grant needs a human at a browser, and the most common publish (a
+pipeline releasing what its tests just proved) has none. A client **MUST**
 therefore support publishing without an interactive login, and **SHOULD** prefer
 the first mechanism below where the registry offers it.
 
-`specs-server.md` section 8.8 is normative for both.
+`specs-server.md` sections 8.8 to 8.10 are normative for both.
 
 #### Trusted publishing (no secret)
 
@@ -386,16 +375,16 @@ When the registry advertises `auth.trustedPublishing` and the client is running
 in a CI job whose system issues OIDC tokens, the client **SHOULD**:
 
 1. read `auth.trustedPublishing.audience` from the discovery document;
-2. ask the CI system for an identity token with **exactly that audience**;
+2. ask the CI system for an identity token with exactly that audience;
 3. send it to `auth.trustedPublishing.url` in place of a bearer token.
 
 A client **MUST NOT** substitute an audience of its own, and **MUST NOT** send a
-token minted for one registry to another - the audience is what stops a token
-being replayed, and the client is the party that requests it.
+token minted for one registry to another: the audience stops a token being
+replayed, and the client is the party that requests it.
 
 On GitHub Actions this needs `permissions: id-token: write` on the job and a
 request to `ACTIONS_ID_TOKEN_REQUEST_URL` with `ACTIONS_ID_TOKEN_REQUEST_TOKEN`.
-The publishing workflow holds **no registry credential of any kind**:
+The publishing workflow holds no registry credential of any kind:
 
 ```yaml
 permissions:
@@ -408,8 +397,8 @@ steps:
 #### CI token (fallback)
 
 Where the registry offers no trusted publishing, or the CI system issues no
-identity token, a client **MUST** accept a bearer token from the environment -
-conventionally `JVC_TOKEN` - and use it exactly as 5.4 describes.
+identity token, a client **MUST** accept a bearer token from the environment
+(conventionally `JVC_TOKEN`) and use it exactly as 5.4 describes.
 
 A client **MUST NOT** write such a token to its config file, and **MUST NOT**
 print it. It **SHOULD** say which mechanism it used when publishing, so an
@@ -417,14 +406,14 @@ operator reading a build log can see whether a standing secret was involved.
 
 **Detection order.** A client **SHOULD** try trusted publishing first, then
 `JVC_TOKEN`, then a stored interactive token, and **MUST NOT** open a browser
-when no terminal is attached: failing with the reason is more useful in a
-pipeline than a device code nobody will read.
+when no terminal is attached: in a pipeline nobody reads a device code, so the
+client fails with the reason instead.
 
 ### 5.6 The whole contract
 
-Whatever the registry's internals: **the CLI discovers the auth endpoints from
+Whatever the registry's internals, the CLI discovers the auth endpoints from
 the discovery document, obtains a token without any browser form of the
-registry's own, and sends it as a bearer token on write requests.** In CI it
+registry's own, and sends it as a bearer token on write requests. In CI it
 obtains that authority from the CI system itself where it can, and from an
 environment variable where it cannot.
 
@@ -435,12 +424,12 @@ Deck names are lowercase, and the registry folds on the way in
 before sending it, so that a manifest written as `@Acme/Tool` asks for
 `@acme/tool` and the two never diverge locally.
 
-A client **MUST** use the **folded** name when building the vendor path, since
+A client **MUST** use the folded name when building the vendor path, since
 `vendor/Acme/` and `vendor/acme/` are one directory on macOS and Windows and two
-on Linux. Folding at the boundary is what keeps a lockfile meaning the same thing
-on every platform.
+on Linux. Folding at the boundary keeps a lockfile meaning the same thing on
+every platform.
 
-The two halves differ: a **scope** may contain hyphens, a **deck** may not,
+The two halves differ: a scope may contain hyphens, a deck may not,
 because the deck half becomes the bound Jennifer namespace.
 
 ## 7. Resolution
@@ -452,13 +441,12 @@ must implement is [specs-server.md](specs-server.md) section 2.4.
 Rules a resolution **MUST** satisfy:
 
 - when several requirements constrain one deck, the chosen version satisfies all
-  of them **simultaneously**, and is the **highest** published version that does;
+  of them simultaneously, and is the highest published version that does;
 - exactly one version of each deck appears in the result;
 - a dependency cycle terminates rather than recursing;
 - a prerelease version never satisfies a caret or tilde range;
-- a **yanked** version **MUST NOT** be chosen during fresh resolution, but
-  **MUST** still install when an existing lockfile pins it. That is the whole
-  point of yanking rather than deleting.
+- a yanked version **MUST NOT** be chosen during fresh resolution, but
+  **MUST** still install when an existing lockfile pins it.
 
 A client **SHOULD** record the resolved set in a lockfile, including each deck's
 `commit` (or `checksum`), so a later install reproduces the same code without
@@ -467,14 +455,14 @@ re-resolving.
 ### 7.1 Using the server's resolution instead
 
 If the registry advertises `resolve` or `resolveGraph`, a client **MAY** use
-them. It **MUST** still apply the fetch and verification rules in section 3 to
+them. It **MUST** still apply the fetch and verification rules in section 4 to
 the result, and **MUST** be prepared for the features to be absent.
 
 ## 8. Engines and capabilities
 
 A version record **MAY** declare `engines` and `capabilities`.
 
-- **`engines`** is an **allowlist of alternatives**: the running interpreter must
+- **`engines`** is an allowlist of alternatives: the running interpreter must
   be a key, and its version must satisfy that key's constraint. An empty or
   absent table means no restriction. A client **SHOULD** check this at install
   time for the whole resolved graph, and record it so the check can be repeated
@@ -506,7 +494,7 @@ The body is `{"error": "<message>"}`, written for a developer in a terminal. A
 client **SHOULD** show that message rather than inventing its own.
 
 An unknown API version answers `400` with `{"error": ..., "apis": [1]}`, which a
-client **SHOULD** distinguish from a missing deck (section 2).
+client **SHOULD** distinguish from a missing deck (section 3).
 
 ## 10. Client conformance checklist
 
@@ -523,12 +511,12 @@ A client is conformant when:
 - [ ] it ignores unrecognised fields and feature names
 - [ ] it refuses an operation whose feature is not advertised, by name
 - [ ] it resolves from `GET /deck?name=`, addressing scoped names as a query parameter
-- [ ] a `kind: "git"` deck is fetched **at the commit**, never at the ref
+- [ ] a `kind: "git"` deck is fetched at the commit, never at the ref
 - [ ] the object id of what was fetched is compared to `commit` before the tree
       is used, and a mismatch aborts
 - [ ] a ref named like an object id does not satisfy a fetch for that object, and
       an ambiguous-refname warning is treated as an error
-- [ ] a `kind: "tar.gz"` deck's checksum is verified **before unpacking**
+- [ ] a `kind: "tar.gz"` deck's checksum is verified before unpacking
 - [ ] an absent `kind` is treated as `"tar.gz"`
 - [ ] a fetch that cannot produce the recorded commit fails, with no fallback
 - [ ] names are folded to lowercase before requesting and before building `vendor/`

@@ -1,18 +1,18 @@
-# Grimoire book configuration for the **administrator manual**: the HTTP API and
+# Grimoire book configuration for the administrator manual: the HTTP API and
 # the operator CLI, for people running a registry.
 #
 #     grimoire build                                 # this book
 #     grimoire build --config grimoire-manual.toml   # the user manual
 #     grimoire build --config grimoire-specs.toml    # the specifications
 #
-# The site has three books because they have three audiences and three URL paths,
-# and grimoire builds one source directory into one output directory. The
-# normative specifications used to live here and are now their own book: this one
-# describes what this implementation does, that one what any implementation must.
+# The site has three books for three audiences and three URL paths, and grimoire
+# builds one source directory into one output directory. This book describes
+# what this implementation does; the specifications book, what any
+# implementation must do.
 #
 # See https://github.com/jennifer-language/grimoire. Every key is optional; the
-# defaults build a usable book on their own. Note that Grimoire itself needs
-# Jennifer 0.25.0 or newer, which is a higher floor than the registry's own.
+# defaults build a usable book. Grimoire itself needs Jennifer 0.25.0 or newer,
+# a higher floor than the registry's own.
 
 [book]
 title = "Jennifer Deck Registry - Administrator Manual"
@@ -39,14 +39,14 @@ editUrl = "https://github.com/jennifer-language/registry/edit/main/reference/{pa
 titleUrl = "/"
 
 [highlight]
-# The built-in highlighter: Jennifer blocks are coloured at build time, with no
+# The built-in highlighter colours Jennifer blocks at build time, with no
 # JavaScript and nothing fetched from a third party.
 enabled = true
 
 [highlightjs]
-# Left off deliberately. Enabling it would make the built site depend on a CDN,
-# and the only languages here the built-in highlighter does not know are TOML
-# and shell, which read fine unhighlighted.
+# Off: it would make the built site depend on a CDN, and the only languages here
+# the built-in highlighter does not know are TOML and shell, which read fine
+# unhighlighted.
 enabled = false
 
 [search]

@@ -28,7 +28,7 @@ func testHandlesOnlyItsConfiguredHost() {
 }
 
 func testAnInstanceWithNoHostClaimsNothing() {
-    # guessing would let a self-hosted forge answer for a stranger's server
+    # an unset host must not answer for a stranger's server
     def blank as forge.Config init forge.Config{
         name: "gitea",
         baseUrl: "https://git.corp.test",
@@ -47,8 +47,7 @@ func testPermissionMirrorsGithubsShape() {
 }
 
 func testTagIsAlreadyDereferenced() {
-    # Gitea returns the commit nested in the tag, so an annotated tag needs no
-    # second call the way GitHub's does
+    # Gitea nests the commit in the tag, so an annotated tag needs no second call
     testing.assertEqual(tagCommitFrom(doc('{"commit":{"sha":"deadbeef"}}')), "deadbeef");
 }
 

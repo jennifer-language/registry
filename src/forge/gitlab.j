@@ -7,20 +7,18 @@
  * GitLab as a forge, hosted or self-hosted: the two differ only in `baseUrl`
  * (specification 12.3).
  *
- * GitLab differs from the GitHub-shaped forges in three ways that matter:
+ * Differences from the GitHub-shaped forges:
  *
- * - a project is addressed by its **URL-encoded path**, `group%2Fsub%2Fproject`,
- *   not by `owner/repo` path segments, and groups nest arbitrarily deep;
- * - permission is an **access level**, not a boolean. Write is level **30**
- *   (developer) or above, and it can arrive as either a project membership or an
- *   inherited group membership, so both are considered;
+ * - a project is addressed by its URL-encoded path, `group%2Fsub%2Fproject`,
+ *   and groups nest arbitrarily deep;
+ * - permission is an access level. Write is level 30 (developer) or above, from
+ *   either a project membership or an inherited group membership;
  * - the owning entity is a `namespace`, which may be a user or a group.
  *
- * > **Verified against live gitlab.com** on 2026-08-16: `repo` returns the
- * > project and namespace ids, `resolveTag` resolves a tag to its commit, and
- * > `readFile` reads a path at a commit, all through the URL-encoded project
- * > path. **`permission` is still unverified** - it needs a real caller token,
- * > and with it the access-level threshold above.
+ * > Verified against live gitlab.com on 2026-08-16: `repo`, `resolveTag` and
+ * > `readFile`, all through the URL-encoded project path. `permission` is still
+ * > unverified: it needs a real caller token, and so does the access-level
+ * > threshold above.
  * @module gitlab
  * @example
  * import "./gitlab.j" as gitlab;
@@ -77,8 +75,7 @@ export func handlesUrl(cfg as forge.Config, url as string) {
 }
 
 /**
- * A project's URL-encoded path id, which is how GitLab addresses a project that
- * may sit several groups deep. Pure.
+ * A project's URL-encoded path id, GitLab's address for a nested project. Pure.
  * @param url {string} the repository URL
  * @return {string} the encoded path, e.g. `group%2Fsub%2Fproject`
  */
@@ -88,11 +85,8 @@ export func projectId(url as string) {
 }
 
 /**
- * Interpret a GitLab project payload as a push permission. Pure, and the place
- * the access-level threshold is applied.
- *
- * Either a direct project membership or an inherited group membership of level
- * 30 or above grants write, so the higher of the two decides.
+ * Interpret a GitLab project payload as a push permission. Pure. The higher of
+ * the project and group access levels decides; 30 or above grants write.
  * @param doc {json.Value} the decoded project response
  * @return {forge.Permission} granted, refused, or unknown
  */
@@ -125,9 +119,7 @@ export func permissionFrom(doc as json.Value) {
 
 /**
  * The id of the account with exactly this username, from a `GET /users?username=`
- * answer, or "" when there is none. Pure. GitLab usernames are matched without
- * regard to case, and the search is exact rather than a prefix, so only an equal
- * name is taken.
+ * answer, or "" when there is none. Pure. Matching is exact and case-insensitive.
  * @param doc {json.Value} the decoded response, a list of users
  * @param username {string} the username asked about
  * @return {string} the numeric id as text, or ""
@@ -149,9 +141,9 @@ export func userIdFrom(doc as json.Value, username as string) {
 
 /**
  * Read a project-membership payload (`GET /projects/:id/members/all/:user_id`)
- * as a push permission. Pure. The `all` form includes access inherited from
- * groups. Developer (30) is the lowest level that may push, and a membership
- * that is not active grants nothing.
+ * as a push permission. Pure. The `all` form includes inherited group access.
+ * Developer (30) is the lowest level that may push; an inactive membership
+ * grants nothing.
  * @param doc {json.Value} the decoded response
  * @return {forge.Permission} granted, refused, or unknown
  */
@@ -171,8 +163,8 @@ export func memberPermissionFrom(doc as json.Value) {
 }
 
 /**
- * Build a `Repo` from a GitLab project payload. Pure. The owning entity is the
- * project's namespace, which may be a user or a group.
+ * Build a `Repo` from a GitLab project payload. Pure. The owner is the project's
+ * namespace.
  * @param doc {json.Value} the decoded response
  * @return {forge.Repo} the immutable identity of the repository
  */
@@ -268,10 +260,9 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
     return $res.body;
 }
 
-# refExists reports whether a branch or tag of this exact name is present. Both
-# namespaces are asked because either would shadow an object of the same name in
-# a `?ref=` lookup, and GitLab permits a name shaped like an object id where
-# GitHub refuses one.
+# refExists reports whether a branch or tag of this exact name is present. Either
+# would shadow a same-named object in a `?ref=` lookup, and GitLab permits ref
+# names shaped like object ids.
 func refExists(cfg as forge.Config, url as string, name as string) {
     def raw as bytes init convert.bytesFromString($name, "utf-8");
     def encoded as string init encoding.toText($raw, "uri-percent");
@@ -291,20 +282,17 @@ func refExists(cfg as forge.Config, url as string, name as string) {
     return forge.refPresence($tag.status);
 }
 
-# filePath is the files-API address of one path at one commit. The whole path is
-# a single segment there, so its slashes are escaped along with everything else.
+# filePath is the files-API address of one path at one commit. The path is one
+# segment there, so its slashes are escaped too.
 func filePath(url as string, commit as string, path as string) {
     def raw as bytes init convert.bytesFromString($path, "utf-8");
     return "/projects/" + projectId($url) + "/repository/files/" +
         encoding.toText($raw, "uri-percent") + "?ref=" + $commit;
 }
 
-# fileExists asks the files API with a `HEAD`, which answers from the file's
-# metadata without sending its content, so the entry module's size does not
-# matter. GitLab's files API serves blobs only, so a directory named like the
-# entry module is a `404` here, exactly like a path that is not there; any other
-# failure throws through `refPresence` rather than reading as absence. (GitHub
-# and Gitea answer a directory with `200` too, which is why they read a listing.)
+# fileExists asks the files API with a `HEAD`, so the file's content is not sent.
+# The files API serves blobs only, so a directory is a `404` like a missing path;
+# any other failure throws through `refPresence`.
 func fileExists(cfg as forge.Config, url as string, commit as string, path as string) {
     def res as http.Response init send($cfg, "HEAD", filePath($url, $commit, $path), "");
     return forge.refPresence($res.status);
@@ -325,7 +313,7 @@ func permission(cfg as forge.Config, url as string, callerToken as string) {
 # permissionFor asks, with the registry's own token, what a named account may do
 # in this project (12.5, the service-account route): the username is resolved to
 # an id, then the membership is read, inherited access included. Anything but a
-# stated access level is unknown, and unknown is never permission.
+# stated access level is unknown, which never grants.
 func permissionFor(cfg as forge.Config, url as string, username as string) {
     def problem as string init forge.askProblem($cfg, $username);
     if (not ($problem == "")) {

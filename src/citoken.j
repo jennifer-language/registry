@@ -5,35 +5,28 @@
 /**
  * CI tokens: the non-interactive fallback (specification 8.10).
  *
- * Where trusted publishing (8.9) is unavailable - a laptop, a cron job, a CI
- * system that mints no identity token - something has to authorise a write
- * without a browser. This is that something, and it is deliberately the *second*
- * choice: a standing bearer secret in a pipeline config is exactly what 8.9
- * exists to avoid, so everything here is shaped around limiting the damage when
- * one leaks rather than around convenience.
+ * Authorises a write without a browser where trusted publishing (8.9) is
+ * unavailable: a laptop, a cron job, CI that mints no identity token. A standing
+ * bearer secret is what 8.9 avoids, so these properties limit the damage of a
+ * leak:
  *
- * Four properties do that work, and none is optional:
+ * - **Narrower than its owner.** Bound to one scope, or one deck within it.
+ * - **Individually revocable**, so a leak costs one pipeline.
+ * - **Expiring by default.**
+ * - **Stored as a fingerprint**: a leaked database is a list of SHA-256 hashes,
+ *   as for refresh tokens.
  *
- * - **Scoped narrower than its owner.** A token is bound to one scope, or to one
- *   deck within it. A token that could write everything its minting user can is
- *   not a CI token, it is a copy of the user.
- * - **Individually revocable**, without disturbing the others, so a suspected
- *   leak costs one pipeline rather than every pipeline.
- * - **Expiring by default.** A token nobody remembers is the one that leaks.
- * - **Stored as a fingerprint**, never as the token. A leaked database is a list
- *   of SHA-256 hashes, which is the same decision refresh tokens already take.
+ * The secret is shown once, at creation, so the store never holds a displayable
+ * token.
  *
- * The secret is shown **once**, at creation, because a store that can display a
- * token again is a store that can lose every token at once.
- *
- * Pure except for the store: `now` is a parameter, and the random half is the
- * caller's. That is what makes expiry and scope matching testable at a fixed
- * instant instead of against a clock.
+ * Pure: no store, no clock, no randomness. `now` is a parameter; minting (the
+ * random secret, the store write) is `admin.cmdMintToken`, `deckadmin mint-token`.
  * @module citoken
  * @example
  * import "./citoken.j" as citoken;
- * def t as citoken.Minted init citoken.mint($db, "acme", "", "release", $now, 7776000);
- * # show t.secret once, then store.save(t.db)
+ * def t as citoken.Token init store.getCiToken($db, token.fingerprint($secret));
+ * def v as citoken.Verdict init citoken.check($t, "@acme/tool", $now);
+ * # v.allowed, else v.reason names the cause
  */
 
 use strings;
@@ -41,20 +34,21 @@ use convert;
 import "flatdb.j" as flatdb;
 import "./deckname.j" as deckname;
 
-# The prefix every CI token carries. A recognisable prefix is what lets a secret
-# scanner spot one in a public repository, and lets this registry reject an
-# obviously-wrong credential without a store lookup.
+# The prefix every CI token carries, so secret scanners can find a leaked one and
+# a wrong credential is rejected without a store lookup.
 export def const PREFIX as string init "jvcp_";
 
 /**
- * A CI token's record. **The token itself is not here** - only its SHA-256 - so
- * this struct can be read, listed, and logged without handling a credential.
+ * A CI token's record. It holds only the token's SHA-256, so it can be listed
+ * and logged without handling a credential.
  * @field fingerprint {string} the SHA-256 of the token, its primary key
  * @field name {string} a label the operator chose, shown in listings
  * @field scope {string} the scope this token may write under
  * @field deck {string} one deck within that scope, or "" for the whole scope
  * @field provider {string} the identity provider of the account that minted it
- * @field subject {string} the principal that minted it
+ *     ("" when an operator minted it, as `deckadmin mint-token` does)
+ * @field subject {string} the principal that minted it ("" likewise; a publish
+ *     then checks the scope owner's push access, see `publishview.ciPrincipal`)
  * @field createdAt {string} when it was minted (Unix seconds as text)
  * @field expiresAt {string} when it stops working ("" means never)
  * @field lastUsedAt {string} when it last authorised a write ("" means never)
@@ -72,8 +66,9 @@ export def struct Token {
 };
 
 /**
- * A freshly minted token: the record, the store to persist, and **the one and
- * only time the secret exists in readable form**.
+ * A freshly minted token: the record, the store to persist, and the secret, the
+ * only time it exists in readable form. Nothing returns one at present:
+ * `admin.cmdMintToken` mints into an `AdminResult`.
  * @field ok {bool} whether it was minted
  * @field error {string} why not
  * @field secret {string} the token to show the operator, once
@@ -105,8 +100,7 @@ func no(reason as string) {
 }
 
 /**
- * Does a string look like a CI token? A cheap shape check, so an obviously-wrong
- * credential is refused without touching the store.
+ * Whether a string has the shape of a CI token, checked before any store lookup.
  * @param secret {string} the presented token
  * @return {bool} true when it carries the prefix and some body
  */
@@ -115,8 +109,7 @@ export func looksLikeToken(secret as string) {
 }
 
 /**
- * Whether a token has expired at `now`. An empty `expiresAt` never expires,
- * which a deployment should treat as a thing to avoid rather than a default.
+ * Whether a token has expired at `now`. An empty `expiresAt` never expires.
  * @param t {Token} the token record
  * @param now {int} the current time (Unix seconds)
  * @return {bool} true when it has expired
@@ -132,11 +125,8 @@ export func isExpired(t as Token, now as int) {
  * May this token write to this deck?
  *
  * A token bound to a deck may write only that deck; a token bound to a scope may
- * write any deck under it. Both are checked against the **folded** name, so a
- * token minted for `@Acme/Tool` authorises `@acme/tool` and nothing else.
- *
- * Pure, and separate from the store lookup, so the matching rule has tests of
- * its own rather than being reachable only through a database.
+ * write any deck under it. Both compare folded names, so a token minted for
+ * `@Acme/Tool` authorises `@acme/tool`.
  * @param t {Token} the token record
  * @param deck {string} the deck being written
  * @return {bool} true when the token covers it
@@ -155,10 +145,8 @@ export func covers(t as Token, deck as string) {
 /**
  * Decide whether a presented token authorises a write, given its record.
  *
- * The store lookup is the caller's; this is everything after it, so the order of
- * the checks is testable. Expiry is checked before scope: a token that expired
- * should say so, rather than complaining about a deck it would never have been
- * allowed to write anyway.
+ * The store lookup is the caller's. Expiry is checked before scope, so an
+ * expired token reports its expiry.
  * @param t {Token} the record found for the presented token
  * @param deck {string} the deck being written
  * @param now {int} the current time (Unix seconds)
@@ -187,7 +175,7 @@ export func check(t as Token, deck as string, now as int) {
 
 /**
  * The expiry timestamp for a token minted at `now`, as text. A `ttl` of 0 means
- * never, which the caller should have to ask for explicitly.
+ * never, which the caller must ask for explicitly.
  * @param now {int} the minting time (Unix seconds)
  * @param ttl {int} how long it lives, in seconds (0 = never)
  * @return {string} the expiry as text, or "" for never

@@ -6,9 +6,8 @@
 #
 #     jennifer test src/identity/oidc_test.j
 #
-# This is the provider that covers Authelia and anything else standards
-# compliant, so the tests concentrate on reading a discovery document, which is
-# what makes one module serve providers of differing capability.
+# The tests concentrate on reading the discovery document, which is how one
+# module serves providers of differing capability.
 
 use testing;
 use json;
@@ -54,7 +53,6 @@ func testEndpointsComeFromTheDocument() {
 }
 
 func testFlowIsTakenFromTheProviderNotAssumed() {
-    # the whole reason one module can serve providers of differing capability
     testing.assertEqual(flowFrom(withDevice()), "device");
     testing.assertEqual(flowFrom(withoutDevice()), "authcode");
 }
@@ -89,9 +87,7 @@ func testPollUsesTheSharedVocabulary() {
 }
 
 func testTheProviderCanBeBuilt() {
-    # every name in the vtable must exist: a missing one stopped the server from
-    # booting with this provider. Lint flags it since 0.24.0-dev+113 (L108); no
-    # test that calls a function directly can, only building the struct
+    # every name in the vtable must exist, or the server fails to boot
     def p as identity.Provider init provider();
     testing.assertEqual(len($p.memberships(cfg(), "any-token")), 0);
 }

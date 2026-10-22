@@ -1,6 +1,6 @@
 # The Jennifer deck registry: server specification
 
-- **Version:** 0.3.0 (draft)
+- **Version:** 0.1.0 (draft)
 - **Date:** 2026-09-21
 - **Companion:** [specs-client.md](specs-client.md), the client half
 
@@ -9,19 +9,17 @@ This is the contract a deck registry must fulfil. The key words **MUST**,
 
 > **Scope.** This document owns the **wire format and the server's obligations**:
 > the naming grammar, the version record, the discovery document, the endpoints,
-> and what the registry must verify at publish time. The obligations of a client
-> consuming it - version negotiation, fetching and verifying code, and the login
-> flow - are specified in [specs-client.md](specs-client.md), which is maintained by
-> the jvc team. Where the client spec describes a payload, this document is
-> normative for its shape.
->
-> This document was split out of a single `registry-specs.md` on 2026-08-15, so
-> that each project owns its own side.
+> and what the registry must verify at publish time. The client's obligations
+> (version negotiation, fetching and verifying code, and the login flow) are
+> specified in [specs-client.md](specs-client.md), maintained by the jvc team.
+> Where the client spec describes a payload, this document is normative for its
+> shape.
 
 Sections 1 to 6 describe behaviour a registry must implement to be usable at
-all. Sections 7 to 11 describe the write and identity surface, which does not
-exist yet and is where you have design latitude. Section 12 covers the identity
-and forge interfaces, and the profile the public registry runs.
+all. Sections 7 to 11 describe the write and identity surface, which a read-only
+registry may omit and where an implementation has more design latitude. Section
+12 covers the identity and forge interfaces, and the profile the public registry
+runs.
 
 ---
 
@@ -40,8 +38,8 @@ and forge interfaces, and the profile the public registry runs.
 
 ### 2.1 Deck names
 
-A registry deck name is **scoped**: `@scope/deck`. The two halves have
-**different grammars**, because they do different jobs.
+A registry deck name is **scoped**: `@scope/deck`. The two halves do different
+jobs and have different grammars.
 
 ```
 scope = [a-z][a-z0-9-]{0,62}[a-z0-9]  |  [a-z]
@@ -53,8 +51,8 @@ deck  = [a-z][a-z0-9]{0,63}
   digits only, letter-initial. No hyphens, no underscores.
 - **`scope` is only ever a path segment**, in `vendor/<scope>/<deck>/`, so it
   **MAY** contain hyphens. It **MUST NOT** begin or end with one, and **MUST
-  NOT** contain two in a row. This exists so that real account names, which
-  commonly contain hyphens on every forge, can be expressed at all.
+  NOT** contain two in a row. This admits account names, which commonly contain
+  hyphens on every forge.
 - Neither half exceeds 64 characters.
 - The `@` and the single `/` are the only other characters permitted.
 - Examples: `@jennifer/routeros`, `@acme/tool2`, `@jennifer-language/routeros`.
@@ -69,13 +67,13 @@ Both halves are lowercase, and a registry **MUST normalise by folding** rather
 than merely rejecting: `@Netflix/Foo` is accepted and recorded as
 `@netflix/foo`, and a lookup for either form finds the same deck.
 
-Two reasons, and they compound:
+Two reasons:
 
 - **`vendor/` lands on case-insensitive filesystems.** macOS and Windows treat
   `vendor/Netflix/` and `vendor/netflix/` as one directory, Linux as two. Without
   folding, a lockfile resolves differently per platform.
-- **It removes impersonation structurally** rather than by a rule somebody has to
-  remember to enforce. There is only one form, so there is nothing to refuse.
+- **It removes case-variant impersonation.** With one form there is nothing to
+  refuse.
 
 This grammar is the **maximum** a conforming client must handle. A deployment
 **MAY** narrow it (12.6) and **MUST NOT** widen it, because a name outside it
@@ -83,8 +81,7 @@ produces records a conforming client cannot install.
 
 Folding costs nothing where scopes are derived from account names, because the
 providers are themselves case-insensitive for uniqueness while preserving the
-registered casing. GitHub is: `Netflix` and `netflix` are one account, canonically
-`Netflix`, so there is exactly one casing to fold.
+registered casing. On GitHub, `Netflix` and `netflix` are one account.
 
 #### Names reserved by the host filesystem
 
@@ -100,9 +97,9 @@ The comparison is against the folded name, so `CON` is rejected too.
 ### 2.2 Scope ownership
 
 **A scope is owned by a principal, identified by the identity provider's stable
-subject identifier** - a numeric account id on GitHub, a `sub` claim on an OIDC
-provider - which is a user or, in a later version, an organisation. It is
-**never** owned by whoever happened to claim it, and **never** bound to a login
+subject identifier** (a numeric account id on GitHub, a `sub` claim on an OIDC
+provider). The principal is a user or, in a later version, an organisation. A
+scope is never owned by whoever happened to claim it, and never bound to a login
 string.
 
 - A scope is a name **granted once, on proof of control**. It is not a live
@@ -111,27 +108,29 @@ string.
   caller currently act for the principal that owns this scope?**
 
 A scope **MAY** additionally carry **co-owners**: further principals, under the
-same provider, that may write under it. A co-owner is not a second holder of the
-scope - the record still names the principal it was granted to, and reassigning
-that is a different operation - so "who owns @acme" keeps one answer while "who
-may publish under it" can have several.
+same provider, that may write under it. A co-owner is not a second holder: the
+record still names the principal it was granted to, and reassigning that is a
+separate operation. "Who owns @acme" has one answer; "who may publish under it"
+can have several.
 
-Co-ownership is deliberately **not** self-service in this version. Adding one is
-an operator action (8.2), which keeps the governance questions an owners list
-otherwise raises - who may add, who may remove, whether the last owner can remove
-themselves - out of the protocol until organisation scopes (8.7) answer them
-properly. A registry **MUST NOT** let a co-owner be added to a scope with no
-owner: a reserved name has nobody to co-own with, and accepting one would produce
-a scope nobody holds that somebody can nevertheless write to.
+Co-owners are managed by the operator (8.2) or by the scope's **owner** through
+`POST /owners` (7), and by nobody else. A registry **MUST NOT** let a co-owner add
+or remove co-owners: one compromised or departing co-owner could otherwise add
+accounts that keep write access after it is removed, or remove the others. The
+owner cannot remove itself as a co-owner; changing who owns a scope is a
+reassignment, which is an operator action. Wider governance questions stay out
+of the protocol until organisation scopes (8.7) answer them. A registry **MUST
+NOT** let a co-owner be added to a scope with no owner: a reserved name has
+nobody to co-own with, and accepting one would produce a scope nobody holds that
+somebody can write to.
 
-That rule generalises to every **delegated** credential, and a registry **MUST
-NOT** authorise a write under a scope with no owner by any of them - a
-trusted-publisher binding (8.9), a CI token (8.10), or a bearer token. Each
-answers to a different authority: the binding, the token record, and the scope
-record respectively, and only the last of the three consults the scope at all. So
-a registry that checks ownership only where a credential is *created* leaves
-every credential created by another path, or created before the check existed,
-unchecked. The check belongs at the write, where the credential is relied on.
+The same applies to every **delegated** credential: a registry **MUST NOT**
+authorise a write under a scope with no owner by a trusted-publisher binding
+(8.9), a CI token (8.10), or a bearer token. These answer to the binding, the
+token record, and the scope record respectively, and only the last consults the
+scope. A check made only where a credential is *created* misses credentials
+created by another path or before the check existed, so the check belongs at the
+write.
 
 Section 8 specifies how a scope is claimed and what "act for" means. The rest of
 this document only needs the property: a scope resolves to one or more principal
@@ -143,25 +142,29 @@ A version is a **Semantic Versioning 2.0.0** string: `major.minor.patch` with
 optional `-prerelease` and `+build`. The registry **MUST** reject anything else.
 
 **No leading `v`.** `1.2.3` is a version; `v1.2.3` is not, and a registry
-**MUST** reject it rather than stripping the prefix. This follows from SemVer
-2.0.0, which excludes it, but it is stated here because it is the single most
-likely thing to get wrong: **a git tag conventionally carries the prefix and a
-version never may**, so both forms appear in one version record, one field
-apart. `version` is `1.2.3`; `ref` is whatever the tag was called, commonly
-`v1.2.3`. They answer different questions, and a registry **MUST NOT** store
-either as a normalised form of the other.
+**MUST** reject it rather than stripping the prefix. SemVer 2.0.0 already
+excludes it; it is restated because **a git tag conventionally carries the
+prefix and a version never may**, and both forms appear in one version record.
+`version` is `1.2.3`; `ref` is whatever the tag was called, commonly `v1.2.3`. A
+registry **MUST NOT** store either as a normalised form of the other.
 
-That is a rule about **storage**, not about comparison. Publishing compares the
-two deliberately (8.8 step 6), and that comparison **MUST** tolerate a single
-optional leading `v` on the tag side, since otherwise no conventionally tagged
-release could ever agree with its own manifest. What is forbidden is carrying
-the tolerance any further: the version recorded, served, resolved, and written
-into a lockfile is the manifest's, exactly as spelled.
+This rule governs **storage**, not comparison. Publishing compares the two
+(section 7, step 6), and that comparison **MUST** tolerate a single optional
+leading `v` on the tag side, or no `v`-tagged release could match its own
+manifest. The tolerance goes no further: the version recorded, served, resolved,
+and written into a lockfile is the manifest's, exactly as spelled.
 
 The rejection applies wherever a version appears: in a constraint (2.4), in a
-`deck.toml`, and in a path segment. Normalising the prefix away there would be
-worse than refusing it, because it makes two spellings of one version and leaves
-a client to guess which one a lockfile recorded.
+`deck.toml`, and in a path segment. Normalising the prefix away there would
+create two spellings of one version and leave a client to guess which one a
+lockfile recorded.
+
+**Build metadata does not make a new version.** SemVer gives `1.2.3+a` and
+`1.2.3+b` the same precedence, so they are one version. A registry **MUST**
+treat publishing either as a republish when the other is already published (a
+`409`, section 9): stored as two records they would be two commits behind
+one version number, and which one a client received would depend on the order
+it read them in.
 
 ### 2.4 Constraints
 
@@ -188,7 +191,8 @@ partial    = num [ "." num [ "." num ] ]
 | `^1.2` / `^1` | `>=1.2.0 <2.0.0` / `>=1.0.0 <2.0.0` |
 | `^0` | `>=0.0.0 <1.0.0` (zero-aware) |
 | `^0.0` | `>=0.0.0 <0.1.0` (zero-aware) |
-| `~1.2.3` / `~1.2` | `>=1.2.0 <1.3.0` |
+| `~1.2.3` | `>=1.2.3 <1.3.0` |
+| `~1.2` | `>=1.2.0 <1.3.0` |
 | `~1` | `>=1.0.0 <2.0.0` |
 | `>=1.0.0` etc. | the comparator holds |
 
@@ -203,17 +207,14 @@ prerelease are satisfied by no prerelease at all. A caret or tilde range is
 never satisfied by a prerelease, since its version is a partial and carries
 none.
 
-Because a constraint is a **single** expression here, with no compound ranges,
-this needs no per-comparator bookkeeping: there is one version in the
-constraint, and either it carries a prerelease on the candidate's core or it
-does not.
+A constraint has one version, so this needs no per-comparator bookkeeping.
 
 **Ordering is unaffected and MUST NOT change.** `0.1.0 < 0.2.0-dev < 0.2.0` is
-what SemVer section 11 requires and what comparison must keep doing. What
-changes is that ordering stops doubling as a membership test: a prerelease that
-does not satisfy the constraint is not a candidate, so it cannot be the highest
-satisfying version. Without this, a deck tagged `0.2.0-dev` outranks the last
-real release for every consumer who wrote `*` or `>=0.1.0`, silently.
+what SemVer section 11 requires. Ordering is not a membership test: a
+prerelease that does not satisfy the constraint is not a candidate, so it cannot
+be the highest satisfying version. Without this, a deck tagged `0.2.0-dev`
+silently outranks the last real release for every consumer who wrote `*` or
+`>=0.1.0`.
 
 **A registry MAY store prerelease versions**, and publishing one stays legal: a
 beta is a normal version record that consumers reach by naming it. A registry
@@ -225,8 +226,7 @@ constraint is satisfied by none of them and resolution fails. A client
 prerelease and the fact that a constraint must name it, because "no version
 satisfies `*`" otherwise reads as "this deck does not exist".
 
-Cargo and npm/node-semver both land here, so the rule a user brings from either
-ecosystem is the rule they get.
+Cargo and npm/node-semver behave the same way.
 
 **A partial is completed with zeros, and its ceiling comes from the form rather
 than from how many components were written.** A caret permits changes that do
@@ -235,9 +235,9 @@ ceiling of `2.0.0` while `^0` and `^0.0` narrow to `1.0.0` and `0.1.0`. A tilde
 permits patch-level changes when a minor is written and minor-level changes when
 only a major is, so `~1.2` stops at `1.3.0` but `~1` runs to `2.0.0`.
 
-Spelling these out is not decoration: the grammar above admits `^1` and `~1`, so
-a registry resolving server-side has to answer for them, and leaving the answer
-to the reader is what lets two implementations disagree about what `^1` means.
+The grammar admits `^1` and `~1`, so a registry resolving server-side has to
+answer for them; these rules keep two implementations from disagreeing about
+what `^1` means.
 
 **The registry is not the authority on resolution.** A client resolves the
 dependency graph locally, from per-deck metadata (section 5.1). The server-side
@@ -248,8 +248,7 @@ be omitted by a minimal implementation; 5.1 **MUST NOT** be.
 
 A version **MAY** carry keywords, which exist so a registry can group decks for
 browsing. They are the only publisher-supplied field that becomes part of the
-registry's own navigation, and a registry **MUST** treat them as untrusted for
-exactly that reason.
+registry's own navigation, so a registry **MUST** treat them as untrusted.
 
 A keyword is 2 to 32 characters of lowercase ASCII letters, digits, and single
 inner hyphens, with no leading, trailing, or doubled hyphen. That grammar makes a
@@ -269,8 +268,7 @@ A registry:
   cannot displace their own keywords by padding the list with refused ones.
 
 **No keyword is ever a reason to reject a publish.** A malformed or refused
-keyword costs the publisher that keyword. Failing a release over a tag would
-trade a working publish for a cosmetic one.
+keyword costs the publisher that keyword.
 
 Keywords are **per version**, and a registry presenting them **SHOULD** read them
 from the newest version, so that a keyword dropped in a later release stops
@@ -299,7 +297,7 @@ endpoints are projections of it.
 | `publishedAt` | string | no | publication time, Unix seconds as text |
 | `yanked` | bool | no | see section 9; absent means false |
 
-Notes that matter:
+Notes:
 
 - **`requires` drives transitive resolution.** It is the deck's own dependency
   table *at that version*, captured at publish time. It is not recomputed later.
@@ -326,18 +324,17 @@ either case**, and **MUST NOT** store one. That is the shape of a git object id,
 abbreviated or whole, and a ref of that shape is ambiguous with the object it
 names.
 
-The consequence is the client's, which is why the registry is the one that has
-to refuse it: a ref and an object id share one syntactic space, and wherever a
-name is resolved before an object - `git fetch <remote> <name>` against the
-advertised refs, or a `?ref=` parameter on a forge API, which resolves a name
-before an object by definition - a ref called `4a3b1c...` answers in place of the
-commit of that id. The fetch then verifies an object hash, correctly, and the
-object is not the pin. GitHub refuses such names at creation; GitLab, Gitea,
-Forgejo, Bitbucket and self-hosted servers do not.
+The client bears the consequence, so the registry has to refuse it. Wherever a
+name is resolved before an object (`git fetch <remote> <name>` against the
+advertised refs, or a `?ref=` parameter on a forge API), a ref called
+`4a3b1c...` answers in place of the commit of that id. The fetch then verifies
+an object hash correctly, and the object is not the pin. GitHub refuses such
+names at creation; GitLab, Gitea, Forgejo, Bitbucket and self-hosted servers do
+not.
 
 Seven digits is git's shortest abbreviation, so a shorter name cannot be read as
-an id; 64 is the longest object id there is. The rule costs a publisher one tag
-rename in the case where it fires at all, since a real tag is `v1.2.0`.
+an id; 64 is the longest object id there is. Real tags look like `v1.2.0`, so the
+rule rarely fires.
 
 A registry **SHOULD** additionally refuse a publish when the source repository
 holds a **branch or tag named exactly like the resolved commit**, because a
@@ -353,9 +350,7 @@ client's own verification closes it
 
 **`commit` identifies the code. `url` only says where a copy was last seen.**
 
-That distinction is load-bearing, and it has a consequence worth stating
-plainly, because "a published version is immutable" (section 9) invites the
-opposite reading:
+Despite "a published version is immutable" (section 9):
 
 > A registry **MAY** correct `url` on a published version when the upstream
 > repository moves, and doing so is **not** a mutation of the version. The
@@ -371,8 +366,8 @@ identity. Everything else about a published version is frozen.
 A client **MUST** be able to determine, before it does anything else, which API
 version a registry speaks and which optional operations it offers. Discovering
 that by trying a call and reading a `404` is not acceptable: a missing endpoint
-and an unsupported protocol version are different problems with different
-remedies, and a user deserves to be told which one they have.
+and an unsupported protocol version have different remedies, and the user needs
+to know which one applies.
 
 ### 4.1 The discovery document
 
@@ -414,7 +409,7 @@ This path never changes; it is the one thing a client may hard-code.
 | `apis[].basePath` | a base path all that version's endpoints hang off |
 | `apis[].deprecated` | whether that mount is deprecated |
 | `apis[].sunset` | optional ISO 8601 date after which it stops working; present only when deprecated |
-| `features` | the optional operations this registry actually offers (4.4) |
+| `features` | the optional operations this registry offers (4.4) |
 | `auth` | how to authenticate for writes; **absent when the registry accepts none** |
 | `auth.provider` | the identity provider: `"github"`, or a name the deployment chooses (12.2) |
 | `auth.flow` | `"device"` or `"authcode"` (12.2); a client **MUST** refuse a flow it does not know |
@@ -440,44 +435,40 @@ which differs per registry.
 and **MUST** omit it rather than guess: a registry sees a listen address and a
 `Host` header, and behind a proxy, in a container, or on a private network
 neither is its public name. An absent `url` means the deployment has not declared
-one, which is a better answer than a wrong one - this string ends up recorded in
-lockfiles as this registry's identity.
+one; a wrong one would be recorded in lockfiles as this registry's identity.
 
 It **MUST** be an absolute base URL with no trailing slash, so that one registry
 has one spelling. Clients **SHOULD** use it when recording which registry a deck
-came from (`specs-client.md` section 2.3), and **SHOULD** prefer it to whatever
-address they happened to dial.
+came from (`specs-client.md` section 2.3), and **SHOULD** prefer it to the
+address they dialled.
 
 A `url` that differs from the address the client used is **not** an error, and a
 client **MUST NOT** refuse the registry over it. A mirror, an internal name, and
 a public name are all legitimate ways to reach one registry. A client **MAY**
-say so once, because the same difference is also what a misdirected client looks
-like, and the person running it is the one who can tell those apart.
+say so once, since a misdirected client looks the same and only its user can
+tell the two apart.
 
 **A CI job cannot guess the audience.** A registry accepting 8.9 tokens **MUST**
 advertise `auth.trustedPublishing.audience`, because the job has to name it when
-minting the token and the registry rejects every other value. Publishing it is
-what makes the audience check enforceable rather than a shared secret by another
-name; it is not confidential, and its purpose is to stop a token minted for one
-registry being replayed at another.
+minting the token and the registry rejects every other value. The audience is
+not confidential; it stops a token minted for one registry being replayed at
+another.
 
 **The auth URLs are absolute paths, used verbatim.** They are the one exception
-to 4.2's rule about prefixing requests with a version's `basePath`, because they
-are given whole. A registry serving them under a version simply advertises
-`/v1/auth/device`.
+to the rule that a version's endpoints hang off its `apis[].basePath`. A registry
+serving them under a version advertises `/v1/auth/device`.
 
 **A version MAY appear more than once**, when it is served at several base
 paths. The registry **MUST** list the canonical path first, and a client
-**SHOULD** use the first entry for the version it selects. This is what lets a
-v1 registry advertise both `/v1` and the bare root (4.3).
+**SHOULD** use the first entry for the version it selects. This lets a v1
+registry advertise both `/v1` and the bare root (4.3).
 
 > **Implementation note, not normative.** This shape is what the bundled
 > `webapi` module's `webapi.discovery` emits, deriving `apis` and `features`
 > from the router's own table so the document cannot claim an operation that is
-> not served. `auth` is the one member a registry adds itself, which is exactly
-> why it must be added only when the endpoints behind it exist. Earlier drafts of
-> this document specified `specVersion` / `api[]` / `path` / `status`; those
-> names are retired.
+> not served. `auth` is the one member a registry adds itself, so it must be
+> added only when the endpoints behind it exist. The earlier names
+> `specVersion` / `api[]` / `path` / `status` are retired.
 
 ### 4.2 Version negotiation
 
@@ -490,9 +481,9 @@ v1 registry advertise both `/v1` and the bare root (4.3).
 
 `spec` and `apis[].version` answer different questions and move independently.
 `apis[].version` is the wire contract a client negotiates against. `spec` names
-the revision of *this document*, which can be reshaped - a section rewritten, a
-rule made explicit - without any endpoint changing, and a client **MUST NOT**
-refuse a registry on the strength of `spec` alone.
+the revision of *this document*, which can change (a section rewritten, a rule
+made explicit) without any endpoint changing. A client **MUST NOT** refuse a
+registry on the strength of `spec` alone.
 
 `spec` is a full **SemVer 2.0.0** string. Until the reference implementation is
 tagged `1.0.0` it stays **below** `1.0.0`, and a leading zero carries its usual
@@ -500,8 +491,7 @@ SemVer meaning: anything here may still change, including in ways that break a
 client. **A `0.y.z` specification is not a stable target to build against.**
 
 At the first stable release the two are tagged together at `1.0.0` and stay in
-step from then on, so "which revision of the specification does this registry
-implement" has exactly one answer. Before that point a client that needs to
+step from then on, so a `spec` string has one meaning. Before that point a client that needs to
 distinguish revisions **SHOULD** compare `spec` as a SemVer string rather than
 matching it exactly.
 
@@ -511,16 +501,16 @@ carry none of the meaning it carries in `spec`; and 4.3 makes v1 the floor a
 registry *without* a discovery document is assumed to speak, which a `v0` above
 it would contradict. The first wire contract is `v1` and stays `v1`.
 
-What that costs, stated plainly: **while `spec` is below `1.0.0`, v1 may change
-in a breaking way without the major bumping.** The permission to break comes from
-the `0.y` specification, and it is spent on the wire format as much as on the
-prose. A client written against a pre-1.0 registry **SHOULD** pin the `spec` it
-was tested against and treat a minor bump as a reason to re-read this document.
+**While `spec` is below `1.0.0`, v1 may change in a breaking way without the
+major bumping.** The permission to break comes from the `0.y` specification and
+covers the wire format as well as the prose. A client written against a pre-1.0
+registry **SHOULD** pin the `spec` it was tested against and treat a minor bump
+as a reason to re-read this document.
 From `1.0.0` the integer-major rule above takes full effect and a breaking change
 means `v2`, served alongside `v1` for as long as 4.5's deprecation allows.
 
-The client's obligations on reading this document - intersecting versions,
-choosing the highest, and failing usefully when the intersection is empty - are
+The client's obligations on reading this document (intersecting versions,
+choosing the highest, and failing usefully when the intersection is empty) are
 specified in [specs-client.md](specs-client.md) section 3.
 
 ### 4.3 Registries without a discovery document
@@ -536,7 +526,7 @@ in `apis` when both are advertised.
 
 ### 4.4 Feature names
 
-`features` names the optional operations a registry actually implements, so a
+`features` names the optional operations a registry implements, so a
 client can refuse an operation up front with a clear message instead of
 provoking a `404`.
 
@@ -545,8 +535,7 @@ mechanisms of 8.8 are all reached through `POST /publish`, so none of them adds 
 feature name; whether 8.9 is available is advertised by the presence of
 `auth.trustedPublishing`, and a CI token (8.10) needs no advertisement at all
 because it is presented rather than discovered. Keeping features one-to-one with
-routes is what lets a registry derive this list from its router instead of
-maintaining it by hand.
+routes lets a registry derive this list from its router.
 
 | Feature | Endpoint | Required |
 | ------- | -------- | -------- |
@@ -584,11 +573,10 @@ Returns one deck's whole record. **This is the endpoint a client's resolver
 depends on**; everything else is optional.
 
 > **The name MUST be a query parameter, not a path segment.** A scoped name
-> contains a `/`, and percent-encoding does not save you: most routers decode
+> contains a `/`, and percent-encoding does not help: most routers decode
 > `%2F` before matching, so `GET /decks/%40acme%2Ftool` matches a
-> two-segment route and resolves to the wrong thing. This is the single most
-> common way to get this API wrong. A path route **MAY** additionally be offered
-> for bare names, but the query form is the contract.
+> two-segment route and resolves to the wrong thing. A path route **MAY**
+> additionally be offered for bare names, but the query form is the contract.
 
 Response `200`:
 
@@ -632,14 +620,14 @@ A deck record **MAY** carry `successor`, the name of a deck that continues it:
 ```
 
 It exists for the rebrand case. An author who renames keeps `@old/foo` working
-and publishes onward as `@new/foo`; without a field for it, the only way to say
-so is prose in a description, and no tool can see it.
+and publishes onward as `@new/foo`; without the field, only prose in a
+description can say so, and no tool reads it.
 
 **It is advisory, and resolution MUST NOT follow it.** A constraint on
 `@old/foo` resolves within `@old/foo` and nowhere else. A client **MAY** show it
 ("this deck continues as `@new/foo`") and **MUST NOT** substitute it.
 
-That restriction is the whole point. An alias that resolution honoured would:
+An alias that resolution honoured would:
 
 - make a **published name mutable**, when name-to-deck is the one mapping that
   has to stay fixed for a lockfile to mean anything;
@@ -741,14 +729,21 @@ Response `200`:
       "name": "@acme/routeros",
       "description": "MikroTik RouterOS client",
       "latest": "0.2.0",
-      "versions": 2
+      "versions": 2,
+      "live": true,
+      "keywords": ["mikrotik", "net"]
     }
   ]
 }
 ```
 
-- `latest` is the highest published version by SemVer precedence, `""` when the
-  deck has none.
+- `latest` is the highest **live** (not yanked) version by SemVer precedence;
+  when every version is yanked it is the highest of those, with `live` false.
+  `""` when the deck has none.
+- `live` says whether any version is installable. `keywords` are the newest
+  version's. Both are additive to the first form of this response, so a client
+  **MUST** tolerate their absence.
+- A registry **MAY** refuse an over-long `q` with `400`.
 - Matching **SHOULD** be case-insensitive, and **SHOULD** rank name matches
   above description-only matches. The exact algorithm is not specified: a client
   displays the order it is given and **MUST NOT** depend on a particular one.
@@ -786,8 +781,8 @@ reader.
 repository, and the client fetches it from there. The registry stores metadata
 and the coordinates that identify exactly which code a version is.
 
-The client's side of this - fetching at the commit, verifying a checksum before
-unpacking - is [specs-client.md](specs-client.md) section 4. What follows is what the
+The client's side of this (fetching at the commit, verifying a checksum before
+unpacking) is [specs-client.md](specs-client.md) section 4. What follows is what the
 registry records and why.
 
 ### 6.1 What a deck's tree must contain
@@ -825,8 +820,8 @@ anybody changing anything.
 
 ### 6.3 The URL is mutable too, which is the harder case
 
-A tag moving is the obvious hazard. The **whole URL** moving is the one that
-catches people, and it follows from how GitHub handles renames:
+Beyond a moved tag, the **whole URL** can come to name something else, because
+of how GitHub handles renames:
 
 - a released username becomes claimable by anyone **immediately**, with no grace
   period;
@@ -866,45 +861,42 @@ denies it: `@old` is bound to Alice's numeric account id, and Mallory's newly
 registered `old` is a different id. Had scope ownership been derived from the
 login at publish time, Mallory would have been handed `@old` and could have
 published `@old/foo@1.0.1` pointing anywhere, taking over every consumer on
-`^1.0.0`. **That is the reason for binding to the id, and it is why this walk
-through is in the specification rather than in a commit message.**
+`^1.0.0`. **That is the reason for binding to the id.**
 
 #### The residual integrity caveat
 
 Git commit ids are SHA-1, for which chosen-prefix collisions are demonstrated.
 GitHub applies collision detection and rejects known-technique attempts, and
 producing a colliding *and useful* tree is harder again, so this is not a
-practical concern today. It is stated because controlling the repository is
-exactly the position such an attack would be mounted from. Git's migration to
+practical concern today. It is stated because controlling the repository is the
+position such an attack would be mounted from. Git's migration to
 SHA-256 is the durable answer.
 
 ### 6.4 Detecting a repository that changed hands
 
 Because of 6.3, a registry **SHOULD** record `repoId` and `repoOwnerId`
 (section 3) at publish time. Both are immutable numeric ids that survive renames
-and transfers, exactly as an account id does, so a later reclaim becomes
-**detectable rather than invisible**: resolve `repoId` against the host and
-compare the current owner to `repoOwnerId`.
+and transfers, as an account id does, so a later reclaim becomes
+**detectable**: resolve `repoId` against the host and compare the current owner
+to `repoOwnerId`.
 
 A registry **SHOULD** then:
 
 - warn, or refuse to serve the record, when the owning account has changed;
-- surface the discrepancy on the deck page, since that is the signal a human
-  evaluating the deck otherwise has no way to see.
+- surface the discrepancy on the deck page, since a human evaluating the deck
+  has no other way to see it.
 
-This extends the warning section 7 already permits for a tag that no longer
+This extends the warning 7.3 already permits for a tag that no longer
 points at the recorded commit. Neither check is required for a minimal
 implementation, and neither affects integrity; both address provenance.
 
 #### `repoId` is provenance, not identity
 
 **A registry MUST NOT treat `repoId` as a uniqueness key.** One repository may
-legitimately back decks under more than one scope, and the obvious case is a
-rebrand: an author who renames from `old` to `new` keeps `@old/foo` working
-(section 8.3) and wants `@new/foo` published from the same repository. The
-repository id is unchanged by a rename, so a uniqueness constraint added
-defensively would block exactly the flow the rename rules are designed to
-support.
+back decks under more than one scope. In a rebrand, an author who renames from
+`old` to `new` keeps `@old/foo` working (section 8.3) and wants `@new/foo`
+published from the same repository. The repository id is unchanged by a rename,
+so a uniqueness constraint would block the flow the rename rules support.
 
 The same holds for a repository that hosts a deck published under both a
 personal scope and an operator-granted vanity scope.
@@ -914,7 +906,7 @@ else.
 
 ### 6.5 Hosted artifacts remain valid
 
-`kind: "tar.gz"` stays supported for a deck published as an uploaded artifact -
+`kind: "tar.gz"` stays supported for a deck published as an uploaded artifact:
 a GitHub release asset, or any other URL. Those bytes are stable because somebody
 uploaded them rather than a service generating them, so `checksum` **MUST** be
 present and well-formed (`sha256:` followed by 64 lowercase hex digits).
@@ -923,12 +915,10 @@ present and well-formed (`sha256:` followed by 64 lowercase hex digits).
 
 ### 6.6 What not mirroring costs
 
-Stated plainly, so nobody is surprised:
-
 - **A deleted repository or a deleted tag makes a version uninstallable.** The
   recorded commit still identifies the code, so any fork or clone that retains
   the object can serve it, but the registry itself cannot. This is the
-  "left-pad" exposure, accepted deliberately.
+  "left-pad" exposure, and it is accepted.
 - **The registry's availability no longer implies installability.** A GitHub
   outage stops installs even when the registry is healthy.
 - **Rate limits apply to the consumer, not the registry.** Unauthenticated git
@@ -940,7 +930,7 @@ Stated plainly, so nobody is surprised:
 
 A registry **MAY** later keep a fallback copy of published trees without becoming
 the primary host. That is an operational decision, not a protocol change: the
-`url` would simply point elsewhere while `commit` stays the identity.
+`url` would point elsewhere while `commit` stays the identity.
 
 ## 7. Write API
 
@@ -950,19 +940,19 @@ the primary host. That is an operational decision, not a protocol change: the
 | `POST /yank` | mark a version yanked |
 | `POST /unyank` | reverse it |
 | `POST /claim` | claim a scope for the authenticated caller (8.2) |
-| `POST /owners` | add or remove a co-owner of a scope |
+| `POST /owners` | add or remove a co-owner of a scope; the owner only (2.2) |
 | `GET /scopes` | list registered scopes and who holds them |
 
 `GET /scopes` is the only one of these that needs no caller. It reports each
 scope's name, kind, and whether it is owned or reserved, and for an owned one the
-owner's **login** - not the subject id. The login is already visible on every
-deck page; the id is what authorisation binds to, and a public list of them is a
-list of exactly what an impersonator would need.
+owner's **login**, not the subject id. The login is already visible on every
+deck page; the id is what authorisation binds to, and a public list of ids is
+what an impersonator would need.
 
 A refused claim **SHOULD** distinguish its cause by status: `400` for a name
 outside the grammar, `409` for one already held or reserved, `403` for a policy
-that declines. Answering `403` to all three tells a caller their credentials are
-wrong when the real answer is a typo or a taken name.
+that declines. A blanket `403` would report a typo or a taken name as a
+credential problem.
 
 A publish names a **repository and a tag**, not an uploaded file. The registry
 does the resolving:
@@ -977,15 +967,14 @@ does the resolving:
 4. verify the caller has **name authority** over the scope in *that* name, and
    **source authority** over the repository (7.1);
 5. reject a name that is not scoped, or a version that is not SemVer;
-6. reject a version whose `deck.toml` version disagrees with the tag - a tag
-   `v1.0.0` whose manifest says `0.9.0` is a mislabelled release, not a
-   publishable one. A single leading `v` on the tag is ignored for this
-   comparison and nowhere else (2.3), so `v1.0.0` and `1.0.0` both agree with a
-   manifest saying `1.0.0`;
-7. reject a version that already exists (`409`) - **publishes are immutable**;
+6. reject a version whose `deck.toml` version disagrees with the tag (a tag
+   `v1.0.0` whose manifest says `0.9.0` is a mislabelled release). A single
+   leading `v` on the tag is ignored for this comparison and nowhere else (2.3),
+   so `v1.0.0` and `1.0.0` both agree with a manifest saying `1.0.0`;
+7. reject a version that already exists (`409`): **publishes are immutable**;
 8. verify the tree contains `src/` and `src/<deck>.j` (6.1).
 
-Point 3 matters: metadata that can be asserted independently of the code will
+On point 3: metadata that can be asserted independently of the code will
 eventually disagree with it. Read it from the commit, never from the request
 body.
 
@@ -996,24 +985,20 @@ repository into a scope its manifest does not name.
 
 ### 7.1 Two authorisations, not one
 
-Publishing binds a **name** to a **source**, and those are separate rights that
-earlier drafts of this document collapsed into a single line.
+Publishing binds a **name** to a **source**, and those are separate rights.
 
 | | Question | Answered by |
 | --- | --- | --- |
 | **Name authority** | may you publish under this scope? | the scope's principal id (8.1), locally |
 | **Source authority** | may you publish *this repository* as a deck? | the host, at publish time |
 
-Name authority alone is not enough, and the gap it leaves is concrete: the owner
-of `@acme` could publish a version of `@acme/spinner` sourced from
-`example.test/dana/spinner`, a repository they have no rights to, purely because
-that repository's manifest happens to name `@acme/spinner`. Everything in the
-list above would pass.
-
-That is bad in three ways, and the third is the one that bites the publisher:
+Name authority alone is not enough: the owner of `@acme` could publish a version
+of `@acme/spinner` sourced from `example.test/dana/spinner`, a repository they
+have no rights to, because that repository's manifest names `@acme/spinner`.
+Everything in the list above would pass. Three harms follow:
 
 - **Provenance.** Consumers see a deck under `@acme` and extend it that trust,
-  while the code is written by somebody else entirely.
+  while the code is written by somebody else.
 - **Availability.** The deck's source can be deleted or made private by a party
   who never agreed to maintain it.
 - **Takeover.** If the third-party repository later changes hands, its manifest
@@ -1036,6 +1021,30 @@ accepts. Neither holds universally: the caller may have authenticated with an
 identity provider the forge does not know (12.5), or the code may live somewhere
 with no API at all.
 
+Where identity and forge are **one service**, the credential is the provider
+token the caller's own login produced. A registry that issues its own token
+(8.4) no longer holds that one by the time the caller publishes, so it **MAY**
+retain it for this check alone, on these conditions:
+
+- it **MUST** be stored sealed (encrypted and authenticated) under a key the
+  database does not contain, so a copied database is not a set of live forge
+  credentials;
+- it **MUST NOT** appear in any response, log, or audit record;
+- it **MUST** be discarded when the account's tokens are revoked (8.5), and a
+  later login **SHOULD** replace it rather than accumulate;
+- it **MUST NOT** be used for anything but asking the forge about source
+  authority.
+
+Where they are **different services**, the registry asks with a credential of its
+own, as 12.5 describes. In either case a check that could not be made (no
+credential on record, a forge that would not answer, a role the registry does
+not recognise) is a check that did not pass.
+
+A CI token (8.10) is subject to this route as well. Since possession of it says
+nothing about a person, a registry checks the access of the account the token
+acts for: the one that minted it where that is recorded, and otherwise the
+owner of the scope it writes under.
+
 #### Route B: require a signed tag
 
 A scope **MAY** record one or more **verification public keys**. Where it does,
@@ -1046,8 +1055,7 @@ This route asks the forge for nothing. Verifying a signature needs only the
 ability to **read** the repository, which the registry already does to fetch
 `deck.toml`, so it works on a forge with no permissions API, on a self-hosted
 instance the registry holds no token for, on a mirror, and on a `file://` URL.
-Git has carried the machinery for years: GPG signatures, and SSH signatures since
-git 2.34.
+Git supports GPG signatures, and SSH signatures since git 2.34.
 
 It is also **strictly stronger than route A**. Push permission proves the caller
 can write to the repository *now*; a signature proves the scope owner authorised
@@ -1066,16 +1074,14 @@ assert which repository the job ran in, as a signed OIDC token (8.9). A registry
 This is the strongest of the three and the cheapest to check. Route A asks a
 third party a question about the caller and believes the answer; route B verifies
 an artifact the caller produced. Route C is the **issuer** stating, under its own
-signature, that a build ran in a named repository at a named ref - not a claim
-the caller makes about itself, and not one the caller can forge without
-compromising the forge.
+signature, that a build ran in a named repository at a named ref; the caller
+cannot forge that without compromising the forge.
 
-It answers both halves of this section at once. `repository_id` in the token is
-exactly the `repoId` 7.3 wants recorded, obtained from the party that assigns it,
-so provenance costs no extra call.
+It also supplies provenance: `repository_id` in the token is the `repoId` 7.3
+wants recorded, from the party that assigns it, with no extra call.
 
-Its limit is its precondition: it exists only when the publish comes from a CI
-job on a forge that issues these tokens. A publish from a laptop still needs
+It exists only when the publish comes from a CI job on a forge that issues these
+tokens. A publish from a laptop still needs
 route A or B.
 
 #### When neither route is available
@@ -1087,8 +1093,8 @@ should refuse, and a private one whose users are already trusted may reasonably
 record and display instead.
 
 **Decks are published from public repositories.** A private repository cannot be
-fetched by consumers, so this is not a restriction, and stating it resolves what
-the registry needs to read (7.2).
+fetched by consumers, so this is not a restriction; it settles what the registry
+needs to read (7.2).
 
 ### 7.2 What the registry reads, and with what rights
 
@@ -1098,25 +1104,26 @@ public, neither needs the OAuth `repo` scope: public contents are readable
 without authentication, and the `permissions` object is returned for a public
 repository to any authenticated user.
 
-> **To confirm before implementing.** That the `permissions` field is populated
-> for a public repository without `repo` scope is asserted here from the API's
-> documented shape and has not been verified against a live token. Check it
-> before relying on 8.6's scope list.
+> **Not yet confirmed.** That the `permissions` field is populated for a public
+> repository without `repo` scope is asserted here from the API's documented
+> shape and has not been verified against a live token; the reference
+> implementation relies on it unconfirmed. Check it before relying on 8.6's
+> scope list.
 
 ### 7.3 Recording the source
 
 A registry **SHOULD** record `repoId` and `repoOwnerId` (section 3) at publish,
 and **SHOULD** surface the owning account wherever the deck is shown. Even with
 source authority verified, the repository owner and the scope owner are
-frequently different accounts - an organisation repository published under a
-personal scope, for instance - and a reader evaluating a deck has no other way to
-see whose code it actually is.
+frequently different accounts (an organisation repository published under a
+personal scope, for instance), and a reader evaluating a deck has no other way to
+see whose code it is.
 
-Point 3 is what makes a moved tag harmless. Once published, moving `v1.0.0` in
-the repository changes nothing for consumers: the registry hands out the commit
-it resolved at publish time. It **MAY** additionally warn when a tag no longer
-points at the recorded commit, since that usually means somebody rewrote history
-by mistake.
+Step 2 of section 7 is what makes a moved tag harmless. Once published, moving
+`v1.0.0` in the repository changes nothing for consumers: the registry hands out
+the commit it resolved at publish time. It **MAY** additionally warn when a tag
+no longer points at the recorded commit, since that usually means somebody
+rewrote history by mistake.
 
 An example request body:
 
@@ -1132,9 +1139,8 @@ and the record it produces is in the appendix.
 ## 8. Identity and authorization
 
 **Identity is delegated. The registry MUST NOT issue passwords and MUST NOT
-maintain its own account system.** That deletes the expensive half of a package
-registry: signup, password reset, email verification, sessions, and the screens
-to administer them.
+maintain its own account system.** That removes signup, password reset, email
+verification, sessions, and the screens to administer them.
 
 **This section is written against GitHub**, because that is what the public
 registry configures (12.7). GitHub is a *profile*, not the protocol: section 12
@@ -1155,9 +1161,9 @@ which provider issued it, since a subject is only unique within its issuer.
 Logins are mutable. A GitHub login released by a rename or a deletion becomes
 claimable by anyone **immediately**, with no grace period, so binding to one
 hands an attacker who registers a freed username the right to publish under an
-established scope. Section 6.3 walks that attack end to end; it is the
-justification for this rule and worth reading before changing it. The same holds
-for any provider whose usernames can be reassigned, which is most of them.
+established scope. Section 6.3 walks that attack end to end and is the
+justification for this rule. The same holds for any provider whose usernames can
+be reassigned.
 
 So:
 
@@ -1177,7 +1183,7 @@ account. For an organisation scope they are not: `@microsoft` belongs to
 Microsoft's *organisation* id, and an employee who claims it does so **on behalf
 of** the org and receives nothing personally.
 
-Getting this wrong is not a subtlety. If the claimant became the owner, the first
+If the claimant became the owner, the first
 employee to claim a corporate scope would own it, keep it after leaving, and be
 able to publish under the company's identity indefinitely.
 
@@ -1203,15 +1209,15 @@ the author leaving the organisation, and the hijack returns one level down.
 **Name authority is a local integer comparison.** The bearer token carries the
 principal ids the caller may act for, the scope record carries the owner id, and
 authorising a write compares them without a lookup. That holds for an
-organisation scope (8.7) exactly as it does for a personal one: what differs is
+organisation scope (8.7) as it does for a personal one: what differs is
 *which* id the scope is bound to and *when* membership is established, never
 whether a network call decides a write.
 
 That is name authority only. **Publishing still calls the host**, to read the
 manifest at the commit and to check source authority (7.1), so a publish is not
-independent of GitHub. What this buys is that *scope ownership* never is: it
-cannot be changed by anything happening on GitHub after the token was minted,
-and it stays answerable when GitHub is unreachable.
+independent of GitHub. *Scope ownership* is: it cannot be changed by anything
+happening on GitHub after the token was minted, and it stays answerable when
+GitHub is unreachable.
 
 A scope may be obtained three ways.
 
@@ -1225,8 +1231,8 @@ the login is never consulted for authorisation again.
 
 A registry **MUST** refuse a claim for a scope already bound to a different
 principal, and **SHOULD** say so specifically rather than returning a bare
-`403`: the caller may legitimately hold that GitHub login today while an earlier
-holder still owns the registry scope (8.5). A dispute is an operator matter
+`403`: the caller may hold that GitHub login today while an earlier
+holder still owns the registry scope (8.3). A dispute is an operator matter
 (section 10).
 
 #### Derived: a member claiming their organisation
@@ -1238,28 +1244,27 @@ nothing personally: they can write under it for exactly as long as they remain a
 member.
 
 The organisations a caller may claim for are those their token carries, which
-are the ones the identity provider **disclosed** - not necessarily the ones they
+are the ones the identity provider **disclosed**, not necessarily the ones they
 belong to. A provider **MAY** withhold a membership from an application it has
-not been approved for, and GitHub does exactly that for any organisation with
-third-party application restrictions enabled.
+not been approved for, and GitHub does so for any organisation with third-party
+application restrictions enabled.
 
-That failure mode is silent by construction: the token is valid, the account is
-real, and the only symptom is a claim refused for a name the caller plainly
-belongs to. A registry therefore **SHOULD** report the organisations a token
+That failure is silent: the token is valid, the account is real, and the only
+symptom is a refused claim for an organisation the caller belongs to. A registry
+therefore **SHOULD** report the organisations a token
 carries in the token exchange's response (8.4's `orgs`), so the shortfall is
 visible at login rather than inferred from a later refusal.
 
 #### Granted: an operator assignment
 
-An operator **MAY** grant any scope to any principal id. This is not an
-exception, it is the general mechanism, and it is needed from the first day for
-three cases that derivation cannot serve:
+An operator **MAY** grant any scope to any principal id. This is the general
+mechanism, needed from the start for three cases that derivation cannot serve:
 
 - **a name that is not a GitHub name.** The `jennifer-language` organisation
   publishes official decks under `@jennifer`, which it does not own on GitHub;
 - **an organisation the provider will not disclose.** Organisation scopes are
   derivable (8.7), but only for a membership the identity provider is willing to
-  report; where it withholds one, the operator path is what remains;
+  report; where it withholds one, only the operator path remains;
 - **a dispute or a reassignment**, including releasing a deleted account's scope.
 
 A registry **MUST** be able to reserve names (its own, `@jennifer`, common
@@ -1276,7 +1281,7 @@ Because a scope is a name granted once on proof and bound to an id (8.1), **a
 GitHub rename is a non-event for the registry**. Nothing is revoked, nothing
 moves, and no record changes except the display label.
 
-Concretely, when `old` renames to `new`:
+When `old` renames to `new`:
 
 | | |
 | --- | --- |
@@ -1293,14 +1298,13 @@ there" without making a published name mutable.
 
 A registry **MUST NOT** freeze `@old` on rename either. The same principal
 controls both scopes, so there is nothing to protect against, and freezing would
-attach a mutable policy to a name whose stability is the point.
+subject a name that must stay stable to a mutable policy.
 
-**The cost, stated plainly.** The stranger who legitimately takes the GitHub
-login `old` can never claim `@old` here. That is unavoidable under id binding and
-is the price of the property in 8.1. It makes the operator dispute path load
-bearing rather than decorative.
+**The cost.** The stranger who legitimately takes the GitHub login `old` can
+never claim `@old` here. That is unavoidable under id binding and is the price of
+the property in 8.1. It makes the operator dispute path necessary.
 
-**An operational note worth passing to authors.** GitHub frees the old login
+**A note for authors.** GitHub frees the old login
 immediately, and repository redirects break the moment somebody recreates a
 repository of the same name under it (6.3). The one mitigation an author controls
 is to register a placeholder account holding their old login straight after
@@ -1321,9 +1325,9 @@ registry runs its own OAuth application.
 | `POST /auth/refresh` | exchange a refresh token for a new registry token |
 
 **The registry drives the flow against GitHub; the client never talks to GitHub
-and never holds a GitHub token.** That is what keeps the client free of
+and never holds a GitHub token.** This keeps the client free of
 per-registry configuration, keeps the OAuth application's identifiers and scopes
-the registry's business, and satisfies 8.4's rule that the registry issues its
+the registry's business, and satisfies 8.5's rule that the registry issues its
 own credential rather than passing GitHub's around. A registry **MAY** instead
 publish its `clientId` and let the client run the flow directly, but then it
 **MUST** advertise that id in the `auth` object, and it inherits the problem of a
@@ -1384,12 +1388,11 @@ identity that matters** (8.1); `login` is a display label.
 `orgs` is the organisation **logins** the token carries, sorted, and a registry
 that supports organisation scopes **SHOULD** return it. Present and empty means
 none; absent means the registry does not report them. Together with `login` it
-is the complete list of scopes this token could derive a claim for, which is why
-returning it matters: the list can be short for reasons invisible from the
-client side (8.2), and a caller who sees it at login recognises a missing
-organisation immediately instead of meeting an unexplained refusal later. The
-ids are deliberately **not** returned - a claim is typed as a name, and the id
-is the thing ownership binds to.
+is the complete list of scopes this token could derive a claim for. The list can
+be short for reasons invisible from the client side (8.2); a caller who sees it
+at login recognises a missing organisation immediately instead of meeting an
+unexplained refusal later. The ids are **not** returned: a claim is typed as a
+name, and the id is what ownership binds to.
 
 `refreshToken` is optional, and present only when the registry offers 8.4's
 refresh path.
@@ -1415,23 +1418,21 @@ It carries the account id, the login, and an expiry; the client sends it as
 No session store, no cookie, no CSRF: it is an API call with a header.
 
 **The token is opaque to the client.** A client presents it and does not parse,
-verify, or depend on its shape; the example in 8.4 shows a JWT because that is
-the obvious choice, and its `alg` is illustrative rather than part of this
-contract.
+verify, or depend on its shape; the example in 8.4 shows a JWT, and its `alg` is
+illustrative rather than part of this contract.
 
 **Which signature algorithm to use follows from who verifies.** While the
 registry is the only party that verifies its own tokens, a symmetric algorithm
 is sufficient and simpler: one key, no distribution.
 
-A registry that ever lets **anything else** verify - a CDN edge authorising at
-the boundary, a companion service, a second implementation - **MUST** switch to
+A registry that ever lets **anything else** verify (a CDN edge authorising at
+the boundary, a companion service, a second implementation) **MUST** switch to
 an asymmetric algorithm and publish the public key. With a symmetric key, the
 ability to verify *is* the ability to sign, so handing a verifier the key hands
-it the power to mint tokens for any account. There is no way to delegate one
-without the other.
+it the power to mint tokens for any account.
 
-That is worth deciding before the second verifier exists rather than during it,
-because the migration has to bridge tokens signed both ways.
+Decide this before the second verifier exists, because the migration has to
+bridge tokens signed both ways.
 
 Consequences to design for:
 
@@ -1457,28 +1458,27 @@ The OAuth app **SHOULD** request the narrowest scopes that work:
 | `read:user` | the account's stable id and login |
 | `read:org` | organisation membership, to authorise an org-owned deck scope |
 
-**No `repo` scope is needed**, but not because the registry avoids repository
-data: publishing reads `deck.toml` at a commit and checks the caller's
-permissions on the repository (7.1, 7.2). Both are reachable without it, because
-**decks are published from public repositories**. The `repo` scope exists for
+**No `repo` scope is needed.** Publishing reads `deck.toml` at a commit and
+checks the caller's permissions on the repository (7.1, 7.2); both are reachable
+without it, because **decks are published from public repositories**. The `repo` scope exists for
 private repository access, which a public registry has no use for and should not
 hold.
 
-`read:org` is listed for the organisation surface in 8.7, and is not needed by a
-version 1 registry.
+`read:org` is needed only for organisation scopes (8.7); a registry that offers
+none can leave it out.
 
 ### 8.7 Organisation scopes
 
-> Co-owners (2.2) are the interim answer to the same need, and a deliberately
-> weaker one: they are an explicit list, so a departure is revoked only when
-> somebody remembers to revoke it. Organisation scopes replace the list with a
-> question asked of the provider, which is why they are still worth building even
-> though co-owners exist. The two are complementary - a list can express a
-> collaborator from outside the organisation, which membership cannot.
+> Co-owners (2.2) are the interim answer to the same need, and a weaker one: they
+> are an explicit list, so a departure is revoked only when somebody remembers to
+> revoke it. Organisation scopes replace the list with a question asked of the
+> provider. The two are complementary: a list can express a collaborator from
+> outside the organisation, which membership cannot.
 
 
 A scope **MAY** be owned by an **organisation** rather than a person. Such a
-scope is granted by an operator (8.2) and marked as an organisation scope; every
+scope is granted by an operator, or claimed by an active member (8.2), and marked
+as an organisation scope; every
 later write under it asks whether the caller can act for that organisation,
 instead of comparing their own id.
 
@@ -1491,9 +1491,9 @@ The shape follows from 8.1 without further choices:
   **now**, so somebody who leaves stops being able to publish, yank, or change
   owners under it, promptly and without any bookkeeping.
 
-`GET /user/memberships/orgs/{org}` answers exactly that question about the caller
+`GET /user/memberships/orgs/{org}` answers that question about the caller
 and returns `role` (`admin`, `member`, `billing_manager`) and `state` (`active`,
-`pending`). Two exclusions are not negotiable:
+`pending`). Two exclusions always apply:
 
 - **`state: pending` is not membership.** An invited but unjoined account has
   accepted nothing.
@@ -1502,38 +1502,38 @@ and returns `role` (`admin`, `member`, `billing_manager`) and `state` (`active`,
 
 **What counts as acting for an organisation: any `active` member.** `admin` only
 is safer but impractical, since the engineers who publish are usually not
-organisation admins; a designated team is the middle path npm effectively takes,
-at the cost of another API call and per-organisation setup. A deployment that
+organisation admins; a designated team is the middle path (npm's, in effect), at
+the cost of another API call and per-organisation setup. A deployment that
 wants either of the stricter rules narrows it in its policy module (12.6); this
 document specifies the broad rule as the default and requires the two exclusions
 above regardless.
 
-The consequence is worth stating plainly: **anyone an organisation adds becomes
-able to publish under its scope.** That is the same trust an organisation already
+**Anyone an organisation adds becomes able to publish under its scope.** That is
+the same trust an organisation already
 extends by granting repository write access, and it is why membership is asked
 rather than stored.
 
 #### When membership is read
 
-A registry that discards the provider token after login (8.4, which this
+A registry that discards the provider token after login (8.5, which this
 specification recommends) **cannot** ask the provider at write time, because it
 holds no credential to ask with. It **MUST** therefore read memberships during
 the exchange and carry them in its own token, and it **MUST** record when they
 were read.
 
-Two rules keep that honest:
+Two rules bound it:
 
 - A refreshed token **MUST NOT** advance the membership timestamp. Refreshing
   proves possession of a refresh token, not continued membership; letting it
-  move would make a stale membership renewable indefinitely, which is the exact
-  failure an explicit owners list has.
+  move would make a stale membership renewable indefinitely, the same failure an
+  explicit owners list has.
 - A registry **SHOULD** refuse an organisation-scope write whose memberships are
   older than a configured window, and say so, so the caller logs in again rather
   than being told they lack access they in fact have.
 
 The cost is that revocation is not instant: somebody removed from an
 organisation keeps write access until their token's memberships age out. That
-bound is the honest form of 8.1's promise, and it is still far better than a list
+bound is the practical form of 8.1's promise, and still better than a list
 somebody has to remember to edit.
 
 Two consequences to design for:
@@ -1547,17 +1547,17 @@ Two consequences to design for:
 
 ### 8.8 Publishing without a browser
 
-Everything in 8.4 assumes a human at a browser. That assumption breaks for the
-most common publish there is: a pipeline that has just run the tests and should
-release what it proved. A device grant cannot be completed by a runner, and a
-registry that offers no alternative pushes every publisher toward the one thing
-this section exists to prevent - a human pasting a long-lived credential into a
-CI secret, or worse, publishing by hand from a laptop after a green build.
+Everything in 8.4 assumes a human at a browser. The most common publish is a
+pipeline that has just run the tests and should release what it proved, and a
+device grant cannot be completed by a runner. A registry that offers no
+alternative pushes publishers toward what this section exists to prevent: a
+human pasting a long-lived credential into a CI secret, or publishing by hand
+from a laptop after a green build.
 
 A registry that accepts writes **MUST** therefore offer at least one
 non-interactive path, and **SHOULD** offer 8.9 where its forge supports it.
 
-Two mechanisms, and they are not equivalent:
+Two mechanisms, not equivalent:
 
 | | 8.9 Trusted publishing | 8.10 CI token |
 | --- | --- | --- |
@@ -1574,7 +1574,7 @@ registry **MUST NOT** treat it as the recommended path.
 
 Both bootstrap from 8.4: registering a trusted publisher, or minting a token, is
 a write like any other and is authorised by 8.2's scope binding. **The browser
-step does not disappear, it becomes one-time.**
+step becomes one-time.**
 
 ### 8.9 Trusted publishing
 
@@ -1607,11 +1607,21 @@ A registry **MUST**, in this order:
 3. verify `aud` **matches a value this registry chose and published**, and reject
    a token minted for any other audience;
 4. match the repository, workflow, and ref claims against a registered binding;
-5. authorise the write against that binding, and no other credential.
+5. match the run to the release: where the token carries the commit the job ran
+   at (`sha` on all three providers below), it **MUST** be the commit the
+   published tag resolves to, and a token whose ref is a tag **MUST** be for the
+   tag being published;
+6. authorise the write against that binding, and no other credential.
+
+Step 5 ties a publish to the build that produced it. Without it, any
+run of a bound workflow on any matching ref could publish any tag of the
+repository, an older or unreviewed one included. A provider that reports a bare
+ref name (GitLab's `ref`, with `ref_type`) is matched in its full `refs/tags/`
+or `refs/heads/` form, so a `refPattern` means the same thing everywhere.
 
 Step 3 is not optional. Without an audience check, a token minted for an
-unrelated service - or for a *different registry* - is replayable here by whoever
-receives it, and CI tokens are handed to third-party actions routinely.
+unrelated service (or for a *different registry*) is replayable here by whoever
+receives it, and CI tokens are routinely handed to third-party actions.
 
 A registry **MUST** reject a token whose claims match no binding, and **MUST
 NOT** fall back to creating one. Auto-binding on first use would let whichever
@@ -1629,10 +1639,13 @@ Match on the individual claims.
 | repository id | `repository_id` | `project_id` | `repository_id` |
 | repository | `repository` | `project_path` | `repository` |
 | workflow | `job_workflow_ref` | `workflow_ref` | `workflow` |
-| ref | `ref` | `ref` | `ref` |
+| ref | `ref` | `ref` + `ref_type` | `ref` |
+| commit | `sha` | `sha` | `sha` |
 
-> **Partly verified.** The *forge* endpoints for all three are exercised against
-> live instances (github.com, gitlab.com, codeberg.org). The **CI claim names in
+> **Partly verified.** The *forge* read endpoints for all three (repository ids,
+> tag resolution, a file at a commit) were exercised against live instances
+> (github.com, gitlab.com, codeberg.org); the permission checks were not (12.3).
+> The **CI claim names in
 > the table above are not**: they need a pipeline run on each, which needs an
 > account on each. The GitHub Actions set is the one the reference implementation
 > is built against.
@@ -1651,7 +1664,7 @@ authority. It only removes the ordering problem.
 
 ### 8.10 CI tokens
 
-Where 8.9 is unavailable - a laptop, a cron job, a CI system with no OIDC - a
+Where 8.9 is unavailable (a laptop, a cron job, a CI system with no OIDC), a
 registry **MAY** issue a long-lived bearer token for non-interactive use.
 
 Because such a token is a standing credential, a registry that issues them:
@@ -1684,8 +1697,7 @@ accepting the publish.
 ## 10. The website
 
 The web surface **SHOULD** be read-only. Every author action belongs in the CLI
-(section 7). What the web is genuinely needed for is **discovery and
-evaluation**:
+(section 7). The web is for **discovery and evaluation**:
 
 - a deck page with the version history, dependencies, declared capabilities, and
   required engines (and, when available, the rendered README and license);
@@ -1706,8 +1718,8 @@ working when the write service is down, which is the outage that matters.
 There **SHOULD NOT** be a web publish form, account management pages, or an admin
 UI.
 
-**Operator actions** - taking down a malicious deck, force-yanking, reassigning a
-scope after a dispute or a deleted account, invalidating an identity's tokens -
+**Operator actions** (taking down a malicious deck, force-yanking, reassigning a
+scope after a dispute or a deleted account, invalidating an identity's tokens)
 are rare and privileged. They **SHOULD** be an operator CLI rather than a web
 surface that has to be defended. They are not user-facing.
 
@@ -1726,7 +1738,7 @@ surface that has to be defended. They are not user-facing.
 ## 12. Providers and profiles
 
 Nothing in sections 1 to 11 is inherent to GitHub. A registry depends on external
-services in exactly two roles, and both are pluggable; the public registry simply
+services in exactly two roles, and both are pluggable; the public registry
 configures GitHub for both.
 
 ### 12.1 Two roles, which only coincide on GitHub
@@ -1738,7 +1750,7 @@ configures GitHub for both.
 
 On `github.com` one service plays both, which is why the earlier sections read as
 though there were only one. A deployment commonly pairs an SSO provider with a
-self-hosted forge - Authelia in front of Gitea, say - so a registry **MUST** allow
+self-hosted forge (Authelia in front of Gitea, say), so a registry **MUST** allow
 the two to be configured independently.
 
 ### 12.2 What a registry needs from an identity provider
@@ -1754,10 +1766,10 @@ The subject is the `sub` claim for OIDC and the numeric id for GitHub. A registr
 **MUST** store it together with its issuer, because a subject is unique only
 within one.
 
-Any OAuth 2.0 or OIDC provider satisfying that can be used, which means a generic
-OIDC provider covers Authelia, Keycloak, and anything else standards-compliant
-without bespoke code. A dedicated provider is worth writing only where the
-service deviates from the standard or offers something extra worth using.
+Any OAuth 2.0 or OIDC provider satisfying that can be used, so a generic OIDC
+provider covers Authelia, Keycloak, and anything else standards-compliant without
+bespoke code. A dedicated provider is needed only where the service deviates from
+the standard or offers something extra.
 
 #### Flows
 
@@ -1769,7 +1781,7 @@ service deviates from the standard or offers something extra worth using.
 | `"authcode"` | the client runs authorization code + PKCE with a loopback redirect (RFC 8252), then exchanges the result at `tokenUrl` | works with any OAuth2 provider, but the client must open a browser, listen on `127.0.0.1`, and be told the provider's endpoints |
 
 `"device"` is preferred wherever the provider implements it, because it keeps the
-client dumb and provider-agnostic. A registry advertising `"authcode"` **MUST**
+client simple and provider-agnostic. A registry advertising `"authcode"` **MUST**
 additionally advertise `authorizeUrl`, `clientId`, and `scopes`, since the client
 cannot construct those itself.
 
@@ -1791,13 +1803,14 @@ stored by the client**; it is exchanged for the registry's own credential (8.5).
 | ----- | ---------------- | ----- |
 | GitHub | `GET /repos/{owner}/{repo}` -> `permissions.push` | |
 | GitLab | `GET /projects/{id}` -> `permissions`, project or group access level | write is access level 30 (developer) or above; self-hosted differs only in base URL |
-| Gitea | `GET /repos/{owner}/{repo}` -> `permissions.push` | API is deliberately GitHub-shaped |
+| Gitea | `GET /repos/{owner}/{repo}` -> `permissions.push` | API is GitHub-shaped |
 | Forgejo | as Gitea | a Gitea fork; the API is compatible |
 
-> **Verify before implementing.** These endpoint shapes are stated from each
-> forge's documented API and have **not** been exercised against a live instance.
-> Confirm each, and confirm the minimum token scope that returns a populated
-> permission field, before depending on the table.
+> **Partly verified.** The read endpoints (repository and owner ids, tag
+> resolution, a file at a commit) were exercised against github.com, gitlab.com
+> and codeberg.org (Forgejo) on 2026-08-16. The **permission checks in this
+> table were not**: they need a real caller token. Confirm each, and the minimum
+> token scope that returns a populated permission field, before depending on it.
 
 **Self-hosted is configuration, not a separate provider.** GitLab, Gitea, and
 Forgejo self-hosted instances speak the same API as their hosted counterparts and
@@ -1807,15 +1820,13 @@ Gitea fork and needs no module of its own unless the APIs diverge.
 ### 12.4 Selecting providers
 
 A deployment configures **one identity provider** and **one or more forges**. Each
-forge declares which URLs it handles, which is what lets a private registry accept
+forge declares which URLs it handles, which lets a private registry accept
 both an internal Forgejo and public GitHub dependencies in one graph.
 
 A version record whose `url` matches no configured forge is unverifiable, and 7.1
 applies: refuse, or record the source as unverified and show it.
 
 ### 12.5 When identity and forge are different services
-
-This is the part that does not follow from the public design.
 
 When GitHub is both roles, the login flow yields a GitHub token, so the registry
 can ask GitHub about the caller's permissions directly. **With Authelia in front
@@ -1834,8 +1845,8 @@ A registry therefore **MUST** be configured with one of:
 
 Mapping an identity onto a forge account **MUST NOT** be done by matching display
 names. A registry **SHOULD** use a claim the provider asserts and the forge agrees
-with - typically the same directory's username or email when both are backed by
-one LDAP or OIDC source - and **MUST** treat a failed mapping as unverifiable
+with (typically the same directory's username or email when both are backed by
+one LDAP or OIDC source), and **MUST** treat a failed mapping as unverifiable
 rather than as permission granted.
 
 ### 12.6 Policy is the third axis, and it is pure
@@ -1850,12 +1861,12 @@ A deployment therefore names three things:
 ```
 identity = github
 forge    = github
-policy   = official
+policy   = derived
 ```
 
-**A policy module MUST NOT perform I/O.** It receives facts already gathered - the
+**A policy module MUST NOT perform I/O.** It receives facts already gathered (the
 authenticated subject, the requested scope, the outcome of the source-authority
-check - and answers allow or deny. Two things follow, and both are the point:
+check) and answers allow or deny. Two things follow:
 
 - every decision that governs who may publish what lands in **one small
   auditable file**, rather than being spread across the code that talks to
@@ -1897,8 +1908,8 @@ Two notes on choosing:
   an organisation there are no strangers. `operator` gives a namespace that maps
   onto teams; `firstcome` gives no friction at all.
 - **`firstcome` is hard to reverse.** A scope name then means only that somebody
-  asked first, which is Packagist's position and a perfectly workable one, but
-  names are far cheaper to protect before they are handed out than after. A
+  asked first, which is Packagist's position and workable, but names are
+  cheaper to protect before they are handed out than after. A
   registry that may one day be public should think twice about starting there.
 
 ### 12.7 The official public registry
@@ -1918,9 +1929,9 @@ rather than protocol:
 | source authority | route A on GitHub, route B elsewhere |
 | name grammar | exactly 2.1, unnarrowed |
 
-Where earlier sections state a GitHub fact as though it were universal - a
-released login being immediately claimable (6.3), case-insensitive account
-uniqueness (2.1) - it is this profile being described. The reasoning generalises;
+Where earlier sections state a GitHub fact as though it were universal, such as
+a released login being immediately claimable (6.3) or case-insensitive account
+uniqueness (2.1), it is this profile being described. The reasoning generalises;
 the specifics do not.
 
 #### One identity, several forges
@@ -1935,16 +1946,15 @@ holds a GitHub credential, which GitLab will not accept, so it cannot ask GitLab
 whether the caller may push (12.5). A cross-forge deck is therefore published
 under **route B**, a tag signed by a key the scope has registered (7.1).
 
-That ordering matters operationally: **key registration has to exist before a
-second forge can be accepted.** Adding `gitlab` to the forge list without it
-would leave every GitLab-hosted publish unverifiable, and this profile refuses
-those.
+**Key registration has to exist before a second forge can be accepted.** Adding
+`gitlab` to the forge list without it would leave every GitLab-hosted publish
+unverifiable, and this profile refuses those.
 
 #### Caveats of the strict profile
 
 `derived` is the strictest self-service policy, and the failure modes it leaves
-are predictable enough to prepare for. Acting on these before opening claims is
-far cheaper than afterwards.
+are predictable. Acting on these before opening claims is cheaper than
+afterwards.
 
 **Do before opening claims:**
 
@@ -1952,14 +1962,14 @@ far cheaper than afterwards.
   taking it back is a dispute. `@jennifer` in particular is claimable by anyone
   who registers that GitHub username, and the org that needs it is called
   `jennifer-language`.
-- **Decide the organisation story.** Organisation scopes are not in version 1
-  (8.7), so an organisation's decks either sit under an individual's personal
-  scope or need an operator grant. **Prefer the operator grant**: moving a deck
-  out of a person's scope later is a rename that the no-aliasing rule (8.3)
-  deliberately makes awkward.
+- **Decide the organisation story.** An organisation scope (8.7) can be claimed
+  only by a member whose membership the provider discloses (8.2), so an
+  organisation that withholds it needs an operator grant, or its decks end up
+  under an individual's personal scope. **Prefer the operator grant**: moving a
+  deck out of a person's scope later is a rename that the no-aliasing rule (8.3)
+  makes awkward.
 - **Open the operator queue.** Derivation does not cover a name the provider does
-  not have, so operator grants are not an exception path, they are load bearing
-  from day one.
+  not have, so operator grants are a primary path from the start.
 
 **Expect, and have an answer ready:**
 
@@ -1969,12 +1979,11 @@ far cheaper than afterwards.
   dispute path (10).
 - **Typosquatting, which derivation does not address.** `@micr0soft` is unclaimed
   upstream, so somebody registering that username may derive it legitimately. The
-  reserved list and takedown are the only answers; do not expect the policy to
-  help.
+  reserved list and takedown are the only answers.
 - **Hyphen friction.** A GitHub repository called `my-deck` cannot be a deck named
   `my-deck`: the deck half of a name is a Jennifer identifier and takes no hyphens
-  (2.1), though the scope half does. Authors will hit this and it needs saying in
-  the manual, not in a rejection message.
+  (2.1), though the scope half does. Authors will hit this; it belongs in the
+  manual, not in a rejection message.
 - **Deleted accounts freeze their scopes.** When an account goes, its scopes
   become unclaimable by design (8.1), and the decks under them can no longer be
   published or yanked. Only an operator reassignment unfreezes them, so that

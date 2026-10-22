@@ -5,21 +5,16 @@
 /**
  * TLS certificates from Let's Encrypt, stored under the data directory.
  *
- * The registry already runs an HTTP listener and already owns a writable
- * directory, which is everything the **HTTP-01** challenge needs: the CA asks for
- * a token at `/.well-known/acme-challenge/<token>`, and the answer is a file. So
- * the flow here writes challenge responses to a directory that `bin/serve` serves
- * statically, rather than standing up a second listener or reaching for DNS.
+ * Uses the HTTP-01 challenge: the CA asks for a token at
+ * `/.well-known/acme-challenge/<token>`, and the answer is a file written to a
+ * directory that `bin/serve` serves statically.
  *
- * **Renewal is decided from a recorded issue time, not from the certificate.**
- * There is no certificate parser in the standard library, and reaching into the
- * DER through `asn1` to read `notAfter` would be a lot of fragile code to learn
- * something we already know: we issued it, so we wrote down when. `issued` sits
- * beside the pair and holds Unix seconds.
+ * Renewal is decided from a recorded issue time, since the standard library has
+ * no certificate parser. `issued` sits beside the pair and holds Unix seconds.
  *
- * Everything that *decides* is pure and tested - which paths, whether it is time
- * to renew, whether a token is safe to write. The ACME conversation itself is one
- * impure function, because it needs a network and a CA.
+ * Paths, renewal timing and token filtering are pure. The stored files are read
+ * and written by `issuedAt`, `load`, `hasBundle` and `save`; `obtain` is the ACME
+ * conversation, the only network call.
  * @module certs
  * @example
  * import "./certs.j" as certs;
@@ -35,15 +30,13 @@ use crypto;
 import "acme.j" as acme;
 import "./config.j" as config;
 
-# How long a Let's Encrypt certificate lives. Used only to decide when to renew;
-# nothing here depends on the CA honouring it exactly, because `renewBeforeDays`
-# is subtracted from it and the result is compared against our own record.
+# How long a Let's Encrypt certificate lives. Used only to decide when to renew,
+# minus `renewBeforeDays`, against the recorded issue time.
 def const LIFETIME_DAYS as int init 90;
 def const SECONDS_PER_DAY as int init 86400;
 
-# How patiently to wait on the CA. A challenge is usually settled in seconds; a
-# busy CA can take longer, and giving up early means a failed boot rather than a
-# slow one.
+# How long to wait on the CA. A busy CA can take well over the usual few seconds,
+# and giving up early fails the boot.
 def const POLL_INTERVAL_MS as int init 2000;
 def const POLL_TRIES as int init 30;
 
@@ -59,10 +52,9 @@ export def struct Bundle {
     issuedAt as int
 };
 
-# safeName reduces a domain to something safe to use as a directory name. A
-# configured domain is operator input that becomes a filesystem path, so anything
-# outside the allowed set is replaced rather than trusted: a domain containing
-# `/` or `..` would otherwise write outside the certificate directory.
+# safeName reduces a domain to a safe directory name. Characters outside the
+# allowed set are replaced, so a domain containing `/` or `..` cannot write
+# outside the certificate directory.
 func safeName(domain as string) {
     def allowed as string init "abcdefghijklmnopqrstuvwxyz0123456789.-";
     def out as string init "";
@@ -73,14 +65,11 @@ func safeName(domain as string) {
             $out = $out + $ch;
         }
     }
-    # A dot is legal in a domain, so the character filter alone still admits
-    # `..`, and a name of exactly `..` would resolve to the parent directory.
-    # Collapse the pair, repeatedly, since replacing "..." once leaves "..".
+    # The filter admits dots, so `..` is replaced repeatedly ("..." once leaves "..").
     while (strings.contains($out, "..")) {
         $out = strings.replace($out, "..", "__");
     }
-    # A name that filtered down to nothing, or to dots alone, addresses the
-    # directory itself rather than something inside it.
+    # An empty name or "." would address the directory itself.
     if (strings.trim($out) == "" or $out == ".") {
         return "_";
     }
@@ -109,9 +98,8 @@ export func pathsFor(tls as config.Tls, domain as string) {
 }
 
 /**
- * The account key's path. One key per deployment, not per domain: an ACME
- * account is the deployment's identity to the CA, and regenerating it on every
- * renewal would register a new account each time.
+ * The account key's path. One key per deployment, since a new key registers a
+ * new ACME account.
  * @param tls {config.Tls} the TLS configuration
  * @return {string} the account key path
  */
@@ -119,10 +107,9 @@ export func accountKeyPath(tls as config.Tls) {
     return $tls.certDir + "/account.key";
 }
 
-# safeToken filters a challenge token for use as a filename, **preserving case**.
-# An ACME token is base64url, where case is significant: folding it would let two
-# distinct tokens collide on one file, and the second challenge would be answered
-# with the first one's response.
+# safeToken filters a challenge token for use as a filename, preserving case.
+# An ACME token is base64url, so folding case would let two tokens collide on one
+# file.
 func safeToken(token as string) {
     def allowed as string init "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     def out as string init "";
@@ -140,12 +127,8 @@ func safeToken(token as string) {
 }
 
 /**
- * Where an HTTP-01 challenge response for a token is written.
- *
- * The token comes from the CA and lands in a filesystem path, so it is filtered
- * the same way a domain is. A CA would not send a hostile token, but "the remote
- * party would not do that" is not a property worth depending on when the cost of
- * checking is one function.
+ * Where an HTTP-01 challenge response for a token is written. The token is
+ * remote input that becomes a path, so it is filtered.
  * @param tls {config.Tls} the TLS configuration
  * @param token {string} the challenge token
  * @return {string} the file to write the key authorization into
@@ -173,12 +156,9 @@ export func issuedAt(tls as config.Tls, domain as string) {
 }
 
 /**
- * Is it time to obtain or renew?
- *
- * Pure, so the arithmetic has tests rather than a comment. An `issued` of 0 means
- * there is nothing stored, which is always due. A certificate from the future -
- * a clock that moved backwards, a restored backup - is treated as due too, since
- * the alternative is trusting a timestamp we can prove wrong.
+ * Whether it is time to obtain or renew. Pure. An `issued` of 0 (nothing stored)
+ * is always due, and so is an issue time in the future (a clock moved backwards,
+ * a restored backup).
  * @param tls {config.Tls} the TLS configuration
  * @param issued {int} when the stored certificate was obtained (0 for none)
  * @param now {int} the current time (Unix seconds)
@@ -193,8 +173,8 @@ export func dueForRenewal(tls as config.Tls, issued as int, now as int) {
     }
     def renewAfter as int init (LIFETIME_DAYS - $tls.renewBeforeDays) * SECONDS_PER_DAY;
     if ($renewAfter < SECONDS_PER_DAY) {
-        # A renewBeforeDays at or past the lifetime would renew on every boot,
-        # which is the fastest way to meet a rate limit. Keep a day of slack.
+        # A renewBeforeDays at or past the lifetime would renew on every boot and
+        # hit the rate limit. Keep a day of slack.
         $renewAfter = SECONDS_PER_DAY;
     }
     return ($now - $issued) >= $renewAfter;
@@ -217,7 +197,7 @@ export func load(tls as config.Tls, domain as string) {
 }
 
 /**
- * Is a usable certificate stored for this domain?
+ * Whether a usable certificate is stored for this domain.
  * @param tls {config.Tls} the TLS configuration
  * @param domain {string} the primary domain
  * @return {bool} true when both the certificate and the key are present
@@ -228,11 +208,9 @@ export func hasBundle(tls as config.Tls, domain as string) {
 }
 
 /**
- * Write a certificate, its key, and the issue time.
- *
- * The key is written `0600`. It is the one file here that is a secret, and the
- * data directory is bind-mounted in the container, so it would otherwise inherit
- * whatever the process umask happens to be.
+ * Write a certificate, its key, and the issue time. The key is set to `0600`
+ * because it is a secret and the bind-mounted data directory would otherwise
+ * leave its mode to the process umask.
  * @param tls {config.Tls} the TLS configuration
  * @param domain {string} the primary domain
  * @param cert {string} the PEM chain
@@ -250,8 +228,7 @@ export func save(tls as config.Tls, domain as string, cert as string, key as str
 }
 
 # accountKey loads the deployment's ACME account key, generating and storing one
-# on first use. Kept out of `obtain` so that first run and every later run take
-# the same path through the code.
+# on first use.
 func accountKey(tls as config.Tls) {
     def path as string init accountKeyPath($tls);
     if (fs.exists($path)) {
@@ -269,9 +246,8 @@ func accountKey(tls as config.Tls) {
 func settle(client as acme.Client, tls as config.Tls, authzUrl as string) {
     def authz as acme.Authorization init acme.authorization($client, $authzUrl);
     if ($authz.status == "valid") {
-        # Already proven, and authorizations are reusable for a while. Skipping
-        # saves a round trip and, more usefully, avoids re-writing a challenge
-        # file for a domain the CA has stopped asking about.
+        # Already proven; authorizations are reusable for a while, so no
+        # challenge file is written for a domain the CA has stopped asking about.
         return null;
     }
     def ch as acme.Challenge init acme.challenge($authz, "http-01");
@@ -306,14 +282,10 @@ func settle(client as acme.Client, tls as config.Tls, authzUrl as string) {
 /**
  * Obtain a certificate for the configured domains and store it.
  *
- * The whole ACME conversation: register the account, open an order, prove each
- * domain over HTTP-01, finalize with a CSR, download the chain. The first domain
- * in the list names the stored bundle; the rest ride along on the same
- * certificate as additional names.
- *
- * **This is the only function here that touches the network**, which is why the
- * decisions - paths, renewal timing, token safety - live in the pure functions
- * above and are tested there.
+ * Registers the account, opens an order, proves each domain over HTTP-01,
+ * finalizes with a CSR and downloads the chain. The first domain names the
+ * stored bundle; the rest are additional names on the same certificate. The only
+ * function here that touches the network.
  * @param tls {config.Tls} the TLS configuration
  * @param now {int} the current time (Unix seconds)
  * @return {Bundle} the certificate that was obtained and stored
@@ -345,11 +317,8 @@ export func obtain(tls as config.Tls, now as int) {
  * Return a usable certificate, obtaining one only if the stored one is missing
  * or due for renewal.
  *
- * A renewal that fails while a **still-valid** certificate is on disk is not
- * fatal: the old one is returned and the failure is the caller's to report. Being
- * unreachable for a renewal is a temporary problem, and refusing to start over it
- * would turn a warning into an outage, at exactly the moment when the CA is
- * having trouble.
+ * A failed renewal with a certificate on disk is not fatal: the stored one is
+ * returned, so a CA outage does not become a registry outage.
  * @param tls {config.Tls} the TLS configuration
  * @param now {int} the current time (Unix seconds)
  * @return {Bundle} the certificate to serve
