@@ -72,7 +72,7 @@ export def struct Policy {
  * @return {Decision} an allowing decision
  */
 export func allow(reason as string) {
-    return Decision{ allowed: true, reason: $reason };
+    return Decision{allowed: true, reason: $reason};
 }
 
 /**
@@ -81,7 +81,7 @@ export func allow(reason as string) {
  * @return {Decision} a refusing decision
  */
 export func deny(reason as string) {
-    return Decision{ allowed: false, reason: $reason };
+    return Decision{allowed: false, reason: $reason};
 }
 
 /**

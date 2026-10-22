@@ -23,15 +23,21 @@ func emptyDb() {
 
 func alice() {
     return identity.Subject{
-        provider: "github", id: "1234567", login: "alice",
-        orgs: {}, orgsCheckedAt: NOW
+        provider: "github",
+        id: "1234567",
+        login: "alice",
+        orgs: {},
+        orgsCheckedAt: NOW
     };
 }
 
 func stranger() {
     return identity.Subject{
-        provider: "github", id: "9999999", login: "mallory",
-        orgs: {}, orgsCheckedAt: NOW
+        provider: "github",
+        id: "9999999",
+        login: "mallory",
+        orgs: {},
+        orgsCheckedAt: NOW
     };
 }
 
@@ -43,8 +49,7 @@ func none() {
 # --- claiming -----------------------------------------------------------------
 
 func testAClaimSucceedsUnderDerived() {
-    def out as ScopeReply init claim(emptyDb(), derived.policy(), alice(), "alice",
-        none(), NOW);
+    def out as ScopeReply init claim(emptyDb(), derived.policy(), alice(), "alice", none(), NOW);
     testing.assertEqual($out.status, 201);
     testing.assertTrue($out.changed);
     testing.assertEqual(json.asString($out.body, "/scope"), "alice");
@@ -62,41 +67,40 @@ func testTheThreeRefusalsAreDistinguishable() {
 }
 
 func testAMalformedNameIsTheCallersMistake() {
-    def out as ScopeReply init claim(emptyDb(), derived.policy(), alice(), "a--b",
-        none(), NOW);
+    def out as ScopeReply init claim(emptyDb(), derived.policy(), alice(), "a--b", none(), NOW);
     testing.assertEqual($out.status, 400);
     testing.assertFalse($out.changed);
 }
 
 func testAScopeSomebodyElseHoldsIsAConflict() {
-    def db as flatdb.DB init claim(emptyDb(), derived.policy(), alice(), "alice",
-        none(), NOW).db;
-    def out as ScopeReply init claim($db, derived.policy(), stranger(), "alice",
-        none(), NOW);
+    def db as flatdb.DB init claim(emptyDb(), derived.policy(), alice(), "alice", none(), NOW).db;
+    def out as ScopeReply init claim($db, derived.policy(), stranger(), "alice", none(), NOW);
     testing.assertEqual($out.status, 409);
     testing.assertContains(json.asString($out.body, "/error"), "another account");
 }
 
 func testAPolicyRefusalIsAPermissionsAnswer() {
-    def out as ScopeReply init claim(emptyDb(), operatorPolicy.policy(), alice(),
-        "alice", none(), NOW);
+    def out as ScopeReply init claim(
+        emptyDb(),
+        operatorPolicy.policy(),
+        alice(),
+        "alice",
+        none(),
+        NOW);
     testing.assertEqual($out.status, 403);
 }
 
 func testAReservedNameIsRefused() {
-    def out as ScopeReply init claim(emptyDb(), derived.policy(), alice(), "alice",
-        ["alice"], NOW);
+    def out as ScopeReply init claim(emptyDb(), derived.policy(), alice(), "alice", ["alice"], NOW);
     testing.assertFalse($out.status == 201);
 }
 
 func testAMissingScopeIsA400() {
-    testing.assertEqual(claim(emptyDb(), derived.policy(), alice(), "", none(),
-        NOW).status, 400);
+    testing.assertEqual(claim(emptyDb(), derived.policy(), alice(), "", none(), NOW).status, 400);
 }
 
 func testAClaimIsRecorded() {
-    def out as ScopeReply init claim(emptyDb(), derived.policy(), alice(), "alice",
-        none(), NOW);
+    def out as ScopeReply init claim(emptyDb(), derived.policy(), alice(), "alice", none(), NOW);
     testing.assertEqual($out.event.fields["scope"], "alice");
     testing.assertEqual($out.event.fields["subject"], "1234567");
 }
@@ -164,4 +168,23 @@ func testTheListingDoesNotPublishAccountIds() {
     # binds to, and a public list of them is a list of what an impersonator needs
     def out as ScopeReply init listScopes(owned());
     testing.assertFalse(strings.contains(json.encode($out.body), "1234567"));
+}
+
+func testACoOwnerCannotChangeTheCoOwners() {
+    # any co-owner could, and one compromised account could then plant others
+    # that outlived its own removal, or lock the rest out
+    def db as flatdb.DB init owners(owned(), alice(), "alice", "999", true, NOW).db;
+    def bob as identity.Subject init stranger();
+    $bob.id = "999";
+    def out as ScopeReply init owners($db, $bob, "alice", "555", true, NOW);
+    testing.assertEqual($out.status, 403);
+    testing.assertFalse($out.changed);
+    testing.assertContains(json.asString($out.body, "/error"), "only the owner");
+    testing.assertEqual(owners($db, $bob, "alice", "999", false, NOW).status, 403);
+}
+
+func testACoOwnerIsAnAccountId() {
+    for (def bad in ["alice", "+7", "07", "7a", "-1", "1234567890123456789"]) {
+        testing.assertEqual(owners(owned(), alice(), "alice", $bad, true, NOW).status, 400);
+    }
 }

@@ -36,6 +36,7 @@ use io;
 use maps;
 use strings;
 use convert;
+use encoding;
 import "log.j" as log;
 
 # The levels, in the order log.j ranks them. Exported as constants so a caller
@@ -199,6 +200,7 @@ export func write(sink as Sink, ev as Event) {
     if ($ev.level == "") {
         return false;
     }
+    $ev = cleaned($ev);
     def wrote as bool init false;
     def lost as string init "";
     if ($sink.hasConsole) {
@@ -226,6 +228,50 @@ export func write(sink as Sink, ev as Event) {
     return $wrote;
 }
 
+# cleaned returns the event with every control character in its message and
+# field values written out as `\xNN`. A field routinely carries request input (a
+# path, a tag, a reason quoting either), and a raw ESC or a right-to-left
+# override in it would reach a terminal running `docker logs` or `tail -f` as a
+# command, or make one line read as another.
+func cleaned(ev as Event) {
+    def out as Event init $ev;
+    $out.message = printable($ev.message);
+    for (def k in $ev.fields) {
+        $out.fields[$k] = printable($ev.fields[$k]);
+    }
+    return $out;
+}
+
+# The characters `printable` escapes besides C0 and DEL: the bidirectional
+# embeddings, overrides and isolates, which reorder how a line displays.
+def const BIDI as string init "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069";
+
+/**
+ * Text with its control characters escaped as `\xNN` per UTF-8 byte, and
+ * anything else unchanged. Pure.
+ * @param s {string} the text
+ * @return {string} the text, safe to print on a terminal
+ */
+export func printable(s as string) {
+    def parts as list of string init [];
+    def changed as bool init false;
+    for (def ch in strings.chars($s)) {
+        if ($ch < " " or $ch == "\u007f" or strings.contains(BIDI, $ch)) {
+            def hex as string init encoding.toText(convert.bytesFromString($ch, "utf-8"), "hex");
+            for (def at in 0..convert.toInt(len($hex) / 2)) {
+                $parts[] = "\\x" + strings.substring($hex, $at * 2, $at * 2 + 2);
+            }
+            $changed = true;
+        } else {
+            $parts[] = $ch;
+        }
+    }
+    if (not $changed) {
+        return $s;
+    }
+    return strings.join($parts, "");
+}
+
 # --- event builders (pure) ---------------------------------------------------
 
 /**
@@ -234,7 +280,7 @@ export func write(sink as Sink, ev as Event) {
  */
 export func none() {
     def empty as map of string to string init {};
-    return Event{ level: "", message: "", fields: $empty };
+    return Event{level: "", message: "", fields: $empty};
 }
 
 /**
@@ -245,7 +291,7 @@ export func none() {
  * @return {Event} the event
  */
 export func event(level as string, message as string, fields as map of string to string) {
-    return Event{ level: levelOf($level), message: $message, fields: $fields };
+    return Event{level: levelOf($level), message: $message, fields: $fields};
 }
 
 /**
@@ -260,8 +306,12 @@ export func event(level as string, message as string, fields as map of string to
  * @param replaced {bool} whether this overwrote an existing version
  * @return {Event} the event
  */
-export func deckPublished(name as string, version as string, kind as string,
-        pin as string, replaced as bool) {
+export func deckPublished(
+    name as string,
+    version as string,
+    kind as string,
+    pin as string,
+    replaced as bool) {
     def f as map of string to string init {
         "deck": $name,
         "version": $version,
@@ -272,9 +322,9 @@ export func deckPublished(name as string, version as string, kind as string,
         # Republishing a version that already existed changes what an existing
         # lockfile resolves to, which is the one edit here that can break an
         # install that used to work. It is louder than an ordinary publish.
-        return Event{ level: WARN, message: "deck version replaced", fields: $f };
+        return Event{level: WARN, message: "deck version replaced", fields: $f};
     }
-    return Event{ level: INFO, message: "deck version published", fields: $f };
+    return Event{level: INFO, message: "deck version published", fields: $f};
 }
 
 /**
@@ -284,12 +334,12 @@ export func deckPublished(name as string, version as string, kind as string,
  * @return {Event} the event
  */
 export func deckRemoved(name as string, version as string) {
-    def f as map of string to string init { "deck": $name };
+    def f as map of string to string init {"deck": $name};
     if ($version == "") {
-        return Event{ level: WARN, message: "deck removed", fields: $f };
+        return Event{level: WARN, message: "deck removed", fields: $f};
     }
     $f["version"] = $version;
-    return Event{ level: WARN, message: "deck version removed", fields: $f };
+    return Event{level: WARN, message: "deck version removed", fields: $f};
 }
 
 /**
@@ -303,20 +353,24 @@ export func deckRemoved(name as string, version as string) {
  * @param reassigned {bool} whether this replaced an existing owner
  * @return {Event} the event
  */
-export func scopeRegistered(scope as string, provider as string, subject as string,
-        login as string, reassigned as bool) {
-    def f as map of string to string init { "scope": $scope };
+export func scopeRegistered(
+    scope as string,
+    provider as string,
+    subject as string,
+    login as string,
+    reassigned as bool) {
+    def f as map of string to string init {"scope": $scope};
     if ($subject == "") {
-        return Event{ level: INFO, message: "scope reserved", fields: $f };
+        return Event{level: INFO, message: "scope reserved", fields: $f};
     }
     $f["provider"] = $provider;
     $f["subject"] = $subject;
     $f["login"] = $login;
     if ($reassigned) {
         # The only way a scope changes hands. Worth finding in a log later.
-        return Event{ level: WARN, message: "scope reassigned", fields: $f };
+        return Event{level: WARN, message: "scope reassigned", fields: $f};
     }
-    return Event{ level: INFO, message: "scope granted", fields: $f };
+    return Event{level: INFO, message: "scope granted", fields: $f};
 }
 
 /**
@@ -330,7 +384,7 @@ export func tokensRevoked(accountId as string, count as int) {
         "subject": $accountId,
         "tokens": convert.toString($count)
     };
-    return Event{ level: WARN, message: "refresh tokens revoked", fields: $f };
+    return Event{level: WARN, message: "refresh tokens revoked", fields: $f};
 }
 
 /**
@@ -341,11 +395,8 @@ export func tokensRevoked(accountId as string, count as int) {
  * @return {Event} the event
  */
 export func commandFailed(command as string, reason as string) {
-    def f as map of string to string init {
-        "command": $command,
-        "reason": $reason
-    };
-    return Event{ level: WARN, message: "command failed", fields: $f };
+    def f as map of string to string init {"command": $command, "reason": $reason};
+    return Event{level: WARN, message: "command failed", fields: $f};
 }
 
 /**
@@ -382,11 +433,14 @@ export func attribute(ev as Event, command as string) {
  * it looks trustworthy. Naming a header is the operator asserting that a proxy
  * in front of this registry sets it and strips any client-supplied copy.
  *
- * The **first** entry of a comma-separated list is taken, which is the original
- * client in the `X-Forwarded-For` convention. That is also the entry a client
- * can forge if the proxy does not strip it, which is the whole reason the choice
- * of header belongs to the operator: behind Cloudflare, `CF-Connecting-IP`
- * carries the same value and cannot be forged, because Cloudflare overwrites it.
+ * The **last** entry of a comma-separated list is taken: the address the proxy
+ * nearest this registry saw, which is the one entry a client cannot write. The
+ * first is the original client only when every proxy strips what the client
+ * sent, and the usual setting appends instead (nginx's
+ * `$proxy_add_x_forwarded_for`), which leaves a forged first entry in place.
+ * Behind a chain of proxies that is the next proxy out rather than the client;
+ * a header one proxy overwrites, such as Cloudflare's `CF-Connecting-IP`, is the
+ * way to record the client itself.
  * @param headerValue {string} the value of the configured header ("" when unset
  *     or absent)
  * @param peer {string} the address of the connection itself
@@ -397,13 +451,14 @@ export func clientOf(headerValue as string, peer as string) {
     if ($raw == "") {
         return $peer;
     }
+    def found as string init $peer;
     for (def part in strings.split($raw, ",")) {
         def one as string init strings.trim($part);
         if (not ($one == "")) {
-            return $one;
+            $found = $one;
         }
     }
-    return $peer;
+    return $found;
 }
 
 /**
@@ -416,12 +471,8 @@ export func clientOf(headerValue as string, peer as string) {
  * @return {Event} the event
  */
 export func requestSeen(method as string, path as string, client as string) {
-    def f as map of string to string init {
-        "method": $method,
-        "path": $path,
-        "client": $client
-    };
-    return Event{ level: DEBUG, message: "request", fields: $f };
+    def f as map of string to string init {"method": $method, "path": $path, "client": $client};
+    return Event{level: DEBUG, message: "request", fields: $f};
 }
 
 /**
@@ -433,18 +484,13 @@ export func requestSeen(method as string, path as string, client as string) {
  * @param authOn {bool} whether the token exchange is served
  * @return {Event} the event
  */
-export func serverStarted(addr as string, dbPath as string, identity as string,
-        authOn as bool) {
-    def f as map of string to string init {
-        "addr": $addr,
-        "db": $dbPath,
-        "auth": "off"
-    };
+export func serverStarted(addr as string, dbPath as string, identity as string, authOn as bool) {
+    def f as map of string to string init {"addr": $addr, "db": $dbPath, "auth": "off"};
     if ($authOn) {
         $f["auth"] = "on";
         $f["identity"] = $identity;
     }
-    return Event{ level: INFO, message: "registry started", fields: $f };
+    return Event{level: INFO, message: "registry started", fields: $f};
 }
 
 /**
@@ -454,8 +500,8 @@ export func serverStarted(addr as string, dbPath as string, identity as string,
  * @return {Event} the event
  */
 export func loginStarted(provider as string) {
-    def f as map of string to string init { "identity": $provider };
-    return Event{ level: INFO, message: "login started", fields: $f };
+    def f as map of string to string init {"identity": $provider};
+    return Event{level: INFO, message: "login started", fields: $f};
 }
 
 /**
@@ -476,14 +522,9 @@ export func loginStarted(provider as string) {
  * @param orgs {string} the organisation logins, comma-separated; "" for none
  * @return {Event} the event
  */
-export func tokenIssued(kind as string, accountId as string, login as string,
-        orgs as string) {
-    def f as map of string to string init {
-        "subject": $accountId,
-        "login": $login,
-        "orgs": $orgs
-    };
-    return Event{ level: INFO, message: "token " + $kind, fields: $f };
+export func tokenIssued(kind as string, accountId as string, login as string, orgs as string) {
+    def f as map of string to string init {"subject": $accountId, "login": $login, "orgs": $orgs};
+    return Event{level: INFO, message: "token " + $kind, fields: $f};
 }
 
 /**
@@ -504,9 +545,9 @@ export func loginRefused(stage as string, status as int, reason as string) {
     if ($status == 202) {
         # The client is polling and the user has not finished yet. Expected, and
         # frequent: one line per poll interval per login. Not a warning.
-        return Event{ level: DEBUG, message: "login pending", fields: $f };
+        return Event{level: DEBUG, message: "login pending", fields: $f};
     }
-    return Event{ level: WARN, message: "login refused", fields: $f };
+    return Event{level: WARN, message: "login refused", fields: $f};
 }
 
 /**
@@ -519,8 +560,12 @@ export func loginRefused(stage as string, status as int, reason as string) {
  * @param pending {bool} whether the deck has no versions yet
  * @return {Event} the event
  */
-export func publisherTrusted(deck as string, provider as string, repositoryId as string,
-        repository as string, pending as bool) {
+export func publisherTrusted(
+    deck as string,
+    provider as string,
+    repositoryId as string,
+    repository as string,
+    pending as bool) {
     def f as map of string to string init {
         "deck": $deck,
         "provider": $provider,
@@ -530,7 +575,7 @@ export func publisherTrusted(deck as string, provider as string, repositoryId as
     if ($pending) {
         $f["pending"] = "true";
     }
-    return Event{ level: WARN, message: "publisher trusted", fields: $f };
+    return Event{level: WARN, message: "publisher trusted", fields: $f};
 }
 
 /**
@@ -540,11 +585,8 @@ export func publisherTrusted(deck as string, provider as string, repositoryId as
  * @return {Event} the event
  */
 export func publisherUntrusted(deck as string, repositoryId as string) {
-    def f as map of string to string init {
-        "deck": $deck,
-        "repositoryId": $repositoryId
-    };
-    return Event{ level: WARN, message: "publisher untrusted", fields: $f };
+    def f as map of string to string init {"deck": $deck, "repositoryId": $repositoryId};
+    return Event{level: WARN, message: "publisher untrusted", fields: $f};
 }
 
 /**
@@ -557,11 +599,11 @@ export func publisherUntrusted(deck as string, repositoryId as string) {
  * @return {Event} the event
  */
 export func versionYanked(deck as string, version as string, yanked as bool) {
-    def f as map of string to string init { "deck": $deck, "version": $version };
+    def f as map of string to string init {"deck": $deck, "version": $version};
     if ($yanked) {
-        return Event{ level: WARN, message: "version yanked", fields: $f };
+        return Event{level: WARN, message: "version yanked", fields: $f};
     }
-    return Event{ level: WARN, message: "version restored", fields: $f };
+    return Event{level: WARN, message: "version restored", fields: $f};
 }
 
 /**
@@ -575,8 +617,12 @@ export func versionYanked(deck as string, version as string, yanked as bool) {
  * @param how {string} "token" or "trusted-publisher"
  * @return {Event} the event
  */
-export func deckPublishedFrom(deck as string, version as string, commit as string,
-        repository as string, how as string) {
+export func deckPublishedFrom(
+    deck as string,
+    version as string,
+    commit as string,
+    repository as string,
+    how as string) {
     def f as map of string to string init {
         "deck": $deck,
         "version": $version,
@@ -584,7 +630,7 @@ export func deckPublishedFrom(deck as string, version as string, commit as strin
         "repository": $repository,
         "via": $how
     };
-    return Event{ level: INFO, message: "deck version published", fields: $f };
+    return Event{level: INFO, message: "deck version published", fields: $f};
 }
 
 /**
@@ -596,11 +642,8 @@ export func deckPublishedFrom(deck as string, version as string, commit as strin
  * @return {Event} the event
  */
 export func publishRefused(reason as string, status as int) {
-    def f as map of string to string init {
-        "status": convert.toString($status),
-        "reason": $reason
-    };
-    return Event{ level: WARN, message: "publish refused", fields: $f };
+    def f as map of string to string init {"status": convert.toString($status), "reason": $reason};
+    return Event{level: WARN, message: "publish refused", fields: $f};
 }
 
 /**
@@ -613,8 +656,11 @@ export func publishRefused(reason as string, status as int) {
  * @param expiresAt {string} when it stops working ("" means never)
  * @return {Event} the event
  */
-export func ciTokenMinted(fingerprint as string, name as string, covers as string,
-        expiresAt as string) {
+export func ciTokenMinted(
+    fingerprint as string,
+    name as string,
+    covers as string,
+    expiresAt as string) {
     def f as map of string to string init {
         "fingerprint": $fingerprint,
         "name": $name,
@@ -624,7 +670,7 @@ export func ciTokenMinted(fingerprint as string, name as string, covers as strin
     if (not ($expiresAt == "")) {
         $f["expires"] = $expiresAt;
     }
-    return Event{ level: WARN, message: "ci token minted", fields: $f };
+    return Event{level: WARN, message: "ci token minted", fields: $f};
 }
 
 /**
@@ -634,11 +680,8 @@ export func ciTokenMinted(fingerprint as string, name as string, covers as strin
  * @return {Event} the event
  */
 export func ciTokenRevoked(fingerprint as string, name as string) {
-    def f as map of string to string init {
-        "fingerprint": $fingerprint,
-        "name": $name
-    };
-    return Event{ level: WARN, message: "ci token revoked", fields: $f };
+    def f as map of string to string init {"fingerprint": $fingerprint, "name": $name};
+    return Event{level: WARN, message: "ci token revoked", fields: $f};
 }
 
 /**
@@ -655,7 +698,7 @@ export func ciTokenUsed(fingerprint as string, name as string, deck as string) {
         "name": $name,
         "deck": $deck
     };
-    return Event{ level: INFO, message: "write authorised by ci token", fields: $f };
+    return Event{level: INFO, message: "write authorised by ci token", fields: $f};
 }
 
 /**
@@ -672,7 +715,7 @@ export func scopesReserved(reservedCount as int, conflicts as int) {
         "reserved": convert.toString($reservedCount),
         "conflicts": convert.toString($conflicts)
     };
-    return Event{ level: WARN, message: "reserved scopes registered", fields: $f };
+    return Event{level: WARN, message: "reserved scopes registered", fields: $f};
 }
 
 /**
@@ -686,9 +729,11 @@ export func scopesReserved(reservedCount as int, conflicts as int) {
  */
 export func coOwnerAdded(scope as string, provider as string, subject as string) {
     def f as map of string to string init {
-        "scope": $scope, "provider": $provider, "subject": $subject
+        "scope": $scope,
+        "provider": $provider,
+        "subject": $subject
     };
-    return Event{ level: WARN, message: "co-owner added", fields: $f };
+    return Event{level: WARN, message: "co-owner added", fields: $f};
 }
 
 /**
@@ -700,9 +745,11 @@ export func coOwnerAdded(scope as string, provider as string, subject as string)
  */
 export func coOwnerRemoved(scope as string, provider as string, subject as string) {
     def f as map of string to string init {
-        "scope": $scope, "provider": $provider, "subject": $subject
+        "scope": $scope,
+        "provider": $provider,
+        "subject": $subject
     };
-    return Event{ level: WARN, message: "co-owner removed", fields: $f };
+    return Event{level: WARN, message: "co-owner removed", fields: $f};
 }
 
 /**
@@ -718,7 +765,7 @@ export func certificateReady(domains as string, issuedAt as int) {
         "domains": $domains,
         "issuedAt": convert.toString($issuedAt)
     };
-    return Event{ level: INFO, message: "certificate ready", fields: $f };
+    return Event{level: INFO, message: "certificate ready", fields: $f};
 }
 
 /**
@@ -730,6 +777,6 @@ export func certificateReady(domains as string, issuedAt as int) {
  * @return {Event} the event
  */
 export func certificateFailed(domains as string, reason as string) {
-    def f as map of string to string init { "domains": $domains, "reason": $reason };
-    return Event{ level: ERROR, message: "certificate unavailable", fields: $f };
+    def f as map of string to string init {"domains": $domains, "reason": $reason};
+    return Event{level: ERROR, message: "certificate unavailable", fields: $f};
 }

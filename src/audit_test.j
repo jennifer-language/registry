@@ -35,8 +35,12 @@ func testFormatsFallBackToText() {
 func testAPublishRecordsThePin() {
     # the pin is the integrity boundary, so it is the field an audit reader most
     # needs: it is what a later install can be compared against
-    def ev as Event init deckPublished("@acme/tool", "1.2.0", "git",
-        "9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f70819293", false);
+    def ev as Event init deckPublished(
+        "@acme/tool",
+        "1.2.0",
+        "git",
+        "9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f70819293",
+        false);
     testing.assertEqual($ev.level, INFO);
     testing.assertEqual($ev.fields["deck"], "@acme/tool");
     testing.assertEqual($ev.fields["version"], "1.2.0");
@@ -210,16 +214,25 @@ func testAConfiguredHeaderWins() {
     testing.assertEqual(clientOf("203.0.113.7", "10.0.1.12:44496"), "203.0.113.7");
 }
 
-func testTheFirstEntryOfAChainIsTheClient() {
-    # X-Forwarded-For grows left to right: client, then each proxy it passed
-    testing.assertEqual(clientOf("203.0.113.7, 172.68.1.1, 10.0.1.12",
-        "10.0.1.12:44496"), "203.0.113.7");
-    testing.assertEqual(clientOf(" 203.0.113.7 ,172.68.1.1 ", "10.0.1.12:0"),
-        "203.0.113.7");
+func testTheLastEntryOfAChainIsRecorded() {
+    # X-Forwarded-For grows left to right, and a proxy that appends leaves
+    # whatever the client claimed in front: only the last entry is the proxy's
+    testing.assertEqual(clientOf("6.6.6.6, 203.0.113.7", "10.0.1.12:44496"), "203.0.113.7");
+    testing.assertEqual(clientOf(" 172.68.1.1 ,203.0.113.7 , ", "10.0.1.12:0"), "203.0.113.7");
 }
 
 func testAnEmptyChainFallsBackToThePeer() {
     # a proxy that set the header but put nothing in it must not blank the record
     testing.assertEqual(clientOf(",", "10.0.1.12:44496"), "10.0.1.12:44496");
     testing.assertEqual(clientOf(" , , ", "10.0.1.12:44496"), "10.0.1.12:44496");
+}
+
+func testControlCharactersNeverReachTheLog() {
+    # a request path is attacker input; a raw ESC in it is a terminal command
+    testing.assertEqual(printable("/a\u001b[31mred"), "/a\\x1b[31mred");
+    testing.assertEqual(printable("line\nforged"), "line\\x0aforged");
+    testing.assertEqual(printable("abc‮gpj.exe"), "abc\\xe2\\x80\\xaegpj.exe");
+    testing.assertEqual(printable("plain /path ok"), "plain /path ok");
+    def ev as Event init cleaned(requestSeen("GET", "/x\u001b]0;pwned\u0007", "1.2.3.4"));
+    testing.assertFalse(strings.contains($ev.fields["path"], "\u001b"));
 }

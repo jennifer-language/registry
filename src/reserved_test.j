@@ -31,8 +31,17 @@ func testTheListIsDeduplicated() {
 
 func testTheObviousDangerousNamesAreHeld() {
     def all as list of string init defaults();
-    for (def name in ["official", "admin", "root", "security", "api", "www",
-            "jennifer", "jvc", "registry"]) {
+    for (def name in [
+        "official",
+        "admin",
+        "root",
+        "security",
+        "api",
+        "www",
+        "jennifer",
+        "jvc",
+        "registry"
+    ]) {
         testing.assertTrue(lists.contains($all, $name));
     }
 }

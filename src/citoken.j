@@ -101,7 +101,7 @@ export def struct Verdict {
 };
 
 func no(reason as string) {
-    return Verdict{ allowed: false, reason: $reason, fingerprint: "" };
+    return Verdict{allowed: false, reason: $reason, fingerprint: ""};
 }
 
 /**

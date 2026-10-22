@@ -47,10 +47,5 @@ func anyName(scope as string, deck as string) {
  * @return {policy.Policy} a policy that refuses every self-claim
  */
 export func policy() {
-    return policy.Policy{
-        name: "operator",
-        mayClaim: refuse,
-        nameOk: anyName,
-        sourceStance: stance
-    };
+    return policy.Policy{name: "operator", mayClaim: refuse, nameOk: anyName, sourceStance: stance};
 }

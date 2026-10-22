@@ -47,7 +47,7 @@ export def struct ClaimResult {
 
 # refuse builds a ClaimResult that leaves the store untouched.
 func refuse(db as flatdb.DB, reason as string) {
-    return ClaimResult{ allowed: false, reason: $reason, db: $db, changed: false };
+    return ClaimResult{allowed: false, reason: $reason, db: $db, changed: false};
 }
 
 /**
@@ -67,8 +67,13 @@ func refuse(db as flatdb.DB, reason as string) {
  * @param now {string} the registration timestamp (Unix seconds as text)
  * @return {ClaimResult} the decision and the store to persist
  */
-export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject,
-        scope as string, reserved as list of string, now as string) {
+export func claim(
+    db as flatdb.DB,
+    pol as policy.Policy,
+    who as identity.Subject,
+    scope as string,
+    reserved as list of string,
+    now as string) {
     def folded as string init deckname.fold($scope);
     if (not deckname.isScopeIdent($folded)) {
         return refuse($db, "@" + $folded + " is not a valid scope name");
@@ -87,11 +92,15 @@ export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject
         # "another account" there would be false and would send the caller
         # looking for a person who does not exist.
         if (store.getNamespace($db, $folded).subject == "") {
-            return refuse($db, "@" + $folded + " is reserved by this registry; " +
-                "ask an operator if you have a claim to it");
+            return refuse(
+                $db,
+                "@" + $folded + " is reserved by this registry; " +
+                    "ask an operator if you have a claim to it");
         }
-        return refuse($db, "@" + $folded + " is claimed by another account; " +
-            "an operator can reassign it if that is wrong");
+        return refuse(
+            $db,
+            "@" + $folded + " is claimed by another account; " +
+                "an operator can reassign it if that is wrong");
     }
     def verdict as policy.Decision init $pol.mayClaim($who, $folded, $reserved);
     if (not $verdict.allowed) {
@@ -110,18 +119,18 @@ export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject
         $label = $folded;
         $kind = store.SCOPE_ORG;
     }
-    def out as flatdb.DB init store.registerNamespace($db, store.Namespace{
-        scope: $folded,
-        provider: $who.provider,
-        subject: $owner,
-        login: $label,
-        registeredAt: $now,
-        kind: $kind,
-        coOwners: []
-    });
-    return ClaimResult{
-        allowed: true, reason: $verdict.reason, db: $out, changed: true
-    };
+    def out as flatdb.DB init store.registerNamespace(
+        $db,
+        store.Namespace{
+            scope: $folded,
+            provider: $who.provider,
+            subject: $owner,
+            login: $label,
+            registeredAt: $now,
+            kind: $kind,
+            coOwners: []
+        });
+    return ClaimResult{allowed: true, reason: $verdict.reason, db: $out, changed: true};
 }
 
 /**
@@ -140,8 +149,13 @@ export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject
  * @param now {string} the registration timestamp (Unix seconds as text)
  * @return {ClaimResult} the decision and the store to persist
  */
-export func grant(db as flatdb.DB, scope as string, provider as string,
-        subject as string, login as string, now as string) {
+export func grant(
+    db as flatdb.DB,
+    scope as string,
+    provider as string,
+    subject as string,
+    login as string,
+    now as string) {
     return grantAs($db, $scope, $provider, $subject, $login, store.SCOPE_USER, $now);
 }
 
@@ -162,21 +176,29 @@ export func grant(db as flatdb.DB, scope as string, provider as string,
  * @param now {string} the registration timestamp (Unix seconds as text)
  * @return {ClaimResult} the decision and the store to persist
  */
-export func grantAs(db as flatdb.DB, scope as string, provider as string,
-        subject as string, login as string, kind as string, now as string) {
+export func grantAs(
+    db as flatdb.DB,
+    scope as string,
+    provider as string,
+    subject as string,
+    login as string,
+    kind as string,
+    now as string) {
     def folded as string init deckname.fold($scope);
     if (not deckname.isScopeIdent($folded)) {
         return refuse($db, "@" + $folded + " is not a valid scope name");
     }
-    def out as flatdb.DB init store.registerNamespace($db, store.Namespace{
-        scope: $folded,
-        provider: $provider,
-        subject: $subject,
-        login: $login,
-        registeredAt: $now,
-        kind: $kind,
-        coOwners: []
-    });
+    def out as flatdb.DB init store.registerNamespace(
+        $db,
+        store.Namespace{
+            scope: $folded,
+            provider: $provider,
+            subject: $subject,
+            login: $login,
+            registeredAt: $now,
+            kind: $kind,
+            coOwners: []
+        });
     def what as string init "granted @" + $folded;
     if ($kind == store.SCOPE_ORG) {
         $what = "granted @" + $folded + " to an organisation";
@@ -184,7 +206,7 @@ export func grantAs(db as flatdb.DB, scope as string, provider as string,
     if ($subject == "") {
         $what = "reserved @" + $folded + " (operator-held, unowned)";
     }
-    return ClaimResult{ allowed: true, reason: $what, db: $out, changed: true };
+    return ClaimResult{allowed: true, reason: $what, db: $out, changed: true};
 }
 
 /**

@@ -17,9 +17,15 @@ def const NOW as int init 1700000000;
 
 func scoped() {
     return Token{
-        fingerprint: "abcd", name: "release", scope: "acme", deck: "",
-        provider: "github", subject: "1234567",
-        createdAt: "1600000000", expiresAt: "", lastUsedAt: ""
+        fingerprint: "abcd",
+        name: "release",
+        scope: "acme",
+        deck: "",
+        provider: "github",
+        subject: "1234567",
+        createdAt: "1600000000",
+        expiresAt: "",
+        lastUsedAt: ""
     };
 }
 
@@ -91,8 +97,15 @@ func testAMatchingTokenAuthorises() {
 func testAnUnknownTokenIsRefused() {
     # a zero record from a missed store lookup must fail closed
     def zero as Token init Token{
-        fingerprint: "", name: "", scope: "", deck: "", provider: "",
-        subject: "", createdAt: "", expiresAt: "", lastUsedAt: ""
+        fingerprint: "",
+        name: "",
+        scope: "",
+        deck: "",
+        provider: "",
+        subject: "",
+        createdAt: "",
+        expiresAt: "",
+        lastUsedAt: ""
     };
     def v as Verdict init check($zero, "@acme/routeros", NOW);
     testing.assertFalse($v.allowed);

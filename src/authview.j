@@ -31,6 +31,7 @@ use lists;
 import "flatdb.j" as flatdb;
 import "./store.j" as store;
 import "./token.j" as token;
+import "./forgecred.j" as forgecred;
 import "./identity.j" as identity;
 
 /**
@@ -48,13 +49,18 @@ import "./identity.j" as identity;
  * @field signingKey {bytes} the HMAC secret the bearer token is signed with
  * @field tokenTtl {int} how long a bearer token lives, in seconds
  * @field refreshTtl {int} how long a refresh token lives, in seconds
+ * @field keepForgeToken {bool} true to keep the provider's token, sealed, so a
+ *     publish can ask the forge about the caller (7.1 route A). Only meaningful
+ *     where identity and forge are one service; elsewhere the forge would not
+ *     accept it, and it is not kept
  */
 export def struct Config {
     provider as identity.Provider,
     providerConfig as identity.Config,
     signingKey as bytes,
     tokenTtl as int,
-    refreshTtl as int
+    refreshTtl as int,
+    keepForgeToken as bool
 };
 
 /**
@@ -77,14 +83,14 @@ export def struct AuthReply {
 func fail(db as flatdb.DB, status as int, message as string) {
     def body as json.Value init json.map();
     $body = json.set($body, "/error", $message);
-    return AuthReply{ status: $status, body: $body, db: $db, changed: false };
+    return AuthReply{status: $status, body: $body, db: $db, changed: false};
 }
 
 # pending builds the 202 a client polls against.
 func pending(db as flatdb.DB) {
     def body as json.Value init json.map();
     $body = json.set($body, "/status", "pending");
-    return AuthReply{ status: 202, body: $body, db: $db, changed: false };
+    return AuthReply{status: 202, body: $body, db: $db, changed: false};
 }
 
 /**
@@ -127,18 +133,12 @@ export func bodyField(body as string, field as string) {
  */
 export func stateReply(db as flatdb.DB, state as string) {
     match ($state) {
-        when "pending" {
-            return pending($db);
-        }
+        when "pending" { return pending($db); }
         when "slowDown" {
             return fail($db, 429, "polling too fast; wait for the interval and retry");
         }
-        when "denied" {
-            return fail($db, 403, "the request was denied by the identity provider");
-        }
-        when "expired" {
-            return fail($db, 410, "this device code expired; start the login again");
-        }
+        when "denied" { return fail($db, 403, "the request was denied by the identity provider"); }
+        when "expired" { return fail($db, 410, "this device code expired; start the login again"); }
     }
     return fail($db, 403, "the login could not be completed");
 }
@@ -159,19 +159,34 @@ export func stateReply(db as flatdb.DB, state as string) {
  * @param now {int} the current time (Unix seconds)
  * @return {AuthReply} a 200 carrying the token pair, and the store to persist
  */
-export func issue(cfg as Config, db as flatdb.DB, accountId as int, login as string,
-        orgs as map of string to string, checkedAt as int, now as int) {
-    def bearer as string init token.mint($cfg.signingKey, $accountId, $login,
-        $orgs, $checkedAt, $cfg.tokenTtl, $now);
+export func issue(
+    cfg as Config,
+    db as flatdb.DB,
+    accountId as int,
+    login as string,
+    orgs as map of string to string,
+    checkedAt as int,
+    now as int) {
+    def bearer as string init token.mint(
+        $cfg.signingKey,
+        $accountId,
+        $login,
+        $orgs,
+        $checkedAt,
+        $cfg.tokenTtl,
+        $now);
     def refreshToken as string init token.newRefresh();
     def out as flatdb.DB init store.purgeExpiredRefresh($db, $now);
-    $out = store.putRefresh($out, token.fingerprint($refreshToken), store.Refresh{
-        accountId: $accountId,
-        login: $login,
-        expiresAt: $now + $cfg.refreshTtl,
-        orgs: $orgs,
-        orgsCheckedAt: $checkedAt
-    });
+    $out = store.putRefresh(
+        $out,
+        token.fingerprint($refreshToken),
+        store.Refresh{
+            accountId: $accountId,
+            login: $login,
+            expiresAt: $now + $cfg.refreshTtl,
+            orgs: $orgs,
+            orgsCheckedAt: $checkedAt
+        });
     def body as json.Value init json.map();
     $body = json.set($body, "/token", $bearer);
     $body = json.set($body, "/expiresIn", $cfg.tokenTtl);
@@ -179,7 +194,7 @@ export func issue(cfg as Config, db as flatdb.DB, accountId as int, login as str
     $body = json.set($body, "/login", $login);
     $body = json.set($body, "/accountId", $accountId);
     $body = json.set($body, "/orgs", orgNames($orgs));
-    return AuthReply{ status: 200, body: $body, db: $out, changed: true };
+    return AuthReply{status: 200, body: $body, db: $out, changed: true};
 }
 
 /**
@@ -233,43 +248,87 @@ export func device(cfg as Config, db as flatdb.DB) {
     $body = json.set($body, "/verificationUri", $dev.verificationUri);
     $body = json.set($body, "/expiresIn", $dev.expiresIn);
     $body = json.set($body, "/interval", $dev.interval);
-    return AuthReply{ status: 200, body: $body, db: $db, changed: false };
+    return AuthReply{status: 200, body: $body, db: $db, changed: false};
 }
 
 /**
- * `POST /auth/token` - exchange an approved device code for a registry token.
- * Polled by the client until it resolves.
- * @param cfg {Config} the issuing configuration
- * @param db {flatdb.DB} the store to record the refresh token in
- * @param body {string} the raw request body, carrying `deviceCode`
- * @param now {int} the current time (Unix seconds)
- * @return {AuthReply} the outcome, and the store to persist on success
+ * What the network half of a token exchange learned: either an early answer
+ * (`ok` false, with `reply` ready to send), or the account it identified.
+ * @field ok {bool} true when the provider identified an account
+ * @field reply {AuthReply} the answer to send when `ok` is false
+ * @field accountId {int} the provider's numeric account id
+ * @field login {string} the account's login, a display label
+ * @field orgs {map of string to string} folded organisation login to provider id
+ * @field accessToken {string} the provider's token, for `issueLogin` to keep
+ *     sealed or drop; never part of any reply
  */
-export func token(cfg as Config, db as flatdb.DB, body as string, now as int) {
+export def struct Login {
+    ok as bool,
+    reply as AuthReply,
+    accountId as int,
+    login as string,
+    orgs as map of string to string,
+    accessToken as string
+};
+
+# noStore is the store an early `Login` reply carries. It is empty, read-only,
+# and never saved (`changed` is false): the network half runs without the write
+# lock, so it must not hold, let alone hand back, a copy of the real registry.
+func noStore() {
+    return flatdb.openString('{}');
+}
+
+# early wraps an answer that ends the exchange before any account is known.
+func early(reply as AuthReply) {
+    def none as map of string to string init {};
+    return Login{ok: false, reply: $reply, accountId: 0, login: "", orgs: $none, accessToken: ""};
+}
+
+/**
+ * The network half of `POST /auth/token`: poll the provider with the device
+ * code and, once approved, identify the account and read its memberships.
+ *
+ * Kept apart from `issueLogin` so the caller can make these calls **without
+ * the registry write lock**. A poll arrives every few seconds per login and may
+ * wait on several provider round trips; holding the lock across them would let
+ * one slow provider, or anybody polling with a made-up code, stall every
+ * publish on the server.
+ * @param cfg {Config} the issuing configuration
+ * @param body {string} the raw request body, carrying `deviceCode`
+ * @return {Login} the identified account, or an early answer
+ */
+export func login(cfg as Config, body as string) {
     if (not enabled($cfg)) {
-        return fail($db, 404, "this registry does not accept logins");
+        return early(fail(noStore(), 404, "this registry does not accept logins"));
     }
     def deviceCode as string init bodyField($body, "deviceCode");
     if ($deviceCode == "") {
-        return fail($db, 400, "missing 'deviceCode' in the request body");
+        return early(fail(noStore(), 400, "missing 'deviceCode' in the request body"));
     }
     def result as identity.Poll;
     try {
         $result = $cfg.provider.poll($cfg.providerConfig, $deviceCode);
     } catch (err) {
-        return fail($db, 502, "the provider could not be reached: " + $err.message);
+        return early(fail(noStore(), 502, "the provider could not be reached: " +
+            $err.message));
     }
     if (not ($result.state == "ok")) {
-        return stateReply($db, $result.state);
+        return early(stateReply(noStore(), $result.state));
     }
     def who as identity.Subject;
     try {
         $who = $cfg.provider.subject($cfg.providerConfig, $result.accessToken);
     } catch (err) {
-        return fail($db, 502, "the provider could not identify the account: " + $err.message);
+        return early(fail(
+            noStore(),
+            502,
+            "the provider could not identify the account: " +
+                $err.message));
     }
-    # The provider token is discarded here, deliberately: the registry issues its
-    # own credential rather than storing somebody else's (specification 8.4).
+    # The registry issues its own credential rather than handing the provider's
+    # around (specification 8.4). The provider token is passed on only so that
+    # `issueLogin` can keep it sealed where it is the one credential the forge
+    # accepts (7.1 route A); it is never part of a reply.
     # Memberships are read here and nowhere else. The provider token is about to
     # be discarded, so this is the only moment the registry can ask which
     # organisations this account acts for (8.7). A provider that cannot answer
@@ -282,8 +341,104 @@ export func token(cfg as Config, db as flatdb.DB, body as string, now as int) {
         def none as map of string to string init {};
         $orgs = $none;
     }
-    return issue($cfg, $db, convert.toInt($who.id), $who.login, $orgs, $now, $now);
+    # Tokens and refresh records carry the account id as an int, which holds for
+    # GitHub, GitLab and Gitea but not for OIDC, whose `sub` is an opaque string
+    # (a UUID on Keycloak and Authelia). Until the id is a string end to end,
+    # which changes stored records, such an account is refused plainly here
+    # instead of failing the request with an uncaught conversion error.
+    #
+    # The number must also read back as the same text: `convert.toInt` takes
+    # "07" and "+7" as 7, so two distinct OIDC subjects would become one account
+    # and share its scopes.
+    def accountId as int init accountIdOf($who.id);
+    if ($accountId == 0) {
+        return early(fail(
+            noStore(),
+            501,
+            "this registry cannot yet issue tokens for an " +
+                "account whose id is not a number"));
+    }
+    return Login{
+        ok: true,
+        reply: pending(noStore()),
+        accountId: $accountId,
+        login: $who.login,
+        orgs: $orgs,
+        accessToken: $result.accessToken
+    };
 }
+
+# accountIdOf reads a provider's subject as an account id, or 0 when it is not
+# one: not a number, not positive, or not written the one way a number is.
+func accountIdOf(id as string) {
+    def n as int init 0;
+    try {
+        $n = convert.toInt($id);
+    } catch (err) {
+        return 0;
+    }
+    if ($n <= 0 or not (convert.toString($n) == $id)) {
+        return 0;
+    }
+    return $n;
+}
+
+/**
+ * The store half of `POST /auth/token`: issue a token pair for what `login`
+ * found, or pass its early answer through. No network call; the caller holds
+ * the write lock and passes a store opened under it.
+ *
+ * Where `keepForgeToken` is set, the provider's token is recorded **sealed**
+ * against the account, replacing any earlier one, so a later publish can ask
+ * the forge whether this account may push (7.1 route A). It is the newest
+ * credential the provider issued, and it goes when the account is revoked.
+ * @param cfg {Config} the issuing configuration
+ * @param db {flatdb.DB} the store to record the refresh token in
+ * @param got {Login} what `login` returned
+ * @param now {int} the current time (Unix seconds)
+ * @return {AuthReply} the outcome, and the store to persist on success
+ */
+export func issueLogin(cfg as Config, db as flatdb.DB, got as Login, now as int) {
+    if (not $got.ok) {
+        return AuthReply{status: $got.reply.status, body: $got.reply.body, db: $db, changed: false};
+    }
+    def out as flatdb.DB init $db;
+    if ($cfg.keepForgeToken and not ($got.accessToken == "")) {
+        $out = store.putForgeToken(
+            $out,
+            $got.accountId,
+            forgecred.seal($cfg.signingKey, $got.accessToken),
+            $now);
+    }
+    return issue($cfg, $out, $got.accountId, $got.login, $got.orgs, $now, $now);
+}
+
+/**
+ * `POST /auth/token` - exchange an approved device code for a registry token.
+ * Polled by the client until it resolves. `login` then `issueLogin`, for a
+ * caller that does not need the lock out of the way of the network calls.
+ * @param cfg {Config} the issuing configuration
+ * @param db {flatdb.DB} the store to record the refresh token in
+ * @param body {string} the raw request body, carrying `deviceCode`
+ * @param now {int} the current time (Unix seconds)
+ * @return {AuthReply} the outcome, and the store to persist on success
+ */
+export func token(cfg as Config, db as flatdb.DB, body as string, now as int) {
+    return issueLogin($cfg, $db, login($cfg, $body), $now);
+}
+
+/**
+ * How long a login lasts however often it is refreshed, in seconds: 30 days.
+ *
+ * Without it a refresh chain never ended, and everything captured at login rode
+ * along for as long as the client kept refreshing: the organisation memberships
+ * an org scope is authorised by (a departed member kept publishing), and the
+ * login a forge service account is asked about (a renamed account kept its old
+ * name). Counted from `orgsCheckedAt`, which is the login time and which a
+ * refresh never advances; a record from before that field reads as 0 and so
+ * needs one fresh login.
+ */
+export def const MAX_SESSION_SECONDS as int init 2592000;
 
 /**
  * `POST /auth/refresh` - exchange a refresh token for a new token pair.
@@ -314,11 +469,17 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int) 
     if ($rec.expiresAt <= $now) {
         # Expired: drop it on the way out rather than leaving it to the purge.
         def cleaned as flatdb.DB init store.deleteRefresh($db, $print);
-        def reply as AuthReply init fail($cleaned, 401,
-            "that refresh token expired; log in again");
-        return AuthReply{
-            status: $reply.status, body: $reply.body, db: $cleaned, changed: true
-        };
+        def reply as AuthReply init fail($cleaned, 401, "that refresh token expired; log in again");
+        return AuthReply{status: $reply.status, body: $reply.body, db: $cleaned, changed: true};
+    }
+    if ($now - $rec.orgsCheckedAt > MAX_SESSION_SECONDS) {
+        def ended as flatdb.DB init store.deleteRefresh($db, $print);
+        def over as AuthReply init fail(
+            $ended,
+            401,
+            "this login is older than " +
+                convert.toString(MAX_SESSION_SECONDS / 86400) + " days; log in again");
+        return AuthReply{status: $over.status, body: $over.body, db: $ended, changed: true};
     }
     def rotated as flatdb.DB init store.deleteRefresh($db, $print);
     # A refresh reissues the memberships it was given and **does not advance
@@ -326,8 +487,7 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int) 
     # continued membership of an organisation, and letting the timestamp move
     # would make a stale membership renewable forever - which is exactly the
     # failure a co-owner list has and organisation scopes exist to avoid.
-    return issue($cfg, $rotated, $rec.accountId, $rec.login, $rec.orgs,
-        $rec.orgsCheckedAt, $now);
+    return issue($cfg, $rotated, $rec.accountId, $rec.login, $rec.orgs, $rec.orgsCheckedAt, $now);
 }
 
 /**
@@ -340,9 +500,7 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int) 
  */
 export func authenticate(cfg as Config, header as string) {
     if (not strings.startsWith($header, "Bearer ")) {
-        throw Error{
-            kind: "auth", message: "missing bearer token", file: "", line: 0, col: 0
-        };
+        throw Error{kind: "auth", message: "missing bearer token", file: "", line: 0, col: 0};
     }
     def bearer as string init strings.substring($header, 7, len($header));
     return token.verify($cfg.signingKey, $bearer);

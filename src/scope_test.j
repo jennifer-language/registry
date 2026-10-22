@@ -29,22 +29,37 @@ func noReserved() {
 
 # alice is the ordinary caller: GitHub subject 1234567, username "alice".
 func alice() {
-    return identity.Subject{ provider: "github", id: "1234567", login: "alice",
-        orgs: {}, orgsCheckedAt: "" };
+    return identity.Subject{
+        provider: "github",
+        id: "1234567",
+        login: "alice",
+        orgs: {},
+        orgsCheckedAt: ""
+    };
 }
 
 # mallory holds the *same username* alice used to have, on a different account.
 # This is the case section 8.1 exists for.
 func mallory() {
-    return identity.Subject{ provider: "github", id: "9999999", login: "alice",
-        orgs: {}, orgsCheckedAt: "" };
+    return identity.Subject{
+        provider: "github",
+        id: "9999999",
+        login: "alice",
+        orgs: {},
+        orgsCheckedAt: ""
+    };
 }
 
 # --- claiming ---------------------------------------------------------------
 
 func testAClaimBindsTheScopeToTheSubject() {
-    def out as ClaimResult init claim(emptyDb(), derived.policy(), alice(), "alice",
-        noReserved(), NOW);
+    def out as ClaimResult init claim(
+        emptyDb(),
+        derived.policy(),
+        alice(),
+        "alice",
+        noReserved(),
+        NOW);
     testing.assertTrue($out.allowed);
     testing.assertTrue($out.changed);
     def ns as store.Namespace init store.getNamespace($out.db, "alice");
@@ -55,47 +70,75 @@ func testAClaimBindsTheScopeToTheSubject() {
 }
 
 func testAClaimIsFolded() {
-    def out as ClaimResult init claim(emptyDb(), firstcome.policy(), alice(), "@ACME",
-        noReserved(), NOW);
+    def out as ClaimResult init claim(
+        emptyDb(),
+        firstcome.policy(),
+        alice(),
+        "@ACME",
+        noReserved(),
+        NOW);
     testing.assertFalse($out.allowed);
     # "@ACME" is not a scope name; the @ belongs to the deck name, not the scope
-    def ok as ClaimResult init claim(emptyDb(), firstcome.policy(), alice(), "ACME",
-        noReserved(), NOW);
+    def ok as ClaimResult init claim(
+        emptyDb(),
+        firstcome.policy(),
+        alice(),
+        "ACME",
+        noReserved(),
+        NOW);
     testing.assertTrue($ok.allowed);
     testing.assertTrue(store.hasNamespace($ok.db, "acme"));
 }
 
 func testAMalformedScopeIsRefusedBeforeAnythingElse() {
     # told what is wrong with the name, not that it is unavailable
-    def out as ClaimResult init claim(emptyDb(), firstcome.policy(), alice(), "a--b",
-        noReserved(), NOW);
+    def out as ClaimResult init claim(
+        emptyDb(),
+        firstcome.policy(),
+        alice(),
+        "a--b",
+        noReserved(),
+        NOW);
     testing.assertFalse($out.allowed);
     testing.assertContains($out.reason, "not a valid scope name");
 }
 
 func testAnUnauthenticatedCallerClaimsNothing() {
     def nobody as identity.Subject init identity.Subject{
-        provider: "", id: "", login: "", orgs: {}, orgsCheckedAt: ""
+        provider: "",
+        id: "",
+        login: "",
+        orgs: {},
+        orgsCheckedAt: ""
     };
-    def out as ClaimResult init claim(emptyDb(), firstcome.policy(), $nobody, "acme",
-        noReserved(), NOW);
+    def out as ClaimResult init claim(
+        emptyDb(),
+        firstcome.policy(),
+        $nobody,
+        "acme",
+        noReserved(),
+        NOW);
     testing.assertFalse($out.allowed);
 }
 
 func testThePolicyGatesTheClaim() {
     # the same request, three policies, three answers
     def db as flatdb.DB init emptyDb();
-    testing.assertTrue(claim($db, firstcome.policy(), alice(), "acme",
-        noReserved(), NOW).allowed);
-    testing.assertFalse(claim($db, derived.policy(), alice(), "acme",
-        noReserved(), NOW).allowed);
-    testing.assertFalse(claim($db, operatorPolicy.policy(), alice(), "alice",
-        noReserved(), NOW).allowed);
+    testing.assertTrue(claim($db, firstcome.policy(), alice(), "acme", noReserved(), NOW).allowed);
+    testing.assertFalse(claim($db, derived.policy(), alice(), "acme", noReserved(), NOW).allowed);
+    def pol as policy.Policy init operatorPolicy.policy();
+    def c as ClaimResult init claim($db, $pol, alice(), "alice", noReserved(), NOW);
+    testing.assertFalse($c.allowed);
 }
 
 func testAReservedScopeIsRefused() {
-    def out as ClaimResult init claim(emptyDb(), firstcome.policy(), alice(), "jennifer",
-        ["jennifer"], NOW);
+    def out as ClaimResult init claim(
+        emptyDb(),
+        firstcome.policy(),
+        alice(),
+        "jennifer",
+        ["jennifer"],
+        NOW);
     testing.assertFalse($out.allowed);
     testing.assertContains($out.reason, "reserved");
 }
@@ -109,16 +152,26 @@ func claimed() {
 func testWhoeverTakesAReleasedUsernameDoesNotInheritTheScope() {
     # the whole reason ownership binds to an id: mallory holds the username
     # "alice" now, and derived policy would happily let them derive @alice
-    def out as ClaimResult init claim(claimed(), derived.policy(), mallory(), "alice",
-        noReserved(), NOW);
+    def out as ClaimResult init claim(
+        claimed(),
+        derived.policy(),
+        mallory(),
+        "alice",
+        noReserved(),
+        NOW);
     testing.assertFalse($out.allowed);
     testing.assertContains($out.reason, "another account");
 }
 
 func testTheRefusalDistinguishesTakenFromDisallowed() {
     # a caller re-claiming their own scope is told that, not told it is taken
-    def out as ClaimResult init claim(claimed(), derived.policy(), alice(), "alice",
-        noReserved(), NOW);
+    def out as ClaimResult init claim(
+        claimed(),
+        derived.policy(),
+        alice(),
+        "alice",
+        noReserved(),
+        NOW);
     testing.assertFalse($out.allowed);
     testing.assertContains($out.reason, "already yours");
 }
@@ -126,17 +179,30 @@ func testTheRefusalDistinguishesTakenFromDisallowed() {
 func testARenameDoesNotMoveTheScope() {
     # alice renames to alicia: same id, new login. The scope stays hers.
     def renamed as identity.Subject init identity.Subject{
-        provider: "github", id: "1234567", login: "alicia", orgs: {}, orgsCheckedAt: ""
+        provider: "github",
+        id: "1234567",
+        login: "alicia",
+        orgs: {},
+        orgsCheckedAt: ""
     };
     testing.assertTrue(authorise(claimed(), $renamed, "alice").allowed);
 }
 
 func testSheMayAlsoClaimTheNewName() {
     def renamed as identity.Subject init identity.Subject{
-        provider: "github", id: "1234567", login: "alicia", orgs: {}, orgsCheckedAt: ""
+        provider: "github",
+        id: "1234567",
+        login: "alicia",
+        orgs: {},
+        orgsCheckedAt: ""
     };
-    def out as ClaimResult init claim(claimed(), derived.policy(), $renamed, "alicia",
-        noReserved(), NOW);
+    def out as ClaimResult init claim(
+        claimed(),
+        derived.policy(),
+        $renamed,
+        "alicia",
+        noReserved(),
+        NOW);
     testing.assertTrue($out.allowed);
 }
 
@@ -155,8 +221,9 @@ func testAGrantWithNoSubjectReservesTheName() {
     testing.assertTrue($out.allowed);
     testing.assertContains($out.reason, "operator-held");
     # registered, so nobody may claim it
-    testing.assertFalse(claim($out.db, firstcome.policy(), alice(), "jennifer",
-        noReserved(), NOW).allowed);
+    def pol as policy.Policy init firstcome.policy();
+    def c as ClaimResult init claim($out.db, $pol, alice(), "jennifer", noReserved(), NOW);
+    testing.assertFalse($c.allowed);
     # and bound to nobody, so nobody may write under it either
     testing.assertFalse(authorise($out.db, alice(), "jennifer").allowed);
 }
@@ -196,7 +263,11 @@ func testAnUnregisteredScopeIsNotAWriteTarget() {
 func testAuthorisationIgnoresTheProviderWhenItDiffers() {
     # the same numeric id from a different provider is a different principal
     def elsewhere as identity.Subject init identity.Subject{
-        provider: "gitea", id: "1234567", login: "alice", orgs: {}, orgsCheckedAt: ""
+        provider: "gitea",
+        id: "1234567",
+        login: "alice",
+        orgs: {},
+        orgsCheckedAt: ""
     };
     testing.assertFalse(authorise(claimed(), $elsewhere, "alice").allowed);
 }
@@ -216,15 +287,17 @@ def const ORG_ID as string init "77777";
 
 # orgScope: @acme belongs to the organisation with id 77777.
 func orgScope() {
-    return grantAs(emptyDb(), "acme", "github", ORG_ID, "acme-inc",
-        store.SCOPE_ORG, NOW).db;
+    return grantAs(emptyDb(), "acme", "github", ORG_ID, "acme-inc", store.SCOPE_ORG, NOW).db;
 }
 
 # a member carries the orgs their login found, exactly as a real token would
 func memberOf(orgs as map of string to string) {
     return identity.Subject{
-        provider: "github", id: "1234567", login: "alice",
-        orgs: $orgs, orgsCheckedAt: NOW
+        provider: "github",
+        id: "1234567",
+        login: "alice",
+        orgs: $orgs,
+        orgsCheckedAt: NOW
     };
 }
 
@@ -246,8 +319,11 @@ func testWhoeverGrantedItGetsNothingPersonally() {
     # the point of 8.7: the scope is the organisation's, not the claimant's, so
     # an id that merely matches the caller is not ownership here
     def who as identity.Subject init identity.Subject{
-        provider: "github", id: ORG_ID, login: "impostor",
-        orgs: {}, orgsCheckedAt: NOW
+        provider: "github",
+        id: ORG_ID,
+        login: "impostor",
+        orgs: {},
+        orgsCheckedAt: NOW
     };
     testing.assertFalse(authorise(orgScope(), $who, "acme").allowed);
 }
@@ -255,10 +331,20 @@ func testWhoeverGrantedItGetsNothingPersonally() {
 func testAnOrgScopeIgnoresTheOwnerComparison() {
     # a user scope would allow this caller; an org scope must not, or the kind
     # would be decorative
-    def userScope as flatdb.DB init grantAs(emptyDb(), "acme", "github", ORG_ID,
-        "acme-inc", store.SCOPE_USER, NOW).db;
+    def userScope as flatdb.DB init grantAs(
+        emptyDb(),
+        "acme",
+        "github",
+        ORG_ID,
+        "acme-inc",
+        store.SCOPE_USER,
+        NOW).db;
     def who as identity.Subject init identity.Subject{
-        provider: "github", id: ORG_ID, login: "x", orgs: {}, orgsCheckedAt: NOW
+        provider: "github",
+        id: ORG_ID,
+        login: "x",
+        orgs: {},
+        orgsCheckedAt: NOW
     };
     testing.assertTrue(authorise($userScope, $who, "acme").allowed);
     testing.assertFalse(authorise(orgScope(), $who, "acme").allowed);
@@ -266,8 +352,11 @@ func testAnOrgScopeIgnoresTheOwnerComparison() {
 
 func testAnOrgOnAnotherProviderIsRefused() {
     def who as identity.Subject init identity.Subject{
-        provider: "gitea", id: "1", login: "alice",
-        orgs: {"acme": ORG_ID}, orgsCheckedAt: NOW
+        provider: "gitea",
+        id: "1",
+        login: "alice",
+        orgs: {"acme": ORG_ID},
+        orgsCheckedAt: NOW
     };
     def out as policy.Decision init authorise(orgScope(), $who, "acme");
     testing.assertFalse($out.allowed);

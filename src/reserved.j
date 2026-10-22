@@ -53,10 +53,29 @@ import "./deckname.j" as deckname;
  */
 export func authority() {
     return [
-        "official", "admin", "administrator", "root", "superuser", "sudo",
-        "system", "security", "abuse", "legal", "moderator", "moderation",
-        "staff", "team", "owner", "support", "help", "contact", "billing",
-        "trust", "verified", "core", "internal"
+        "official",
+        "admin",
+        "administrator",
+        "root",
+        "superuser",
+        "sudo",
+        "system",
+        "security",
+        "abuse",
+        "legal",
+        "moderator",
+        "moderation",
+        "staff",
+        "team",
+        "owner",
+        "support",
+        "help",
+        "contact",
+        "billing",
+        "trust",
+        "verified",
+        "core",
+        "internal"
     ];
 }
 
@@ -68,10 +87,34 @@ export func authority() {
  */
 export func infrastructure() {
     return [
-        "api", "www", "web", "app", "cdn", "static", "assets", "media",
-        "registry", "index", "search", "health", "status", "metrics",
-        "deck", "decks", "docs", "doc", "manual", "reference", "spec", "specs",
-        "download", "downloads", "mirror", "mirrors", "packages", "repo"
+        "api",
+        "www",
+        "web",
+        "app",
+        "cdn",
+        "static",
+        "assets",
+        "media",
+        "registry",
+        "index",
+        "search",
+        "health",
+        "status",
+        "metrics",
+        "deck",
+        "decks",
+        "docs",
+        "doc",
+        "manual",
+        "reference",
+        "spec",
+        "specs",
+        "download",
+        "downloads",
+        "mirror",
+        "mirrors",
+        "packages",
+        "repo"
     ];
 }
 
@@ -81,10 +124,7 @@ export func infrastructure() {
  * @return {list of string} the reserved names
  */
 export func project() {
-    return [
-	    "jennifer", "jvc", "grimoire", "deck", "registry", 
-        "deckregistry", "jennifer-lang"
-	];
+    return ["jennifer", "jvc", "grimoire", "deck", "registry", "deckregistry", "jennifer-lang"];
 }
 
 /**
@@ -95,9 +135,26 @@ export func project() {
  */
 export func placeholder() {
     return [
-        "test", "testing", "example", "examples", "sample", "samples", "demo",
-        "tmp", "temp", "foo", "bar", "baz", "null", "undefined", "none",
-        "nil", "unknown", "anonymous", "nobody", "default"
+        "test",
+        "testing",
+        "example",
+        "examples",
+        "sample",
+        "samples",
+        "demo",
+        "tmp",
+        "temp",
+        "foo",
+        "bar",
+        "baz",
+        "null",
+        "undefined",
+        "none",
+        "nil",
+        "unknown",
+        "anonymous",
+        "nobody",
+        "default"
     ];
 }
 

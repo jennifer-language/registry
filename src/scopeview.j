@@ -56,9 +56,7 @@ export def struct ScopeReply {
 func refuse(db as flatdb.DB, status as int, reason as string) {
     def body as json.Value init json.map();
     $body = json.set($body, "/error", $reason);
-    return ScopeReply{
-        status: $status, body: $body, db: $db, changed: false, event: audit.none()
-    };
+    return ScopeReply{status: $status, body: $body, db: $db, changed: false, event: audit.none()};
 }
 
 /**
@@ -107,13 +105,17 @@ export func claimStatus(reason as string) {
  * @param now {string} the timestamp (Unix seconds as text)
  * @return {ScopeReply} the outcome, and the store to persist on success
  */
-export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject,
-        name as string, reserved as list of string, now as string) {
+export func claim(
+    db as flatdb.DB,
+    pol as policy.Policy,
+    who as identity.Subject,
+    name as string,
+    reserved as list of string,
+    now as string) {
     if (strings.trim($name) == "") {
         return refuse($db, 400, "missing `scope`");
     }
-    def out as scope.ClaimResult init scope.claim($db, $pol, $who, $name, $reserved,
-        $now);
+    def out as scope.ClaimResult init scope.claim($db, $pol, $who, $name, $reserved, $now);
     if (not $out.allowed) {
         return refuse($db, claimStatus($out.reason), $out.reason);
     }
@@ -122,15 +124,22 @@ export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject
     $body = json.set($body, "/scope", $folded);
     $body = json.set($body, "/owner", $who.login);
     return ScopeReply{
-        status: 201, body: $body, db: $out.db, changed: true,
+        status: 201,
+        body: $body,
+        db: $out.db,
+        changed: true,
         event: audit.scopeRegistered($folded, $who.provider, $who.id, $who.login, false)
     };
 }
 
 /**
- * Add or remove a co-owner. Only somebody who may already write under the scope
- * may change who else can, which makes this the one operation here that is
- * authorised by the scope rather than by the policy.
+ * Add or remove a co-owner. Only the scope's **owner** may change who else can
+ * write under it (specification 2.2), which makes this the one operation here
+ * that is authorised by the scope record rather than by the policy.
+ *
+ * A co-owner may not. When any of them could, one compromised or departing
+ * co-owner could add accounts of their own, which kept write access after the
+ * operator removed that co-owner, and could remove the others.
  * @param db {flatdb.DB} the store
  * @param who {identity.Subject} the authenticated caller
  * @param name {string} the scope
@@ -139,8 +148,13 @@ export func claim(db as flatdb.DB, pol as policy.Policy, who as identity.Subject
  * @param now {string} unused; kept so the shape matches its siblings
  * @return {ScopeReply} the outcome, and the store to persist on success
  */
-export func owners(db as flatdb.DB, who as identity.Subject, name as string,
-        subject as string, add as bool, now as string) {
+export func owners(
+    db as flatdb.DB,
+    who as identity.Subject,
+    name as string,
+    subject as string,
+    add as bool,
+    now as string) {
     def folded as string init deckname.fold(strings.trim($name));
     if (strings.startsWith($folded, "@")) {
         $folded = strings.substring($folded, 1, len($folded));
@@ -151,17 +165,25 @@ export func owners(db as flatdb.DB, who as identity.Subject, name as string,
     if (not store.hasNamespace($db, $folded)) {
         return refuse($db, 404, "@" + $folded + " is not a registered scope");
     }
-    # Authorised by the scope itself: a co-owner may add another, which is the
-    # same right an owner has. Where that is too loose for a deployment, the
-    # operator path is the narrower one.
+    if (not isSubjectId(strings.trim($subject))) {
+        return refuse($db, 400, "`subject` is an account id, in digits: " + $subject);
+    }
+    # Asked of the scope first, so a stranger hears what they would hear on any
+    # write; then narrowed to the owner, since `authorise` admits co-owners too.
     def verdict as policy.Decision init scope.authorise($db, $who, $folded);
     if (not $verdict.allowed) {
         return refuse($db, 403, $verdict.reason);
     }
     def ns as store.Namespace init store.getNamespace($db, $folded);
+    if (not ($ns.provider == $who.provider and $ns.subject == $who.id)) {
+        return refuse($db, 403, "only the owner of @" + $folded + " may change its co-owners");
+    }
     if ($ns.subject == strings.trim($subject) and not $add) {
-        return refuse($db, 409, "the owner of @" + $folded +
-            " cannot be removed as a co-owner; ask an operator to reassign it");
+        return refuse(
+            $db,
+            409,
+            "the owner of @" + $folded +
+                " cannot be removed as a co-owner; ask an operator to reassign it");
     }
     def before as int init len(store.ownersOf($db, $folded));
     def out as flatdb.DB init $db;
@@ -175,22 +197,43 @@ export func owners(db as flatdb.DB, who as identity.Subject, name as string,
         # was never there. Idempotent for the first, a 404 for the second.
         if ($add) {
             return ScopeReply{
-                status: 200, body: ownersBody($out, $folded), db: $db,
-                changed: false, event: audit.none()
+                status: 200,
+                body: ownersBody($out, $folded),
+                db: $db,
+                changed: false,
+                event: audit.none()
             };
         }
         return refuse($db, 404, strings.trim($subject) + " is not a co-owner of @" +
             $folded);
     }
-    def event as audit.Event init audit.coOwnerAdded($folded, $ns.provider,
-        strings.trim($subject));
+    def event as audit.Event init audit.coOwnerAdded($folded, $ns.provider, strings.trim($subject));
     if (not $add) {
         $event = audit.coOwnerRemoved($folded, $ns.provider, strings.trim($subject));
     }
     return ScopeReply{
-        status: 200, body: ownersBody($out, $folded), db: $out, changed: true,
+        status: 200,
+        body: ownersBody($out, $folded),
+        db: $out,
+        changed: true,
         event: $event
     };
+}
+
+# isSubjectId reports whether s reads as an account id the way every provider
+# here issues them: digits, no sign, no leading zero, short enough to hold.
+# Anything else would be stored as written and match nobody, or worse, match a
+# differently spelled id.
+func isSubjectId(s as string) {
+    if (len($s) == 0 or len($s) > 18 or (len($s) > 1 and strings.startsWith($s, "0"))) {
+        return false;
+    }
+    for (def ch in strings.chars($s)) {
+        if ($ch < "0" or $ch > "9") {
+            return false;
+        }
+    }
+    return true;
 }
 
 # ownersBody renders a scope's principals.
@@ -236,7 +279,5 @@ export func listScopes(db as flatdb.DB) {
     }
     def body as json.Value init json.map();
     $body = json.set($body, "/scopes", $arr);
-    return ScopeReply{
-        status: 200, body: $body, db: $db, changed: false, event: audit.none()
-    };
+    return ScopeReply{status: 200, body: $body, db: $db, changed: false, event: audit.none()};
 }
