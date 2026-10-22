@@ -42,9 +42,9 @@ With no login surface configured:
 `url` is added when the deployment declares its public base URL
 (`REGISTRY_URL`, [cli.md](cli.md)), and omitted otherwise rather than guessed.
 
-The `auth` object appears only when the login surface is configured. Its absence
-means this deployment accepts no logins, and a client reports that instead of
-guessing an endpoint. Set
+The `auth` object appears when logins or trusted publishing are configured. With
+neither, its absence means this deployment accepts no logins, and a client
+reports that instead of guessing an endpoint. Set
 `REGISTRY_IDENTITY_CLIENTID` and `REGISTRY_TOKEN_KEY` ([cli.md](cli.md)) and the
 features grow `claim`, `owners`, `yank`, and `auth`, and the document grows an
 `auth` object:
@@ -64,11 +64,18 @@ provider offers (`device`, or `authcode` for an OIDC provider that has no device
 endpoint).
 
 With trusted publishing configured (an audience and an issuer, and the issuer's
-key set fetched at boot), `auth` also carries
-`trustedPublishing.audience`, `trustedPublishing.providers` and
-`trustedPublishing.url` (`/v1/publish`). They are served as **flat keys with a
-dot in the name**, and `providers` as one string, not as the nested object and
-array section 4.1 of the specification describes; jvc reads both shapes.
+key set fetched at boot), `auth` also carries a `trustedPublishing` object:
+
+```json
+"trustedPublishing": {
+  "audience": "registry.example",
+  "providers": ["github-actions"],
+  "url": "/v1/publish"
+}
+```
+
+With trusted publishing on and logins off, `auth` holds only that object, and
+the missing `deviceUrl` means "accepts no logins".
 
 Those URLs are absolute paths used verbatim, the one exception to prefixing
 requests with `basePath`. The endpoints behind them are section 8.4 of
@@ -108,7 +115,7 @@ token.
 | Route | Does |
 | ----- | ---- |
 | `POST /auth/device` | begin a device authorization; returns the code the user types |
-| `POST /auth/token` | poll with `{"deviceCode": ...}` until it resolves |
+| `POST /auth/token` | poll with `{"deviceCode": ...}` until it resolves, or (`authcode`) send `{"code", "codeVerifier", "redirectUri"}` once |
 | `POST /auth/refresh` | exchange `{"refreshToken": ...}` for a new pair |
 
 Polling outcomes ride on the status code: `200` approved, `202` pending, `429`
@@ -116,6 +123,18 @@ slow down, `403` denied, `410` expired. A success carries `token`, `expiresIn`
 (3600), `refreshToken`, `login`, `accountId`, and `orgs`, the organisation logins
 the token carries. A body without its field is `400`; a provider that cannot be
 reached is `502`. A rejected or expired refresh token is `401`.
+
+Under `authcode` (an OIDC provider without a device endpoint) discovery carries
+`authorizeUrl`, `clientId` and `scopes` (an array) instead of `deviceUrl`. The
+client runs authorization code with PKCE against the provider and sends the
+result to `/auth/token`. `redirectUri` must be `http://127.0.0.1:<port>/...` or
+`http://[::1]:<port>/...`; anything else, or a code the provider refuses, is `400`.
+
+Every refresh asks the provider, with the provider token kept sealed from the
+login, whether it still names the same account. A revoked or expired provider
+token ends the login (`401`); a provider that cannot be asked is `502` and leaves
+the refresh token valid. A provider whose user tokens expire (a GitHub App with
+expiring user tokens: 8 hours) therefore bounds a login to that lifetime.
 
 Refresh tokens rotate. The presented token is spent on use and a new one
 issued, so a captured token works exactly once and the theft surfaces as an
@@ -133,7 +152,7 @@ unversioned.
 | ----- | ------- |
 | `GET /` | service identity and a list of the core read routes |
 | `GET /health` | `{"status": "ok"}` |
-| `GET /decks` | `{"decks": [names...]}`, unpaged |
+| `GET /decks` | `{"decks": [names...], "page", "pages", "total"}`: 1,000 sorted names a page, `?page=N` |
 | `GET /deck?name=<deck>` | one deck's full record, scoped-name safe |
 | `GET /decks/:name` | one deck's full record, bare names only |
 | `GET /decks/:name/:version` | one version's record |
@@ -290,7 +309,7 @@ request was well-formed, the graph was not. So is a graph reaching more than
 than 64 roots, an invalid deck name, one name under two spellings, or a
 constraint outside the grammar.
 
-The registry is not the authority on resolution. jvc resolves locally from
+The registry is not the authority on resolution. [jvc](https://jvc.jennifer-lang.dev/) resolves locally from
 `/deck` metadata; this endpoint is a convenience for other clients and is
 optional per the specification. It answers with the same resolver a client
 runs: `deckcatalog` gathers every deck the roots reach in one pass, feeds them
@@ -441,10 +460,9 @@ non-co-owner, `409` for removing the owner.
 | `502` | the forge or identity provider could not be reached |
 | `503` | the respond timeout (120 s by default) passed; the engine answers this itself |
 
-The specification also reserves `422` for metadata that fails validation and
-`429` for rate limiting. This implementation answers a manifest that fails
-validation with `400`, and rate-limits nothing; `429` appears only as the
-token exchange's "slow down".
+A manifest that fails validation is `400`. The specification reserves `429` for
+rate limiting; this implementation rate-limits nothing, and `429` appears only as
+the token exchange's "slow down".
 
 ## Caching
 

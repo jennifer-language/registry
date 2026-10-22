@@ -73,4 +73,4 @@ the licence and source of the newest release that is not yanked, the resolution
 counts, and the README as of the last release that carried one. A banner says
 so when the newest version, or every version, is yanked.
 
-The deck page also links the same record as JSON, which jvc reads.
+The deck page also links the same record as JSON, which [jvc](https://jvc.jennifer-lang.dev/) reads.

@@ -1,7 +1,7 @@
 # The deck registry manual
 
 A **deck** is a distributable, versioned bundle of Jennifer modules. You import
-it; you never run it. This registry is where jvc, Jennifer's deck manager, looks
+it; you never run it. This registry is where [jvc](https://jvc.jennifer-lang.dev/), Jennifer's deck manager, looks
 decks up.
 
 These pages cover finding a deck, depending on one, and publishing your own. The
@@ -26,6 +26,10 @@ Two things follow:
   unaffected: the registry hands out the commit it recorded at publish time.
 - If a repository or its objects disappear, that version becomes uninstallable.
   The registry cannot serve the code, because it never had a copy.
+- A forge outage stops installs even when the registry is up, and the forge's
+  rate limits apply to you, not to the registry. Unauthenticated git fetches are
+  throttled per address, which a CI fleet installing from one address will hit;
+  give such jobs a forge token or a cache of `vendor/`.
 
 **A published version is immutable.** Nothing is ever re-published over an
 existing version. A bad release is withdrawn by *yanking* it, which stops new
@@ -48,8 +52,10 @@ So there is no install history here to leak, subpoena, sell, or breach:
 - **No account is needed to consume anything.** Reading, searching, resolving,
   and installing are all unauthenticated. You log in only to *publish*, and even
   then the registry holds your account id, login name, and organisation
-  memberships, plus, where it asks your forge with your own credential whether
-  you may push to a repository, that forge token, encrypted. Never a password.
+  memberships, plus the token your login produced, encrypted. It is used to check
+  at each refresh that you have not revoked the registry's access, and, where
+  the registry asks your forge whether you may push, for that question. Never a
+  password.
 - **No tracking on the website.** The pages carry no analytics, no third-party
   requests, and no cookies. The only script is the light/dark switch, and the
   only thing stored in your browser is which of the two you picked.

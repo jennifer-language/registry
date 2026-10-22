@@ -53,6 +53,9 @@
 # baseUrl = ""                      # REGISTRY_IDENTITY_BASEURL   self-hosted instances
 # secret = ""                       # REGISTRY_IDENTITY_SECRET    providers that need one
 # scopes = ""                       # REGISTRY_IDENTITY_SCOPES
+# Hours a login's organisation memberships stay usable before a refresh is
+# refused and the caller must log in again (8.7). 0 turns the check off.
+# orgMaxAge = 168                   # REGISTRY_ORG_MAX_AGE
 
 # Who may claim a scope over HTTP.
 #   derived     a caller may claim the scope matching their own login (the

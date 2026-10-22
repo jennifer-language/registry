@@ -11,7 +11,7 @@ This is the contract a deck registry must fulfil. The key words **MUST**,
 > the naming grammar, the version record, the discovery document, the endpoints,
 > and what the registry must verify at publish time. The client's obligations
 > (version negotiation, fetching and verifying code, and the login flow) are
-> specified in [specs-client.md](specs-client.md), maintained by the jvc team.
+> specified in [specs-client.md](specs-client.md), maintained by the [jvc](https://jvc.jennifer-lang.dev/) team.
 > Where the client spec describes a payload, this document is normative for its
 > shape.
 
@@ -288,12 +288,14 @@ endpoints are projections of it.
 | `commit` | string | git only | the full 40-character commit SHA the tag pointed at **at publish time** |
 | `repoId` | int | no | the host's immutable numeric repository id, recorded at publish (6.4) |
 | `repoOwnerId` | int | no | the numeric id of the account that owned that repository at publish (6.4) |
+| `repoOwner` | string | no | that account's name at publish; a display label, never compared |
 | `checksum` | string | tar.gz only | `sha256:<lowercase hex>` of the artifact bytes |
 | `requires` | object | no | this version's runtime dependencies, deck name -> constraint |
 | `engines` | object | no | interpreters that can run it, engine name -> constraint |
 | `capabilities` | array of string | no | host capabilities its code needs |
 | `keywords` | array of string | no | the version's tags, normalised (2.5); absent reads as empty |
 | `description` | string | no | one-line summary |
+| `license` | string | no | the manifest's SPDX license expression; absent reads as empty |
 | `publishedAt` | string | no | publication time, Unix seconds as text |
 | `yanked` | bool | no | see section 9; absent means false |
 
@@ -414,7 +416,7 @@ This path never changes; it is the one thing a client may hard-code.
 | `auth.provider` | the identity provider: `"github"`, or a name the deployment chooses (12.2) |
 | `auth.flow` | `"device"` or `"authcode"` (12.2); a client **MUST** refuse a flow it does not know |
 | `auth.authorizeUrl` | `authcode` only; the provider's authorization endpoint |
-| `auth.scopes` | `authcode` only; the scopes the client must request |
+| `auth.scopes` | `authcode` only; the scopes the client must request, an array of strings |
 | `auth.deviceUrl` | where to begin a device authorization (8.4) |
 | `auth.tokenUrl` | where to exchange an approved device code for a token (8.4) |
 | `auth.refreshUrl` | optional; where to exchange a refresh token (8.4) |
@@ -427,9 +429,12 @@ This path never changes; it is the one thing a client may hard-code.
 **The `auth` object is optional, and its absence is meaningful.** A read-only
 registry omits it, and a client **MUST** read that as "this registry does not
 accept logins" and say so, rather than guessing an endpoint. A registry that
-does accept writes **MUST** advertise `deviceUrl` and `tokenUrl`: without them a
-client has nowhere to send the exchange and no way to learn the OAuth client id,
-which differs per registry.
+accepts logins **MUST** advertise `flow` and `tokenUrl`, plus `deviceUrl` under
+`device` or `authorizeUrl`, `clientId` and `scopes` under `authcode` (12.2):
+without them a client has nowhere to send the exchange. A registry that accepts
+CI publishes (8.9) but no logins advertises an `auth` object holding only
+`trustedPublishing`, and a client **MUST** read the missing `flow` as "accepts no
+logins".
 
 **`url` is what the registry calls itself.** A registry **SHOULD** advertise it,
 and **MUST** omit it rather than guess: a registry sees a listen address and a
@@ -545,10 +550,12 @@ routes lets a registry derive this list from its router.
 | `resolveGraph` | `GET /resolve-graph` | no |
 | `search` | `GET /search` (5.5) | no |
 | `health` | `GET /health` | no |
-| `auth` | `POST /auth/device`, `POST /auth/token` (8.4) | no |
+| `auth` | `POST /auth/device`, `POST /auth/token`, `POST /auth/refresh` (8.4) | no |
 | `publish` | `POST /publish` | no |
 | `yank` | `POST /yank`, `POST /unyank` | no |
+| `claim` | `POST /claim` (8.2) | no |
 | `owners` | `POST /owners` | no |
+| `scopes` | `GET /scopes` (7) | no |
 
 A registry **MUST** list `deck`. Feature names are a set: several routes **MAY**
 share one label, and it is listed once.
@@ -604,7 +611,8 @@ Response `200`:
 ```
 
 The deck record itself carries `name`, `description`, `versions`, and optionally
-`successor` (5.1.1).
+`readme` (the `README.md` read at the newest published commit, Markdown source)
+and `successor` (5.1.1).
 
 - The `versions` object is keyed by version string.
 - An unknown deck is `404` with `{"error": "..."}`.
@@ -645,11 +653,13 @@ only records the relationship.
 ### 5.2 `GET /decks`
 
 ```json
-{ "decks": ["@acme/routeros", "@acme/net"] }
+{ "decks": ["@acme/net", "@acme/routeros"], "page": 1, "pages": 1, "total": 2 }
 ```
 
-Every deck name. A large registry **SHOULD** paginate; define the scheme when
-you need it.
+Every deck name, sorted. A large registry **SHOULD** paginate. When it does, it
+takes `?page=N` (1-based; absent or invalid reads as 1), and the reply carries
+`page`, `pages` and `total`; a page past the last has an empty `decks`. A client
+reads pages until `page` equals `pages`.
 
 ### 5.3 `GET /resolve?name=<deck>&constraint=<range>` (optional)
 
@@ -763,13 +773,15 @@ offered. Both are conveniences; neither is depended on.
 
 | Status | When |
 | ------ | ---- |
-| `400` | malformed or missing parameters |
+| `400` | malformed or missing parameters, or a manifest that failed validation |
 | `401` | missing or invalid credentials on a write |
 | `403` | authenticated, but not permitted (wrong scope owner) |
 | `404` | no such deck or version |
 | `409` | the version already exists (section 7) |
-| `422` | the artifact or metadata failed validation |
 | `429` | rate limited |
+| `501` | the operation is not configured on this registry (e.g. a write when it accepts no logins) |
+| `502` | the identity provider or the forge failed or could not be reached |
+| `503` | the registry did not answer within its respond timeout |
 
 Every error body **SHOULD** be `{"error": "<human-readable message>"}`. The
 message is shown directly to a developer in a terminal, so write it for that
@@ -1357,7 +1369,23 @@ the minimum seconds between polls, and a client **MUST** honour it.
 { "deviceCode": "3584d83530557fdd1f46af8289938c8ef79f9dc5" }
 ```
 
-The client polls this until it resolves. The outcome is carried by the **status
+Under `authcode` (12.2) the client sends instead what its PKCE run produced, once:
+
+```json
+{
+  "code": "SplxlOBeZQQYbYS6WxSbIA",
+  "codeVerifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+  "redirectUri": "http://127.0.0.1:53682/callback"
+}
+```
+
+The registry exchanges the code with the provider and answers like an approved
+device code. `redirectUri` **MUST** be the one the authorization request used,
+and a registry **MUST** refuse one that is not an `http` loopback address with a
+port (`127.0.0.1` or `[::1]`, RFC 8252 section 7.3) with `400`. A refused code is
+`400`.
+
+The client polls the device-code form until it resolves. The outcome is carried by the **status
 code**, so a client can branch without parsing prose:
 
 | Status | Body | Means |
@@ -1405,8 +1433,14 @@ refresh path.
 
 Answers exactly like a successful `POST /auth/token`, with a fresh `token` and
 `expiresIn`. A rejected or expired refresh token is `401`, and the client's
-remedy is to run the device flow again. A registry **SHOULD** rotate the refresh
-token on each use.
+remedy is to log in again. A registry **SHOULD** rotate the refresh token on each
+use.
+
+A refresh is where 8.5's revocation rule is enforced: the registry asks the
+provider, with the provider token kept (sealed) from the login, whether it still
+names the same account. A token the provider refuses, or one naming another
+account, ends the login with `401`. A provider that cannot be asked is `502`,
+and the refresh token stays valid for a retry.
 
 ### 8.5 Authorization is a bearer token
 
@@ -1439,7 +1473,8 @@ Consequences to design for:
 - **Expiry MUST be short enough to matter** (hours, not months) with a refresh
   path, or the token becomes a long-lived credential in a dotfile.
 - **Revocation.** Revoking the GitHub grant **MUST** prevent obtaining a new
-  registry token. A registry **SHOULD** also offer an operator path to invalidate
+  registry token. Every refresh re-checks the grant with the provider (8.4), so
+  an outstanding registry token outlives a revocation by at most its expiry. A registry **SHOULD** also offer an operator path to invalidate
   outstanding tokens for an identity.
 - **Organisation membership is only as fresh as the token that carries it.**
   8.7 specifies where it is read and why a registry that discards the provider

@@ -15,7 +15,7 @@ This is the contract a **client** of a deck registry must fulfil. The key words
 > produces them. This document references it rather than restating it, so the
 > two cannot drift.
 >
-> Each project owns its own half. This half is intended to move to the jvc
+> Each project owns its own half. This half is intended to move to the [jvc](https://jvc.jennifer-lang.dev/)
 > repository; the registry repository maintains only the server half.
 
 ---
@@ -482,12 +482,11 @@ A client **MUST** be able to distinguish these, because the remedies differ:
 
 | Status | Means | Tell the user |
 | ------ | ----- | ------------- |
-| `400` | malformed request | a client bug, or a bad argument |
+| `400` | malformed request, or a manifest that failed validation | what failed, from the body |
 | `401` | missing or invalid credentials | log in again |
 | `403` | authenticated, not permitted | you do not own that scope |
 | `404` | no such deck or version | check the name and the constraint |
 | `409` | the version already exists | publishes are immutable; bump the version |
-| `422` | metadata failed validation | what failed, from the body |
 | `429` | rate limited | back off and retry |
 
 The body is `{"error": "<message>"}`, written for a developer in a terminal. A

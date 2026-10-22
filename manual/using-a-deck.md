@@ -39,7 +39,7 @@ by version.
 
 ## What install does
 
-Resolution happens on your machine, not on the server. jvc reads each deck's
+Resolution happens on your machine, not on the server. [jvc](https://jvc.jennifer-lang.dev/) reads each deck's
 metadata, works out one version per deck that satisfies every constraint on it
 at once, and picks the highest such version. When two of your dependencies
 disagree about a shared deck, the winner must satisfy both.

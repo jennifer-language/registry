@@ -14,7 +14,7 @@ throughout both documents.
 
 ## Why two documents
 
-Two projects own them. This repository is the server; jvc is the client, and
+Two projects own them. This repository is the server; [jvc](https://jvc.jennifer-lang.dev/) is the client, and
 the client specification is maintained by the jvc team and lives here until it
 moves.
 

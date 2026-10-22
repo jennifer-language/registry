@@ -103,6 +103,7 @@ failure; a failed first issuance leaves the registry on plain HTTP with an
 | `REGISTRY_IDENTITY_BASEURL` | unset | `serve` | the provider's base URL, for a self-hosted instance |
 | `REGISTRY_IDENTITY_SECRET` | unset | `serve` | the client secret, for a provider that needs one |
 | `REGISTRY_IDENTITY_SCOPES` | per module | `serve` | override the requested scopes |
+| `REGISTRY_ORG_MAX_AGE` | `168` | `serve` | hours a login's organisation memberships stay usable; `0` is off |
 | `REGISTRY_TOKEN_KEY` | unset | `serve` | the HMAC secret bearer tokens are signed with |
 | `REGISTRY_CONFIG` | `config.toml` | `serve` | where the configuration file is |
 | `REGISTRY_TLS` | `0` | `serve` | serve HTTPS and obtain a certificate |
@@ -341,11 +342,14 @@ under the scope and removed members cannot, with no list for an operator to
 maintain. Pending invitations and billing managers are excluded.
 
 Memberships are read at login and carried in the registry's own token; nothing
-asks the provider again. Where the provider token is kept, it is sealed and used
-only to ask whether the caller may push to the repository they publish from,
-never to re-read memberships. A refresh reissues them without renewing the
-timestamp, so somebody removed from an organisation keeps write access until
-their token ages out.
+asks the provider again for them. The provider token is kept sealed for every
+login: each refresh uses it to check that the grant still stands (a revoked grant
+ends the login), and in `login` source authority a publish uses it to ask whether
+the caller may push. It is never used to re-read memberships. A refresh reissues them without renewing the
+timestamp, and refuses once they are older than `REGISTRY_ORG_MAX_AGE` hours
+(`identity.orgMaxAge`, default 168; `0` turns the check off). Somebody removed
+from an organisation therefore keeps write access for at most that window plus
+one bearer-token lifetime (1 h); a login without memberships is not affected.
 
 Implemented for GitHub. The other identity modules return no memberships, which
 makes an organisation scope unwritable there rather than writable by anybody.
@@ -511,6 +515,8 @@ gh api repos/acme/deck-routeros --jq .id
 The scope must already be owned: a binding is a standing grant to write under it,
 so it is gated as a publish is. A binding on a deck with no versions is
 **pending** until the first publish, so a deck can be bound before it exists.
+A pending binding unused for 30 days expires: publishes through it are refused,
+`trust` lists it as `[pending, expired]`, and registering it again renews it.
 
 `--workflow` and `--refs` stop other jobs in that repository from publishing.
 Without a workflow, a pull-request build proposed by a contributor runs with the
@@ -568,9 +574,9 @@ Before deploying:
   provider family and base URL) and `service` otherwise. The server refuses to
   start with `login` across two services, or with `service` and no forge token.
 
-  In `login` mode the token is sealed with AES-256-GCM under a key derived from
-  `REGISTRY_TOKEN_KEY`, replaced at each login, never returned, and dropped by
-  `revoke`. Rotating the signing key makes every kept token unreadable, so those
+  The token is kept in both modes (refresh re-checks the grant with it), sealed
+  with AES-256-GCM under a key derived from `REGISTRY_TOKEN_KEY`, replaced at each
+  login, never returned, and dropped by `revoke`. Rotating the signing key makes every kept token unreadable, so those
   accounts are asked to log in again. Accounts that logged in before tokens were
   kept are in the same position.
 
@@ -591,10 +597,11 @@ adding one:
   needs no module of its own. A generic OIDC module covers Authelia and anything
   else standards-compliant; write a bespoke module only for a service that
   deviates from the standard.
-- **A pair carries policy, and policy may only subtract.** It may narrow the name
-  grammar, choose a claim policy, and reserve names. It may never widen section
-  2.1, because a name outside it produces records a conforming client cannot
-  install.
+- **A pair carries policy, and policy may only subtract.** Here a policy decides
+  who may claim a scope (`operator`, `derived`, `firstcome`); reserved names are
+  operator records. Narrowing the name grammar, which the specification allows,
+  is not built. A policy may never widen section 2.1, because a name outside it
+  produces records a conforming client cannot install.
 
 The identity modules for GitHub, GitLab, Gitea, and generic OIDC, and the forge
 modules for GitHub, GitLab, and Gitea, exist behind that interface. Organisation

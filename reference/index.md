@@ -8,7 +8,7 @@
 
 The HTTP repository that [jvc](https://github.com/jennifer-language/jvc),
 Jennifer's deck manager, resolves and fetches decks from, plus the operator CLI
-that maintains it. jvc is the client; this is the server.
+that maintains it. [jvc](https://jvc.jennifer-lang.dev/) is the client; this is the server.
 
 The registry indexes; it does not host. A deck's code stays in its git
 repository, and a published version is pinned to the commit its tag pointed at
