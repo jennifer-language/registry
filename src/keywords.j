@@ -105,8 +105,7 @@ export func blocked() {
 func decodeAll(encoded as list of string) {
     def out as list of string init [];
     for (def one in $encoded) {
-        $out[] = convert.stringFromBytes(encoding.fromText($one, "base64"),
-            "utf-8");
+        $out[] = convert.stringFromBytes(encoding.fromText($one, "base64"), "utf-8");
     }
     return $out;
 }
@@ -117,10 +116,23 @@ func decodeAll(encoded as list of string) {
  */
 export func abuse() {
     return decodeAll([
-        "Y3NhbQ==", "Y3NlbQ==", "Y2hpbGRwb3Ju", "Y2hpbGRwb3Jub2dyYXBoeQ==", "Y3A=",
-        "cGVkbw==", "cGVkb3BoaWxl", "cGFlZG8=", "cGFlZG9waGlsZQ==",
-        "cGVkb3BoaWxpYQ==", "cGFlZG9waGlsaWE=", "bG9saWNvbg==", "c2hvdGFjb24=",
-        "amFpbGJhaXQ=", "cHJldGVlbg==", "dW5kZXJhZ2U=", "bWlub3Jwb3Ju"
+        "Y3NhbQ==",
+        "Y3NlbQ==",
+        "Y2hpbGRwb3Ju",
+        "Y2hpbGRwb3Jub2dyYXBoeQ==",
+        "Y3A=",
+        "cGVkbw==",
+        "cGVkb3BoaWxl",
+        "cGFlZG8=",
+        "cGFlZG9waGlsZQ==",
+        "cGVkb3BoaWxpYQ==",
+        "cGFlZG9waGlsaWE=",
+        "bG9saWNvbg==",
+        "c2hvdGFjb24=",
+        "amFpbGJhaXQ=",
+        "cHJldGVlbg==",
+        "dW5kZXJhZ2U=",
+        "bWlub3Jwb3Ju"
     ]);
 }
 
@@ -130,10 +142,25 @@ export func abuse() {
  */
 export func adult() {
     return decodeAll([
-        "cG9ybg==", "cG9ybm8=", "cG9ybm9ncmFwaHk=", "eHh4", "bnNmdw==",
-        "aGVudGFp", "ZXJvdGljYQ==", "ZXJvdGlj", "Y2FtZ2lybA==", "ZXNjb3J0",
-        "ZmV0aXNo", "YmRzbQ==", "b25seWZhbnM=", "c2V4", "c2V4eQ==", "bnVkZQ==",
-        "bnVkZXM=", "bnVkaXR5", "YWR1bHRjb250ZW50"
+        "cG9ybg==",
+        "cG9ybm8=",
+        "cG9ybm9ncmFwaHk=",
+        "eHh4",
+        "bnNmdw==",
+        "aGVudGFp",
+        "ZXJvdGljYQ==",
+        "ZXJvdGlj",
+        "Y2FtZ2lybA==",
+        "ZXNjb3J0",
+        "ZmV0aXNo",
+        "YmRzbQ==",
+        "b25seWZhbnM=",
+        "c2V4",
+        "c2V4eQ==",
+        "bnVkZQ==",
+        "bnVkZXM=",
+        "bnVkaXR5",
+        "YWR1bHRjb250ZW50"
     ]);
 }
 
@@ -143,9 +170,7 @@ export func adult() {
  * @return {list of string} the terms, decoded
  */
 export func slur() {
-    return decodeAll([
-        "bmF6aQ==", "aGl0bGVy", "d2hpdGVwb3dlcg==", "Z2Vub2NpZGU=", "bHluY2g="
-    ]);
+    return decodeAll(["bmF6aQ==", "aGl0bGVy", "d2hpdGVwb3dlcg==", "Z2Vub2NpZGU=", "bHluY2g="]);
 }
 
 /**
@@ -163,8 +188,14 @@ export func slur() {
  */
 export func blockedSubstrings() {
     return decodeAll([
-        "Y3NhbQ==", "Y2hpbGRwb3Ju", "cGVkb3BoaWw=", "cGFlZG9waGls",
-        "bG9saWNvbg==", "c2hvdGFjb24=", "amFpbGJhaXQ=", "bWlub3Jwb3Ju"
+        "Y3NhbQ==",
+        "Y2hpbGRwb3Ju",
+        "cGVkb3BoaWw=",
+        "cGFlZG9waGls",
+        "bG9saWNvbg==",
+        "c2hvdGFjb24=",
+        "amFpbGJhaXQ=",
+        "bWlub3Jwb3Ju"
     ]);
 }
 
@@ -248,7 +279,14 @@ export func isBlocked(word as string) {
  * @return {string} the folded form
  */
 export func fold(word as string) {
-    return strings.lower(strings.trim($word));
+    def trimmed as string init strings.trim($word);
+    # Only ASCII is lowered. `strings.lower` maps the Kelvin sign (U+212A) to
+    # `k` and the dotted capital I to `i`, so a non-ASCII spelling folded into
+    # somebody else's valid name; left as written, it fails the grammar instead.
+    if (not encoding.isAscii(convert.bytesFromString($trimmed, "utf-8"))) {
+        return $trimmed;
+    }
+    return strings.lower($trimmed);
 }
 
 /**

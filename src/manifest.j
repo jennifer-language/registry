@@ -43,9 +43,10 @@
 use toml;
 use strings;
 use convert;
+use maps;
 import "./deckname.j" as deckname;
 import "./keywords.j" as keywords;
-import "semver.j" as semver;
+import "./constraint.j" as constraint;
 
 # The file a deck declares itself in, at the root of its repository.
 export def const FILENAME as string init "deck.toml";
@@ -85,8 +86,15 @@ func bad(reason as string) {
     def noMap as map of string to string init {};
     def noList as list of string init [];
     return Manifest{
-        ok: false, error: $reason, name: "", version: "", description: "",
-        license: "", requires: $noMap, engines: $noMap, capabilities: $noList,
+        ok: false,
+        error: $reason,
+        name: "",
+        version: "",
+        description: "",
+        license: "",
+        requires: $noMap,
+        engines: $noMap,
+        capabilities: $noList,
         keywords: $noList
     };
 }
@@ -99,17 +107,87 @@ func str(doc as toml.Value, pointer as string) {
     return toml.asString($doc, $pointer);
 }
 
-# table reads a table of string values into a map. An absent table is empty,
-# which is what the specification says an absent `requires` means.
-func table(doc as toml.Value, pointer as string) {
+# table reads a table of string values into a map, folding the keys when they
+# are deck names. An absent table is empty, which is what the specification says
+# an absent `requires` means. `tableProblem` has already vouched for the shape.
+func table(doc as toml.Value, pointer as string, decks as bool) {
     def out as map of string to string init {};
     if (not toml.has($doc, $pointer)) {
         return $out;
     }
     for (def key in toml.keys($doc, $pointer)) {
-        $out[$key] = toml.asString($doc, $pointer + "/" + ptrEscape($key));
+        def name as string init $key;
+        if ($decks) {
+            $name = deckname.fold($key);
+        }
+        $out[$name] = strings.trim(toml.asString($doc, $pointer + "/" + ptrEscape($key)));
     }
     return $out;
+}
+
+# tableProblem is why a dependency table cannot be published, or "". Each entry
+# must be a constraint in the grammar (2.4), since one outside it matches nothing
+# and a typo would otherwise surface only when somebody fails to install. Under
+# `[decks]` each key must also be a scoped deck name, and two spellings of one
+# name are refused: names fold, so they would be one dependency at two versions.
+func tableProblem(doc as toml.Value, pointer as string, decks as bool) {
+    def label as string init "[" + strings.substring($pointer, 1, len($pointer)) + "]";
+    if (not toml.has($doc, $pointer)) {
+        return "";
+    }
+    if (not (toml.typeOf($doc, $pointer) == "map")) {
+        return $label + " in " + FILENAME + " must be a table";
+    }
+    def seen as map of string to bool init {};
+    for (def key in toml.keys($doc, $pointer)) {
+        def at as string init $pointer + "/" + ptrEscape($key);
+        if (not (toml.typeOf($doc, $at) == "string")) {
+            return $label + " entry " + $key + " must be a version constraint in quotes";
+        }
+        if ($decks) {
+            def folded as string init deckname.fold($key);
+            if (not deckname.isValid($folded) or not deckname.isScoped($folded)) {
+                return "not a deck name in " + $label + ": " + $key;
+            }
+            if (maps.has($seen, $folded)) {
+                return $key + " is listed twice in " + $label + ", under two spellings";
+            }
+            $seen[$folded] = true;
+        }
+        def value as string init toml.asString($doc, $at);
+        if (not constraint.isValidConstraint($value)) {
+            return "not a valid version constraint for " + $key + " in " + $label + ": " +
+                $value;
+        }
+    }
+    return "";
+}
+
+# listProblem is why a list cannot be read as strings, or "".
+func listProblem(doc as toml.Value, pointer as string) {
+    if (not toml.has($doc, $pointer)) {
+        return "";
+    }
+    if (not (toml.typeOf($doc, $pointer) == "list")) {
+        return strings.substring($pointer, 1, len($pointer)) + " in " + FILENAME +
+            " must be a list";
+    }
+    for (def i in 0..toml.length($doc, $pointer)) {
+        if (not (toml.typeOf($doc, $pointer + "/" + convert.toString($i)) == "string")) {
+            return strings.substring($pointer, 1, len($pointer)) + " in " + FILENAME +
+                " must hold only strings";
+        }
+    }
+    return "";
+}
+
+# fieldProblem is why a [package] field that must be text is not, or "".
+func fieldProblem(doc as toml.Value, field as string) {
+    if (toml.has($doc, "/package/" + $field) and
+        not (toml.typeOf($doc, "/package/" + $field) == "string")) {
+        return "`" + $field + "` in " + FILENAME + " must be a string";
+    }
+    return "";
 }
 
 # ptrEscape encodes one JSON Pointer reference token (RFC 6901). A dependency
@@ -120,17 +198,19 @@ func ptrEscape(token as string) {
     return strings.replace($out, "/", "~1");
 }
 
-# strList reads an optional array of strings.
+# strList reads an optional array, keeping its strings and skipping anything
+# else. Fields where a wrong entry must fail the publish check `listProblem`
+# first; keywords do not, because a bad keyword never fails a publish.
 func strList(doc as toml.Value, pointer as string) {
     def out as list of string init [];
-    if (not toml.has($doc, $pointer)) {
+    if (not toml.has($doc, $pointer) or not (toml.typeOf($doc, $pointer) == "list")) {
         return $out;
     }
-    def n as int init toml.length($doc, $pointer);
-    def i as int init 0;
-    while ($i < $n) {
-        $out[] = toml.asString($doc, $pointer + "/" + convert.toString($i));
-        $i = $i + 1;
+    for (def i in 0..toml.length($doc, $pointer)) {
+        def at as string init $pointer + "/" + convert.toString($i);
+        if (toml.typeOf($doc, $at) == "string") {
+            $out[] = toml.asString($doc, $at);
+        }
     }
     return $out;
 }
@@ -156,6 +236,12 @@ export func parse(text as string) {
     } catch (err) {
         return bad(FILENAME + " is not valid TOML: " + $err.message);
     }
+    for (def field in ["name", "version", "description", "license"]) {
+        def wrongType as string init fieldProblem($doc, $field);
+        if (not ($wrongType == "")) {
+            return bad($wrongType);
+        }
+    }
     def name as string init deckname.fold(str($doc, "/package/name"));
     if ($name == "") {
         return bad(FILENAME + " has no `name` under [package]");
@@ -171,8 +257,18 @@ export func parse(text as string) {
     if ($version == "") {
         return bad(FILENAME + " has no `version` under [package]");
     }
-    if (not semver.isValid($version)) {
-        return bad("not a valid version in " + FILENAME + ": " + $version);
+    if (not constraint.isUsableVersion($version)) {
+        return bad("not a valid version in " + FILENAME + ": " + $version +
+            " (SemVer, with no number longer than 18 digits)");
+    }
+    for (def complaint in [
+        tableProblem($doc, "/decks", true),
+        tableProblem($doc, "/engines", false),
+        listProblem($doc, "/package/capabilities")
+    ]) {
+        if (not ($complaint == "")) {
+            return bad($complaint);
+        }
     }
     return Manifest{
         ok: true,
@@ -181,8 +277,8 @@ export func parse(text as string) {
         version: $version,
         description: str($doc, "/package/description"),
         license: str($doc, "/package/license"),
-        requires: table($doc, "/decks"),
-        engines: table($doc, "/engines"),
+        requires: table($doc, "/decks", true),
+        engines: table($doc, "/engines", false),
         capabilities: strList($doc, "/package/capabilities"),
         # Normalised here rather than at the call site so there is one answer to
         # "what tags does this deck have": a bad keyword costs the publisher that

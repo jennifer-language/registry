@@ -35,7 +35,7 @@ import "./citoken.j" as citoken;
 import "./reserved.j" as reserved;
 import "./keywords.j" as keywords;
 import "./token.j" as token;
-import "semver.j" as semver;
+import "./constraint.j" as constraint;
 
 /**
  * The outcome of an admin operation.
@@ -64,12 +64,19 @@ func ownershipCommands(p as args.Parser) {
     $ns = args.flag($ns, "owner", "", "", "the subject id to bind it to (omit to reserve)");
     $ns = args.flag($ns, "provider", "", "github", "the identity provider that issued it");
     $ns = args.flag($ns, "login", "", "", "the owner's username, a display label");
-    $ns = args.boolFlag($ns, "org", "",
+    $ns = args.boolFlag(
+        $ns,
+        "org",
+        "",
         "the owner is an organisation: authorise by live membership (8.7)");
-    $out = args.command($out, "register-namespace",
-        "register a scope decks may publish under", $ns);
+    $out = args.command(
+        $out,
+        "register-namespace",
+        "register a scope decks may publish under",
+        $ns);
 
-    def ao as args.Parser init args.parser("add-owner",
+    def ao as args.Parser init args.parser(
+        "add-owner",
         "let another principal write under a scope");
     $ao = args.positional($ao, "scope", "the scope");
     $ao = args.positional($ao, "subject", "the principal id to add");
@@ -85,20 +92,24 @@ func ownershipCommands(p as args.Parser) {
     $nsl = args.boolFlag($nsl, "reserved", "", "only scopes held with no owner");
     $out = args.command($out, "namespaces", "list registered scopes", $nsl);
 
-    def rs as args.Parser init args.parser("reserve-defaults",
+    def rs as args.Parser init args.parser(
+        "reserve-defaults",
         "hold every reserved scope, so nobody can claim one");
     $rs = args.boolFlag($rs, "dry-run", "n", "list what would be reserved, change nothing");
-    $out = args.command($out, "reserve-defaults",
-        "hold every reserved scope operator-held", $rs);
+    $out = args.command($out, "reserve-defaults", "hold every reserved scope operator-held", $rs);
 
-    def kw as args.Parser init args.parser("keywords",
+    def kw as args.Parser init args.parser(
+        "keywords",
         "inspect the refused-keyword list, or encode a term for it");
-    $kw = args.positionalList($kw, "words",
-        "terms to encode; with none, print the current list");
-    $out = args.command($out, "keywords",
-        "show the refused-keyword list, or encode terms for it", $kw);
+    $kw = args.positionalList($kw, "words", "terms to encode; with none, print the current list");
+    $out = args.command(
+        $out,
+        "keywords",
+        "show the refused-keyword list, or encode terms for it",
+        $kw);
 
-    def ct as args.Parser init args.parser("mint-token",
+    def ct as args.Parser init args.parser(
+        "mint-token",
         "mint a CI token for non-interactive publishing");
     $ct = args.positional($ct, "scope", "the scope it may write under");
     $ct = args.flag($ct, "deck", "", "", "narrow it to one deck within that scope");
@@ -147,8 +158,11 @@ export def struct LogOptions {
  * @param envFormat {string} REGISTRY_LOG_FORMAT
  * @return {LogOptions} the resolved options
  */
-export func logOptions(r as args.Result, envPath as string, envLevel as string,
-        envFormat as string) {
+export func logOptions(
+    r as args.Result,
+    envPath as string,
+    envLevel as string,
+    envFormat as string) {
     def path as string init args.asString($r, "log");
     if ($path == "") {
         $path = $envPath;
@@ -189,10 +203,10 @@ func parseRequires(spec as string) {
         }
         def sp as int init strings.indexOf($p, " ");
         if ($sp < 0) {
-            $out[$p] = "*";
+            $out[deckname.fold($p)] = "*";
         } else {
-            $out[strings.trim(strings.substring($p, 0, $sp))] =
-                strings.trim(strings.substring($p, $sp + 1, len($p)));
+            def name as string init strings.trim(strings.substring($p, 0, $sp));
+            $out[deckname.fold($name)] = strings.trim(strings.substring($p, $sp + 1, len($p)));
         }
     }
     return $out;
@@ -220,18 +234,21 @@ func parseList(spec as string) {
 # describes it - the alternative, reconstructing the event from the message
 # string afterwards, would drift the moment a message is reworded.
 func readResult(db as flatdb.DB, message as string) {
-    return AdminResult{ db: $db, ok: true, changed: false, message: $message,
-        event: audit.none() };
+    return AdminResult{db: $db, ok: true, changed: false, message: $message, event: audit.none()};
 }
 
 func failResult(db as flatdb.DB, message as string) {
-    return AdminResult{ db: $db, ok: false, changed: false, message: $message,
-        event: audit.commandFailed("", $message) };
+    return AdminResult{
+        db: $db,
+        ok: false,
+        changed: false,
+        message: $message,
+        event: audit.commandFailed("", $message)
+    };
 }
 
 func editResult(db as flatdb.DB, message as string, ev as audit.Event) {
-    return AdminResult{ db: $db, ok: true, changed: true, message: $message,
-        event: $ev };
+    return AdminResult{db: $db, ok: true, changed: true, message: $message, event: $ev};
 }
 
 # publishParser builds the shared shape of `add` and `update`, which are the
@@ -259,27 +276,38 @@ func publishParser(name as string, help as string) {
  * @return {args.Parser} the parser for the whole CLI
  */
 export func parser() {
-    def p as args.Parser init args.parser("deckadmin",
+    def p as args.Parser init args.parser(
+        "deckadmin",
         "maintain the jvc deck repository. A deck name is scoped (@scope/deck) " +
-        "and its scope must be registered first. A git version is pinned by the " +
-        "commit its tag pointed at, which is the integrity boundary; a tar.gz " +
-        "version is pinned by its checksum.");
+            "and its scope must be registered first. A git version is pinned by the " +
+            "commit its tag pointed at, which is the integrity boundary; a tar.gz " +
+            "version is pinned by its checksum.");
     # Logging is configured on the root parser, so these go *before* the command:
     # `deckadmin --log data/registry.log add ...`. `args` hands the accumulated
     # result down into the subcommand parser, which is what makes that work; a
     # flag placed after the command is matched against the command's own grammar
     # and would be rejected as unknown.
     $p = args.flag($p, "log", "", "", "append events to this file (REGISTRY_LOG)");
-    $p = args.flag($p, "log-level", "", "",
+    $p = args.flag(
+        $p,
+        "log-level",
+        "",
+        "",
         "debug, info, warn, or error (REGISTRY_LOG_LEVEL; default info)");
-    $p = args.flag($p, "log-format", "", "",
+    $p = args.flag(
+        $p,
+        "log-format",
+        "",
+        "",
         "text, logfmt, or json (REGISTRY_LOG_FORMAT; default logfmt for a file)");
     $p = args.boolFlag($p, "verbose", "v", "also print each event to the console");
     $p = args.boolFlag($p, "quiet", "q", "suppress the result message");
-    $p = args.command($p, "add", "publish a version (an upsert)",
+    $p = args.command(
+        $p,
+        "add",
+        "publish a version (an upsert)",
         publishParser("add", "publish a version (an upsert)"));
-    $p = args.command($p, "update", "an alias of add",
-        publishParser("update", "an alias of add"));
+    $p = args.command($p, "update", "an alias of add", publishParser("update", "an alias of add"));
 
     def rm as args.Parser init args.parser("remove", "remove a version, or a whole deck");
     $rm = args.positional($rm, "deck", "the deck name");
@@ -301,11 +329,16 @@ export func parser() {
     $uy = args.positional($uy, "version", "the version to restore");
     $p = args.command($p, "unyank", "restore a withdrawn version", $uy);
 
-    def tp as args.Parser init args.parser("trust",
+    def tp as args.Parser init args.parser(
+        "trust",
         "let a CI workflow publish a deck with no stored credential");
     $tp = args.positional($tp, "deck", "the deck the workflow may publish");
     $tp = args.positional($tp, "repositoryId", "the forge's immutable numeric repository id");
-    $tp = args.flag($tp, "provider", "", trustpub.GITHUB,
+    $tp = args.flag(
+        $tp,
+        "provider",
+        "",
+        trustpub.GITHUB,
         "github-actions, gitlab-ci, or gitea-actions");
     $tp = args.flag($tp, "repository", "", "", "the repository path, a display label");
     $tp = args.flag($tp, "workflow", "", "", "the workflow file permitted to publish");
@@ -362,6 +395,32 @@ func checkPin(kind as string, ref as string, commit as string, checksum as strin
     return "";
 }
 
+# The schemes a version's URL may use. Anything else (empty, `javascript:`, a
+# bare word) is a record no client can fetch from, served as if it were one.
+def const URL_SCHEMES as list of string init ["https://", "http://", "ssh://", "git://", "file://"];
+
+# urlProblem is why a version's URL cannot be stored, or "". Looser than the
+# publish endpoint's `forge.repositoryProblem`, which knows the forge: an
+# operator may record a mirror or a local path. Whitespace, quotes and angle
+# brackets are refused because the URL is printed into pages and shell snippets.
+func urlProblem(url as string) {
+    def known as bool init false;
+    for (def scheme in URL_SCHEMES) {
+        if (strings.startsWith($url, $scheme) and len($url) > len($scheme)) {
+            $known = true;
+        }
+    }
+    if (not $known) {
+        return "not a fetchable URL: " + $url + " (" + strings.join(URL_SCHEMES, ", ") + ")";
+    }
+    for (def ch in strings.chars($url)) {
+        if ($ch <= " " or $ch == "\u007f" or strings.contains("\"'<>`\\", $ch)) {
+            return "the URL has a space, quote, or control character in it: " + $url;
+        }
+    }
+    return "";
+}
+
 /**
  * Publish a version (the `add` / `update` upsert). Reads its arguments from the
  * parsed command line and returns the edited store; the caller persists it when
@@ -384,23 +443,57 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
     def version as string init args.asString($r, "version");
     def url as string init args.asString($r, "url");
     if (not deckname.isValid($name)) {
-        return failResult($db, "not a valid deck name: " + $name +
-            " (lowercase; the scope may carry hyphens, the deck may not)");
+        return failResult(
+            $db,
+            "not a valid deck name: " + $name +
+                " (lowercase; the scope may carry hyphens, the deck may not)");
     }
     # A registry deck is always scoped. A bare name denotes a module bundled with
     # the interpreter or a local file, so it is not publishable here.
     if (not deckname.isScoped($name)) {
-        return failResult($db, "not a registry deck name: " + $name +
-            " (a published deck is scoped, as @scope/deck)");
+        return failResult(
+            $db,
+            "not a registry deck name: " + $name +
+                " (a published deck is scoped, as @scope/deck)");
     }
-    if (not semver.isValid($version)) {
-        return failResult($db, "not a valid version: " + $version);
+    if (not constraint.isUsableVersion($version)) {
+        return failResult(
+            $db,
+            "not a valid version: " + $version +
+                " (SemVer, with no number longer than 18 digits)");
+    }
+    # The same rules a publish applies to `[decks]` (manifest.j): a record written
+    # by an operator is indistinguishable from one written over HTTP.
+    for (def dep in $requires) {
+        if (not deckname.isValid($dep) or not deckname.isScoped($dep)) {
+            return failResult($db, "not a deck name in --requires: " + $dep);
+        }
+        if (not constraint.isValidConstraint($requires[$dep])) {
+            return failResult(
+                $db,
+                "not a valid version constraint for " + $dep + ": " +
+                    $requires[$dep]);
+        }
+    }
+    for (def engine in $engines) {
+        if (not constraint.isValidConstraint($engines[$engine])) {
+            return failResult(
+                $db,
+                "not a valid version constraint for engine " + $engine + ": " +
+                    $engines[$engine]);
+        }
+    }
+    def urlComplaint as string init urlProblem($url);
+    if (not ($urlComplaint == "")) {
+        return failResult($db, $urlComplaint);
     }
     # A scoped deck may only be published under a registered scope.
     def scope as string init deckname.scopeOf($name);
     if (not store.hasNamespace($db, $scope)) {
-        return failResult($db, "namespace @" + $scope +
-            " is not registered; run 'deckadmin register-namespace " + $scope + "'");
+        return failResult(
+            $db,
+            "namespace @" + $scope +
+                " is not registered; run 'deckadmin register-namespace " + $scope + "'");
     }
     # The presence of a repository pin is what selects the kind; an absent one
     # means the version is an uploaded artifact and must carry a checksum.
@@ -429,6 +522,16 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
         license: "",
         keywords: []
     };
+    # The operator may replace a version, but only by its exact string: a second
+    # record differing only in build metadata is a second commit behind one
+    # version number, not a replacement.
+    def twin as string init store.publishedAs($db, $name, $version);
+    if (not ($twin == "" or $twin == $version)) {
+        return failResult(
+            $db,
+            $name + "@" + $twin + " is the same version as " + $version +
+                " (build metadata does not count); give " + $twin + " to replace it");
+    }
     # Whether this overwrites an existing version decides how loudly it is
     # recorded, so it must be asked before the store is edited.
     def replaced as bool init store.hasVersion($db, $name, $version);
@@ -437,7 +540,9 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
         $pin = $checksum;
     }
     def out as flatdb.DB init store.putVersion($db, $name, $description, $ver);
-    return editResult($out, "stored " + $name + "@" + $version + " (" + $kind + ")",
+    return editResult(
+        $out,
+        "stored " + $name + "@" + $version + " (" + $kind + ")",
         audit.deckPublished($name, $version, $kind, $pin, $replaced));
 }
 
@@ -455,14 +560,18 @@ export func cmdRemove(db as flatdb.DB, r as args.Result, now as string) {
         if (not store.hasDeck($db, $name)) {
             return failResult($db, "no such deck: " + $name);
         }
-        return editResult(store.removeDeck($db, $name), "removed deck " + $name,
+        return editResult(
+            store.removeDeck($db, $name),
+            "removed deck " + $name,
             audit.deckRemoved($name, ""));
     }
     if (not store.hasVersion($db, $name, $version)) {
         return failResult($db, "no such version: " + $name + "@" + $version);
     }
     def out as flatdb.DB init store.removeVersion($db, $name, $version);
-    return editResult($out, "removed " + $name + "@" + $version,
+    return editResult(
+        $out,
+        "removed " + $name + "@" + $version,
         audit.deckRemoved($name, $version));
 }
 
@@ -487,8 +596,10 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
     # A scope is checked against the *scope* grammar, which permits hyphens; the
     # deck grammar does not, because only the deck half becomes a namespace.
     if (not deckname.isScopeIdent($scope)) {
-        return failResult($db, "not a valid scope name: " + $scope +
-            " (lowercase letters, digits and hyphens; not leading, trailing or doubled)");
+        return failResult(
+            $db,
+            "not a valid scope name: " + $scope +
+                " (lowercase letters, digits and hyphens; not leading, trailing or doubled)");
     }
     def owner as string init args.asString($r, "owner");
     if (store.hasNamespace($db, $scope) and $owner == "") {
@@ -498,18 +609,45 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
     # that covers what derivation cannot, including reassigning a scope after a
     # dispute (specification 8.2), so re-granting an existing scope is allowed.
     def reassigned as bool init store.hasNamespace($db, $scope);
+    # A change of owner takes the old owner's delegations with it: the CI tokens
+    # and trusted publishers under the scope were theirs to grant, not the new
+    # owner's. Re-granting to the same owner (a kind change, say) keeps them.
+    def handover as bool init false;
+    if ($reassigned) {
+        def before as store.Namespace init store.getNamespace($db, $scope);
+        $handover = not ($before.subject == $owner and
+            $before.provider == args.asString($r, "provider"));
+    }
     def kind as string init store.SCOPE_USER;
     if (args.asBool($r, "org")) {
         $kind = store.SCOPE_ORG;
     }
-    def out as scope.ClaimResult init scope.grantAs($db, $scope,
-        args.asString($r, "provider"), $owner, args.asString($r, "login"), $kind, $now);
+    def out as scope.ClaimResult init scope.grantAs(
+        $db,
+        $scope,
+        args.asString($r, "provider"),
+        $owner,
+        args.asString($r, "login"),
+        $kind,
+        $now);
     if (not $out.allowed) {
         return failResult($db, $out.reason);
     }
-    return editResult($out.db, $out.reason,
-        audit.scopeRegistered($scope, args.asString($r, "provider"), $owner,
-            args.asString($r, "login"), $reassigned));
+    def granted as flatdb.DB init $out.db;
+    def message as string init $out.reason;
+    if ($handover) {
+        $granted = store.dropDelegations($granted, $scope);
+        $message = $message + "; its CI tokens and trusted publishers were dropped";
+    }
+    return editResult(
+        $granted,
+        $message,
+        audit.scopeRegistered(
+            $scope,
+            args.asString($r, "provider"),
+            $owner,
+            args.asString($r, "login"),
+            $reassigned));
 }
 
 /**
@@ -532,7 +670,9 @@ export func cmdRevoke(db as flatdb.DB, r as args.Result, now as string) {
     }
     def held as int init store.countRefresh($db, $id);
     def out as flatdb.DB init store.revokeAccount($db, $id);
-    return editResult($out, "revoked the refresh tokens of account " + $raw,
+    return editResult(
+        $out,
+        "revoked the refresh tokens of account " + $raw,
         audit.tokensRevoked($raw, $held));
 }
 
@@ -556,8 +696,10 @@ export func cmdReserveDefaults(db as flatdb.DB, r as args.Result, now as string)
     def names as list of string init reserved.defaults();
     def malformed as list of string init reserved.invalidAmong($names);
     if (len($malformed) > 0) {
-        return failResult($db, "the reserved list contains names the grammar rejects: " +
-            strings.join($malformed, ", "));
+        return failResult(
+            $db,
+            "the reserved list contains names the grammar rejects: " +
+                strings.join($malformed, ", "));
     }
     def dry as bool init args.asBool($r, "dry-run");
     def out as flatdb.DB init $db;
@@ -600,7 +742,9 @@ export func cmdReserveDefaults(db as flatdb.DB, r as args.Result, now as string)
     if (len($added) == 0 or $dry) {
         return readResult($db, strings.join($lines, "\n"));
     }
-    return editResult($out, strings.join($lines, "\n"),
+    return editResult(
+        $out,
+        strings.join($lines, "\n"),
         audit.scopesReserved(len($added), len($owned)));
 }
 
@@ -637,8 +781,10 @@ export func cmdMintToken(db as flatdb.DB, r as args.Result, now as string) {
     # can never authorise anything - a dead credential is worse than a refusal,
     # because it fails later and somewhere else.
     if (store.getNamespace($db, $scopeName).subject == "") {
-        return failResult($db, "@" + $scopeName + " is reserved: it is held by " +
-            "an operator and has no owner for a token to act for");
+        return failResult(
+            $db,
+            "@" + $scopeName + " is reserved: it is held by " +
+                "an operator and has no owner for a token to act for");
     }
     def deck as string init deckname.fold(args.asString($r, "deck"));
     if (not ($deck == "")) {
@@ -678,7 +824,9 @@ export func cmdMintToken(db as flatdb.DB, r as args.Result, now as string) {
     } else {
         $lines[] = "expires:     " + $rec.expiresAt;
     }
-    return editResult(store.putCiToken($db, $rec), strings.join($lines, "\n"),
+    return editResult(
+        store.putCiToken($db, $rec),
+        strings.join($lines, "\n"),
         audit.ciTokenMinted($rec.fingerprint, $rec.name, $where, $rec.expiresAt));
 }
 
@@ -731,7 +879,9 @@ export func cmdRevokeToken(db as flatdb.DB, r as args.Result, now as string) {
     if ($t.fingerprint == "") {
         return failResult($db, "no such token: " + $fp);
     }
-    return editResult(store.deleteCiToken($db, $fp), "revoked the CI token " + $t.name,
+    return editResult(
+        store.deleteCiToken($db, $fp),
+        "revoked the CI token " + $t.name,
         audit.ciTokenRevoked($fp, $t.name));
 }
 
@@ -762,7 +912,8 @@ export func cmdSetYanked(db as flatdb.DB, r as args.Result, now as string, yanke
     if (store.isYanked($db, $name, $version) == $yanked) {
         return readResult($db, $name + "@" + $version + " is already " + $verb);
     }
-    return editResult(store.setYanked($db, $name, $version, $yanked),
+    return editResult(
+        store.setYanked($db, $name, $version, $yanked),
         $verb + " " + $name + "@" + $version,
         audit.versionYanked($name, $version, $yanked));
 }
@@ -787,30 +938,38 @@ export func cmdTrust(db as flatdb.DB, r as args.Result, now as string) {
     }
     def provider as string init args.asString($r, "provider");
     if (not trustpub.isKnownProvider($provider)) {
-        return failResult($db, "unknown CI provider: " + $provider +
-            " (github-actions, gitlab-ci, or gitea-actions)");
+        return failResult(
+            $db,
+            "unknown CI provider: " + $provider +
+                " (github-actions, gitlab-ci, or gitea-actions)");
     }
     def repoId as string init strings.trim(args.asString($r, "repositoryId"));
     if ($repoId == "") {
-        return failResult($db, "a trusted publisher needs the repository id, " +
-            "not the path: a path can be renamed and re-registered by somebody else");
+        return failResult(
+            $db,
+            "a trusted publisher needs the repository id, " +
+                "not the path: a path can be renamed and re-registered by somebody else");
     }
     # Name authority first. A binding is a standing grant to write under a scope,
     # so it is exactly as privileged as a publish and gated the same way.
     def scopeName as string init deckname.scopeOf($deck);
     if (not store.hasNamespace($db, $scopeName)) {
-        return failResult($db, "namespace @" + $scopeName +
-            " is not registered; run 'deckadmin register-namespace " + $scopeName + "'");
+        return failResult(
+            $db,
+            "namespace @" + $scopeName +
+                " is not registered; run 'deckadmin register-namespace " + $scopeName + "'");
     }
     # Registered is not owned. A scope bound to nobody is reserved, and a
     # trusted publisher is a standing grant to write under it *on somebody's
     # behalf* - so with no owner there is nobody to act for, and the binding
     # would be a way to publish under a name the registry is holding shut.
     if (store.getNamespace($db, $scopeName).subject == "") {
-        return failResult($db, "@" + $scopeName + " is reserved: it is held by " +
-            "an operator and has no owner for a trusted publisher to act for; " +
-            "grant it first with 'deckadmin register-namespace " + $scopeName +
-            " --owner <id>'");
+        return failResult(
+            $db,
+            "@" + $scopeName + " is reserved: it is held by " +
+                "an operator and has no owner for a trusted publisher to act for; " +
+                "grant it first with 'deckadmin register-namespace " + $scopeName +
+                " --owner <id>'");
     }
     def pending as bool init not store.hasDeck($db, $deck);
     def b as trustpub.Binding init trustpub.Binding{
@@ -827,7 +986,9 @@ export func cmdTrust(db as flatdb.DB, r as args.Result, now as string) {
     if ($pending) {
         $what = $what + " (pending: the deck has no versions yet)";
     }
-    return editResult(store.putBinding($db, $b), $what,
+    return editResult(
+        store.putBinding($db, $b),
+        $what,
         audit.publisherTrusted($deck, $provider, $repoId, $b.repository, $pending));
 }
 
@@ -845,7 +1006,8 @@ export func cmdUntrust(db as flatdb.DB, r as args.Result, now as string) {
         return failResult($db, "no trusted publisher for " + $deck);
     }
     def b as trustpub.Binding init store.getBinding($db, $deck);
-    return editResult(store.removeBinding($db, $deck),
+    return editResult(
+        store.removeBinding($db, $deck),
         "removed the trusted publisher for " + $deck,
         audit.publisherUntrusted($deck, $b.repositoryId));
 }
@@ -909,8 +1071,10 @@ export func cmdAddOwner(db as flatdb.DB, r as args.Result, now as string) {
     }
     def ns as store.Namespace init store.getNamespace($db, $scopeName);
     if ($ns.subject == "") {
-        return failResult($db, "@" + $scopeName + " is reserved and has no owner; " +
-            "grant it first with 'register-namespace " + $scopeName + " --owner <id>'");
+        return failResult(
+            $db,
+            "@" + $scopeName + " is reserved and has no owner; " +
+                "grant it first with 'register-namespace " + $scopeName + " --owner <id>'");
     }
     if ($ns.subject == $subject) {
         return readResult($db, $subject + " already owns @" + $scopeName);
@@ -920,7 +1084,9 @@ export func cmdAddOwner(db as flatdb.DB, r as args.Result, now as string) {
     if (len(store.ownersOf($out, $scopeName)) == $before) {
         return readResult($db, $subject + " is already a co-owner of @" + $scopeName);
     }
-    return editResult($out, "added " + $subject + " as a co-owner of @" + $scopeName,
+    return editResult(
+        $out,
+        "added " + $subject + " as a co-owner of @" + $scopeName,
         audit.coOwnerAdded($scopeName, $ns.provider, $subject));
 }
 
@@ -944,16 +1110,20 @@ export func cmdRemoveOwner(db as flatdb.DB, r as args.Result, now as string) {
     def subject as string init strings.trim(args.asString($r, "subject"));
     def ns as store.Namespace init store.getNamespace($db, $scopeName);
     if ($ns.subject == $subject and not ($subject == "")) {
-        return failResult($db, $subject + " is the owner of @" + $scopeName +
-            ", not a co-owner; reassign it with 'register-namespace " + $scopeName +
-            " --owner <id>'");
+        return failResult(
+            $db,
+            $subject + " is the owner of @" + $scopeName +
+                ", not a co-owner; reassign it with 'register-namespace " + $scopeName +
+                " --owner <id>'");
     }
     def out as flatdb.DB init store.removeCoOwner($db, $scopeName, $subject);
     def before as int init len(store.ownersOf($db, $scopeName));
     if (len(store.ownersOf($out, $scopeName)) == $before) {
         return failResult($db, $subject + " is not a co-owner of @" + $scopeName);
     }
-    return editResult($out, "removed " + $subject + " from @" + $scopeName,
+    return editResult(
+        $out,
+        "removed " + $subject + " from @" + $scopeName,
         audit.coOwnerRemoved($scopeName, $ns.provider, $subject));
 }
 

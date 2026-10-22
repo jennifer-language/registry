@@ -36,7 +36,10 @@ import "../src/config.j" as config;
 # exactly as they do in the server. Three programs disagreeing about whether the
 # old names still work is how a deployment ends up half-migrated.
 def env as config.EnvRead init config.readEnv([
-    "REGISTRY_DB", "REGISTRY_LOG", "REGISTRY_LOG_LEVEL", "REGISTRY_LOG_FORMAT"
+    "REGISTRY_DB",
+    "REGISTRY_LOG",
+    "REGISTRY_LOG_LEVEL",
+    "REGISTRY_LOG_FORMAT"
 ]);
 for (def old in $env.deprecated) {
     io.eprintf("warning: %s is deprecated and will stop being read\n", $old);
@@ -237,10 +240,15 @@ if ($parsed.command == "") {
 # records the attempt. An unwritable path is reported here and then stops
 # mattering: maintaining the registry is more important than logging that it was
 # maintained.
-def logCfg as admin.LogOptions init admin.logOptions($parsed,
-    envOr($env.values, "REGISTRY_LOG"), envOr($env.values, "REGISTRY_LOG_LEVEL"),
+def logCfg as admin.LogOptions init admin.logOptions(
+    $parsed,
+    envOr($env.values, "REGISTRY_LOG"),
+    envOr($env.values, "REGISTRY_LOG_LEVEL"),
     envOr($env.values, "REGISTRY_LOG_FORMAT"));
-def sink as audit.Sink init audit.open($logCfg.level, $logCfg.format, $logCfg.path,
+def sink as audit.Sink init audit.open(
+    $logCfg.level,
+    $logCfg.format,
+    $logCfg.path,
     $logCfg.console);
 if (not ($sink.fileError == "")) {
     io.eprintf("warning: not logging to %s (%s)\n", $logCfg.path, $sink.fileError);
@@ -275,26 +283,28 @@ def lockHeld as store.Lock init store.lock($dbPath);
 defer store.unlock($lockHeld);
 $db = store.open($dbPath);
 
-def result as admin.AdminResult init args.dispatch($parsed, {
-    "add": onAdd,
-    "update": onAdd,
-    "remove": onRemove,
-    "list": onList,
-    "register-namespace": onRegisterNamespace,
-    "add-owner": onAddOwner,
-    "remove-owner": onRemoveOwner,
-    "namespaces": onNamespaces,
-    "reserve-defaults": onReserveDefaults,
-    "mint-token": onMintToken,
-    "tokens": onTokens,
-    "revoke-token": onRevokeToken,
-    "yank": onYank,
-    "unyank": onUnyank,
-    "trust": onTrust,
-    "untrust": onUntrust,
-    "publishers": onPublishers,
-    "revoke": onRevoke
-});
+def result as admin.AdminResult init args.dispatch(
+    $parsed,
+    {
+        "add": onAdd,
+        "update": onAdd,
+        "remove": onRemove,
+        "list": onList,
+        "register-namespace": onRegisterNamespace,
+        "add-owner": onAddOwner,
+        "remove-owner": onRemoveOwner,
+        "namespaces": onNamespaces,
+        "reserve-defaults": onReserveDefaults,
+        "mint-token": onMintToken,
+        "tokens": onTokens,
+        "revoke-token": onRevokeToken,
+        "yank": onYank,
+        "unyank": onUnyank,
+        "trust": onTrust,
+        "untrust": onUntrust,
+        "publishers": onPublishers,
+        "revoke": onRevoke
+    });
 
 # The store is saved before the event is written. If the process dies between
 # the two, the log under-reports a change that happened, which is recoverable by

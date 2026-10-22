@@ -152,3 +152,81 @@ version = "1.0.0-beta.1"
     testing.assertTrue($m.ok);
     testing.assertEqual($m.version, "1.0.0-beta.1");
 }
+
+# --- what a manifest may not say ------------------------------------------------
+
+func withBody(extra as string) {
+    return '[package]
+name = "@acme/tool"
+version = "1.0.0"
+' + $extra;
+}
+
+func testAVersionTooLargeToOrderIsRefused() {
+    # it would pass a SemVer check and then throw in every listing that sorted it
+    def m as Manifest init parse('[package]
+name = "@acme/tool"
+version = "99999999999999999999.0.0"
+');
+    testing.assertFalse($m.ok);
+    testing.assertContains($m.error, "18 digits");
+}
+
+func testADependencyConstraintMustBeInTheGrammar() {
+    def m as Manifest init parse(withBody('[decks]
+"@acme/net" = "~>1.2"
+'));
+    testing.assertFalse($m.ok);
+    testing.assertContains($m.error, "not a valid version constraint");
+}
+
+func testADependencyMustBeAScopedDeckName() {
+    def m as Manifest init parse(withBody('[decks]
+"not a name!" = "^1"
+'));
+    testing.assertFalse($m.ok);
+    testing.assertContains($m.error, "not a deck name");
+}
+
+func testOneDependencyUnderTwoSpellingsIsRefused() {
+    # names fold, so these would be one deck required at two versions
+    def m as Manifest init parse(withBody('[decks]
+"@acme/net" = "^1"
+"@ACME/Net" = "^2"
+'));
+    testing.assertFalse($m.ok);
+    testing.assertContains($m.error, "two spellings");
+}
+
+func testDependencyNamesAreFolded() {
+    def m as Manifest init parse(withBody('[decks]
+"@ACME/Net" = "^1"
+'));
+    testing.assertTrue($m.ok);
+    testing.assertTrue(maps.has($m.requires, "@acme/net"));
+}
+
+func testAWrongTypeIsAnErrorNotACrash() {
+    # these used to throw out of `parse`, so a publish failed with no message
+    def name as Manifest init parse('[package]
+name = 5
+version = "1.0.0"
+');
+    testing.assertFalse($name.ok);
+    testing.assertContains($name.error, "must be a string");
+    def dep as Manifest init parse(withBody('[decks]
+"@acme/net" = 1
+'));
+    testing.assertFalse($dep.ok);
+    testing.assertContains($dep.error, "in quotes");
+    def caps as Manifest init parse(withBody('capabilities = ["net", 1]
+'));
+    testing.assertFalse($caps.ok);
+}
+
+func testABadKeywordNeverFailsAPublish() {
+    def m as Manifest init parse(withBody('keywords = ["net", 1, "router"]
+'));
+    testing.assertTrue($m.ok);
+    testing.assertEqual(len($m.keywords), 2);
+}

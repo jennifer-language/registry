@@ -47,8 +47,7 @@ func testHyphensMayNotLeadTrailOrDouble() {
 func testLengthIsBounded() {
     testing.assertFalse(isWellFormed("a"));
     testing.assertTrue(isWellFormed("ab"));
-    testing.assertFalse(isWellFormed(
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+    testing.assertFalse(isWellFormed("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
 }
 
 # --- the blocklist -----------------------------------------------------------
@@ -84,7 +83,8 @@ func testTheTwoLetterTermIsRefusedExactlyAndOnlyExactly() {
 
 func testCasingDoesNotEvadeTheBlocklist() {
     def shouty as list of string init [
-        strings.upper(term("cG9ybg==")), strings.upper(term("Y3NhbQ=="))
+        strings.upper(term("cG9ybg==")),
+        strings.upper(term("Y3NhbQ=="))
     ];
     testing.assertEqual(len(normalise($shouty)), 0);
 }
@@ -106,8 +106,15 @@ func testThePublishersOrderIsKept() {
 }
 
 func testOnlyTheFirstFiveAreUsed() {
-    def out as list of string init normalise(
-        ["one", "two", "three", "four", "five", "six", "seven"]);
+    def out as list of string init normalise([
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven"
+    ]);
     testing.assertEqual(len($out), LIMIT);
     testing.assertFalse(lists.contains($out, "six"));
 }
@@ -116,17 +123,22 @@ func testBlockedKeywordsDoNotConsumeTheBudget() {
     # the ordering that matters: filtering runs before the cap, so padding the
     # list with refused terms cannot push a real keyword out of the five
     def padding as list of string init lists.concat(abuse(), adult());
-    def out as list of string init normalise(
-        [$padding[0], $padding[1], $padding[2], $padding[3], $padding[4],
-         "cli", "spinner"]);
+    def out as list of string init normalise([
+        $padding[0],
+        $padding[1],
+        $padding[2],
+        $padding[3],
+        $padding[4],
+        "cli",
+        "spinner"
+    ]);
     testing.assertEqual(len($out), 2);
     testing.assertEqual($out[0], "cli");
     testing.assertEqual($out[1], "spinner");
 }
 
 func testMalformedKeywordsDoNotConsumeTheBudgetEither() {
-    def out as list of string init normalise(
-        ["a", "b/c", "d e", "real-tag"]);
+    def out as list of string init normalise(["a", "b/c", "d e", "real-tag"]);
     testing.assertEqual(len($out), 1);
     testing.assertEqual($out[0], "real-tag");
 }

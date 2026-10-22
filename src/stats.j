@@ -332,10 +332,8 @@ export func prune(rec as json.Value, unix as int) {
     }
     def out as json.Value init ensureShape($rec);
     $out = json.set($out, "/hours", keptOnly($rec, "/hours", $hours));
-    $out = json.set($out, "/days",
-        keptOnly($rec, "/days", recentDays($unix, KEEP_DAYS)));
-    $out = json.set($out, "/months",
-        keptOnly($rec, "/months", recentMonths($unix, KEEP_MONTHS)));
+    $out = json.set($out, "/days", keptOnly($rec, "/days", recentDays($unix, KEEP_DAYS)));
+    $out = json.set($out, "/months", keptOnly($rec, "/months", recentMonths($unix, KEEP_MONTHS)));
     return $out;
 }
 

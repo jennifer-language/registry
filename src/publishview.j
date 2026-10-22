@@ -44,6 +44,7 @@ import "./trustpub.j" as trustpub;
 import "./deckname.j" as deckname;
 import "./audit.j" as audit;
 import "./citoken.j" as citoken;
+import "./forge.j" as forge;
 
 /**
  * What the forge produced for a publish request. Assembled by the caller, which
@@ -60,6 +61,11 @@ import "./citoken.j" as citoken;
  * @field commitShadowed {bool} true when the repository also holds a **branch or
  *     tag named exactly like the resolved commit**, which means the manifest
  *     above cannot be trusted to have come from the commit (see `checkSource`)
+ * @field entryPresent {bool} true when the tree at that commit holds the entry
+ *     module the manifest's name implies, `src/<deck>.j` (specification 6.1)
+ * @field authority {forge.Permission} what the forge said about the publishing
+ *     account's push access to the repository (7.1 route A); unused by trusted
+ *     publishing, whose token already proves the repository
  */
 export def struct Source {
     repository as string,
@@ -70,7 +76,9 @@ export def struct Source {
     repoOwner as string,
     manifestText as string,
     readmeText as string,
-    commitShadowed as bool
+    commitShadowed as bool,
+    entryPresent as bool,
+    authority as forge.Permission
 };
 
 /**
@@ -97,7 +105,10 @@ func refuse(db as flatdb.DB, status as int, reason as string) {
     def body as json.Value init json.map();
     $body = json.set($body, "/error", $reason);
     return PublishReply{
-        status: $status, body: $body, db: $db, changed: false,
+        status: $status,
+        body: $body,
+        db: $db,
+        changed: false,
         event: audit.publishRefused($reason, $status)
     };
 }
@@ -143,6 +154,67 @@ export func checkSource(src as Source) {
     return "";
 }
 
+/**
+ * Where the entry module of the deck a manifest names must be, or "" when the
+ * manifest does not parse or names no valid deck - in which case the parse
+ * error, not a missing file, is what the publish reports. The caller uses it to
+ * know which file to ask the forge about before `checkRelease` judges the answer.
+ * @param manifestText {string} the bytes of `deck.toml` at the commit
+ * @return {string} the path, such as `src/routeros.j`, or ""
+ */
+export func entryPathFor(manifestText as string) {
+    def m as manifest.Manifest init manifest.parse($manifestText);
+    if (not $m.ok or not deckname.isValid($m.name)) {
+        return "";
+    }
+    return "src/" + deckname.entryFile($m.name);
+}
+
+/**
+ * The deck name a manifest gives, folded, or "" when it does not parse.
+ * @param manifestText {string} the bytes of `deck.toml` at the commit
+ * @return {string} the deck name, or ""
+ */
+export func deckNameOf(manifestText as string) {
+    def m as manifest.Manifest init manifest.parse($manifestText);
+    if (not $m.ok) {
+        return "";
+    }
+    return deckname.fold($m.name);
+}
+
+/**
+ * Whether what the commit holds is a release of what its manifest says
+ * (specification 7, steps 6 and 8).
+ *
+ * The tag and the manifest must name the same version, tolerating a single
+ * leading `v` on the tag and nothing more (2.3): a tag `v1.0.0` whose manifest
+ * says `0.9.0` is a mislabelled release, and publishing it would hand out a
+ * `ref` and a `version` that disagree for as long as the record exists. And the
+ * tree must hold the entry module, without which a client installs nothing.
+ *
+ * Both are facts about the caller's own repository and say nothing about the
+ * store, so they are checked as soon as the manifest is read.
+ * @param src {Source} the forge's output
+ * @param m {manifest.Manifest} the parsed manifest, already `ok`
+ * @return {string} "" when it is a release of what it says, or the complaint
+ */
+export func checkRelease(src as Source, m as manifest.Manifest) {
+    def tagged as string init $src.tag;
+    if (strings.startsWith($tagged, "v")) {
+        $tagged = strings.substring($tagged, 1, len($tagged));
+    }
+    if (not ($tagged == $m.version)) {
+        return "the tag " + $src.tag + " disagrees with the version in deck.toml, " +
+            $m.version + "; tag the release " + $m.version + " or v" + $m.version;
+    }
+    if (not $src.entryPresent) {
+        return "the tree at " + $src.commit + " has no " + entryPathFor($src.manifestText) +
+            ", the entry module a deck must contain";
+    }
+    return "";
+}
+
 # storeVersion writes the version the manifest describes, pinned to the commit
 # the tag resolved to. Always KIND_GIT: a publish names a repository and a tag,
 # and the commit is the integrity boundary (3.2).
@@ -176,8 +248,7 @@ func storeVersion(db as flatdb.DB, m as manifest.Manifest, src as Source, now as
 }
 
 # succeed writes the version and builds the 201.
-func succeed(db as flatdb.DB, m as manifest.Manifest, src as Source, now as string,
-        how as string) {
+func succeed(db as flatdb.DB, m as manifest.Manifest, src as Source, now as string, how as string) {
     def out as flatdb.DB init storeVersion($db, $m, $src, $now);
     def body as json.Value init json.map();
     $body = json.set($body, "/name", $m.name);
@@ -187,9 +258,11 @@ func succeed(db as flatdb.DB, m as manifest.Manifest, src as Source, now as stri
     $body = json.set($body, "/ref", $src.tag);
     $body = json.set($body, "/commit", $src.commit);
     return PublishReply{
-        status: 201, body: $body, db: $out, changed: true,
-        event: audit.deckPublishedFrom($m.name, $m.version, $src.commit,
-            $src.repository, $how)
+        status: 201,
+        body: $body,
+        db: $out,
+        changed: true,
+        event: audit.deckPublishedFrom($m.name, $m.version, $src.commit, $src.repository, $how)
     };
 }
 
@@ -231,11 +304,69 @@ export func checkDeck(db as flatdb.DB, m as manifest.Manifest) {
     return "";
 }
 
-# conflict reports whether this exact version already exists. Immutability is
-# absolute (specification 9): a published version's bytes never change, because
-# a lockfile that resolved it once must resolve to the same code forever.
+# sourceAuthorityProblem is why the forge's answer does not establish source
+# authority (7.1), or "". Only a known grant counts: a check the forge could not
+# answer is a check that did not pass, whatever the reason it could not.
+func sourceAuthorityProblem(src as Source) {
+    if ($src.authority.known and $src.authority.push) {
+        return "";
+    }
+    if ($src.authority.known) {
+        return "you may not publish from " + $src.repository + ": " + $src.authority.reason;
+    }
+    return "could not establish that you may push to " + $src.repository + ": " +
+        $src.authority.reason;
+}
+
+/**
+ * Whose push access a CI-token publish is checked against (7.1, 8.10).
+ *
+ * A CI token proves possession and nothing about a repository, so a person has
+ * to stand behind it. That is the account that minted it, where it records one,
+ * and otherwise the owner of the scope it writes under: an operator mints a
+ * token for a scope, and the owner is who it acts for. An organisation scope
+ * has no person as its owner, so a token there needs a recorded minter. Returns
+ * an empty subject when nobody qualifies, which the check then reports.
+ * @param db {flatdb.DB} the store to read
+ * @param t {citoken.Token} the token's record
+ * @param deckName {string} the deck the manifest names
+ * @return {identity.Subject} the account to check, or an empty one
+ */
+export func ciPrincipal(db as flatdb.DB, t as citoken.Token, deckName as string) {
+    def none as map of string to string init {};
+    if (not ($t.subject == "")) {
+        return identity.Subject{
+            provider: $t.provider,
+            id: $t.subject,
+            login: "",
+            orgs: $none,
+            orgsCheckedAt: ""
+        };
+    }
+    def scopeName as string init deckname.scopeOf(deckname.fold($deckName));
+    if ($scopeName == "" or not store.hasNamespace($db, $scopeName)) {
+        return identity.Subject{provider: "", id: "", login: "", orgs: $none, orgsCheckedAt: ""};
+    }
+    def ns as store.Namespace init store.getNamespace($db, $scopeName);
+    if ($ns.kind == store.SCOPE_ORG) {
+        return identity.Subject{provider: "", id: "", login: "", orgs: $none, orgsCheckedAt: ""};
+    }
+    return identity.Subject{
+        provider: $ns.provider,
+        id: $ns.subject,
+        login: $ns.login,
+        orgs: $none,
+        orgsCheckedAt: ""
+    };
+}
+
+# alreadyPublished reports whether this version already exists, build metadata
+# aside: `1.0.0+b` is the same release as a published `1.0.0+a` (SemVer 10).
+# Immutability is absolute (specification 9): a published version's bytes never
+# change, because a lockfile that resolved it once must resolve to the same code
+# forever.
 func alreadyPublished(db as flatdb.DB, m as manifest.Manifest) {
-    return store.hasVersion($db, $m.name, $m.version);
+    return not (store.publishedAs($db, $m.name, $m.version) == "");
 }
 
 # parsed reads the manifest and turns a parse failure into a 400. A manifest the
@@ -258,8 +389,7 @@ func parsed(src as Source) {
  * @param now {string} the publish timestamp (Unix seconds as text)
  * @return {PublishReply} the outcome, and the store to persist on success
  */
-export func byToken(db as flatdb.DB, who as identity.Subject, src as Source,
-        now as string) {
+export func byToken(db as flatdb.DB, who as identity.Subject, src as Source, now as string) {
     def complaint as string init checkSource($src);
     if (not ($complaint == "")) {
         return refuse($db, 400, $complaint);
@@ -268,14 +398,24 @@ export func byToken(db as flatdb.DB, who as identity.Subject, src as Source,
     if (not $m.ok) {
         return refuse($db, 400, $m.error);
     }
+    def releaseComplaint as string init checkRelease($src, $m);
+    if (not ($releaseComplaint == "")) {
+        return refuse($db, 400, $releaseComplaint);
+    }
     def deckComplaint as string init checkDeck($db, $m);
     if (not ($deckComplaint == "")) {
         return refuse($db, 403, $deckComplaint);
     }
-    def verdict as policy.Decision init scope.authorise($db, $who,
-        deckname.scopeOf($m.name));
+    def verdict as policy.Decision init scope.authorise($db, $who, deckname.scopeOf($m.name));
     if (not $verdict.allowed) {
         return refuse($db, 403, $verdict.reason);
+    }
+    # Name authority is settled; source authority is the other half (7.1). It
+    # comes after the scope check, so a stranger learns nothing from it, and
+    # before the conflict check, which stays last.
+    def sourceComplaint as string init sourceAuthorityProblem($src);
+    if (not ($sourceComplaint == "")) {
+        return refuse($db, 403, $sourceComplaint);
     }
     if (alreadyPublished($db, $m)) {
         return refuse($db, 409, $m.name + "@" + $m.version + " is already published");
@@ -300,8 +440,7 @@ export func byToken(db as flatdb.DB, who as identity.Subject, src as Source,
  * @param now {string} the publish timestamp (Unix seconds as text)
  * @return {PublishReply} the outcome, and the store to persist on success
  */
-export func byCiToken(db as flatdb.DB, t as citoken.Token, src as Source,
-        now as string) {
+export func byCiToken(db as flatdb.DB, t as citoken.Token, src as Source, now as string) {
     def complaint as string init checkSource($src);
     if (not ($complaint == "")) {
         return refuse($db, 400, $complaint);
@@ -310,15 +449,32 @@ export func byCiToken(db as flatdb.DB, t as citoken.Token, src as Source,
     if (not $m.ok) {
         return refuse($db, 400, $m.error);
     }
+    def releaseComplaint as string init checkRelease($src, $m);
+    if (not ($releaseComplaint == "")) {
+        return refuse($db, 400, $releaseComplaint);
+    }
     def deckComplaint as string init checkDeck($db, $m);
     if (not ($deckComplaint == "")) {
         return refuse($db, 403, $deckComplaint);
     }
+    # The record is read again from this store, which the caller opened under the
+    # lock: the one presented was looked up before the forge calls, and a token
+    # revoked while they ran must not publish once they return.
+    def current as citoken.Token init store.getCiToken($db, $t.fingerprint);
+    if ($current.fingerprint == "") {
+        return refuse($db, 401, "the CI token was revoked");
+    }
     # The token is matched against the name read at the commit, so a token for
     # one deck cannot publish another by naming it in the request.
-    def v as citoken.Verdict init citoken.check($t, $m.name, convert.toInt($now));
+    def v as citoken.Verdict init citoken.check($current, $m.name, convert.toInt($now));
     if (not $v.allowed) {
         return refuse($db, 403, $v.reason);
+    }
+    # A CI token is name authority only (8.10); the repository is checked against
+    # the account behind it, which `ciPrincipal` chose for the caller.
+    def sourceComplaint as string init sourceAuthorityProblem($src);
+    if (not ($sourceComplaint == "")) {
+        return refuse($db, 403, $sourceComplaint);
     }
     if (alreadyPublished($db, $m)) {
         return refuse($db, 409, $m.name + "@" + $m.version + " is already published");
@@ -348,8 +504,13 @@ export func byCiToken(db as flatdb.DB, t as citoken.Token, src as Source,
  * @param now {string} the publish timestamp (Unix seconds as text)
  * @return {PublishReply} the outcome, and the store to persist on success
  */
-export func byTrustedPublisher(db as flatdb.DB, claims as trustpub.Claims,
-        audience as string, issuer as string, src as Source, now as string) {
+export func byTrustedPublisher(
+    db as flatdb.DB,
+    claims as trustpub.Claims,
+    audience as string,
+    issuer as string,
+    src as Source,
+    now as string) {
     def complaint as string init checkSource($src);
     if (not ($complaint == "")) {
         return refuse($db, 400, $complaint);
@@ -357,6 +518,10 @@ export func byTrustedPublisher(db as flatdb.DB, claims as trustpub.Claims,
     def m as manifest.Manifest init parsed($src);
     if (not $m.ok) {
         return refuse($db, 400, $m.error);
+    }
+    def releaseComplaint as string init checkRelease($src, $m);
+    if (not ($releaseComplaint == "")) {
+        return refuse($db, 400, $releaseComplaint);
     }
     def deckComplaint as string init checkDeck($db, $m);
     if (not ($deckComplaint == "")) {
@@ -372,10 +537,20 @@ export func byTrustedPublisher(db as flatdb.DB, claims as trustpub.Claims,
     }
     # The token said which repository the build ran in; the forge said which
     # repository this URL is. They must be the same, or a build in a repository
-    # the caller controls could publish code from one they do not (7.1).
-    if (not ($src.repoId == "") and not ($src.repoId == $claims.repositoryId)) {
-        return refuse($db, 403, "the token is for repository " + $claims.repositoryId +
-            " but the source is repository " + $src.repoId);
+    # the caller controls could publish code from one they do not (7.1). A forge
+    # that named no repository has not said it is the same one, so an empty id
+    # is a refusal, not a pass.
+    if ($src.repoId == "" or not ($src.repoId == $claims.repositoryId)) {
+        return refuse(
+            $db,
+            403,
+            "the token is for repository " + $claims.repositoryId +
+                " but the source is repository " + $src.repoId);
+    }
+    def run as trustpub.Verdict init
+        trustpub.matchesRelease($claims, $src.tag, $src.commit, convert.toInt($now));
+    if (not $run.allowed) {
+        return refuse($db, 403, $run.reason);
     }
     if (alreadyPublished($db, $m)) {
         return refuse($db, 409, $m.name + "@" + $m.version + " is already published");
@@ -410,8 +585,12 @@ export func byTrustedPublisher(db as flatdb.DB, claims as trustpub.Claims,
  * @param yanked {bool} true to withdraw, false to restore
  * @return {PublishReply} the outcome, and the store to persist on success
  */
-export func setYanked(db as flatdb.DB, who as identity.Subject, name as string,
-        version as string, yanked as bool) {
+export func setYanked(
+    db as flatdb.DB,
+    who as identity.Subject,
+    name as string,
+    version as string,
+    yanked as bool) {
     def deck as string init deckname.fold($name);
     if ($deck == "" or $version == "") {
         return refuse($db, 400, "missing `name` or `version`");
@@ -421,8 +600,7 @@ export func setYanked(db as flatdb.DB, who as identity.Subject, name as string,
     }
     # The scope check runs before the existence check, so a caller with no rights
     # to a scope cannot learn which versions it holds by watching 404 vs 403.
-    def verdict as policy.Decision init scope.authorise($db, $who,
-        deckname.scopeOf($deck));
+    def verdict as policy.Decision init scope.authorise($db, $who, deckname.scopeOf($deck));
     if (not $verdict.allowed) {
         return refuse($db, 403, $verdict.reason);
     }
@@ -436,9 +614,7 @@ export func setYanked(db as flatdb.DB, who as identity.Subject, name as string,
     if (store.isYanked($db, $deck, $version) == $yanked) {
         # Idempotent: asking for the state it is already in is a success, so a
         # retried request after a lost response does not read as a failure.
-        return PublishReply{
-            status: 200, body: $body, db: $db, changed: false, event: audit.none()
-        };
+        return PublishReply{status: 200, body: $body, db: $db, changed: false, event: audit.none()};
     }
     return PublishReply{
         status: 200,

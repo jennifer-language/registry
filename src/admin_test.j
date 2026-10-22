@@ -20,8 +20,7 @@ def const NOW as string init "1700000000";
 
 # A full-length commit SHA and a well-formed artifact digest, the two pins.
 def const COMMIT as string init "9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f70819293";
-def const CHECKSUM as string init
-    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+def const CHECKSUM as string init "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; # lint-disable: L203
 
 func emptyStore() {
     return store.open("/no/such/jvc/admin/missing.json");
@@ -33,57 +32,23 @@ func emptyStore() {
 func dispatch(db as flatdb.DB, argv as list of string) {
     def r as args.Result init parse($argv);
     match ($r.command) {
-        when "add", "update" {
-            return cmdAdd($db, $r, NOW);
-        }
-        when "remove" {
-            return cmdRemove($db, $r, NOW);
-        }
-        when "list" {
-            return cmdList($db, $r, NOW);
-        }
-        when "register-namespace" {
-            return cmdRegisterNamespace($db, $r, NOW);
-        }
-        when "add-owner" {
-            return cmdAddOwner($db, $r, NOW);
-        }
-        when "remove-owner" {
-            return cmdRemoveOwner($db, $r, NOW);
-        }
-        when "namespaces" {
-            return cmdNamespaces($db, $r, NOW);
-        }
-        when "reserve-defaults" {
-            return cmdReserveDefaults($db, $r, NOW);
-        }
-        when "mint-token" {
-            return cmdMintToken($db, $r, NOW);
-        }
-        when "tokens" {
-            return cmdTokens($db, $r, NOW);
-        }
-        when "revoke-token" {
-            return cmdRevokeToken($db, $r, NOW);
-        }
-        when "yank" {
-            return cmdSetYanked($db, $r, NOW, true);
-        }
-        when "unyank" {
-            return cmdSetYanked($db, $r, NOW, false);
-        }
-        when "trust" {
-            return cmdTrust($db, $r, NOW);
-        }
-        when "untrust" {
-            return cmdUntrust($db, $r, NOW);
-        }
-        when "publishers" {
-            return cmdPublishers($db, $r, NOW);
-        }
-        when "revoke" {
-            return cmdRevoke($db, $r, NOW);
-        }
+        when "add", "update" { return cmdAdd($db, $r, NOW); }
+        when "remove" { return cmdRemove($db, $r, NOW); }
+        when "list" { return cmdList($db, $r, NOW); }
+        when "register-namespace" { return cmdRegisterNamespace($db, $r, NOW); }
+        when "add-owner" { return cmdAddOwner($db, $r, NOW); }
+        when "remove-owner" { return cmdRemoveOwner($db, $r, NOW); }
+        when "namespaces" { return cmdNamespaces($db, $r, NOW); }
+        when "reserve-defaults" { return cmdReserveDefaults($db, $r, NOW); }
+        when "mint-token" { return cmdMintToken($db, $r, NOW); }
+        when "tokens" { return cmdTokens($db, $r, NOW); }
+        when "revoke-token" { return cmdRevokeToken($db, $r, NOW); }
+        when "yank" { return cmdSetYanked($db, $r, NOW, true); }
+        when "unyank" { return cmdSetYanked($db, $r, NOW, false); }
+        when "trust" { return cmdTrust($db, $r, NOW); }
+        when "untrust" { return cmdUntrust($db, $r, NOW); }
+        when "publishers" { return cmdPublishers($db, $r, NOW); }
+        when "revoke" { return cmdRevoke($db, $r, NOW); }
     }
     return failResult($db, "no such command");
 }
@@ -96,8 +61,7 @@ func registered() {
 
 # gitAdd builds the argument vector that publishes a git version.
 func gitAdd(name as string, version as string, url as string) {
-    return ["deckadmin", "add", $name, $version, $url,
-        "--ref", "v" + $version, "--commit", COMMIT];
+    return ["deckadmin", "add", $name, $version, $url, "--ref", "v" + $version, "--commit", COMMIT];
 }
 
 # --- the parser -------------------------------------------------------------
@@ -154,13 +118,25 @@ func testAddStoresGitVersion() {
 func testGitAddNeedsBothRefAndCommit() {
     def db as flatdb.DB init registered();
     def onlyRef as list of string init [
-        "deckadmin", "add", "@acme/ansi", "1.0.0", "u", "--ref", "v1.0.0"
+        "deckadmin",
+        "add",
+        "@acme/ansi",
+        "1.0.0",
+        "https://x/u",
+        "--ref",
+        "v1.0.0"
     ];
     def a as AdminResult init dispatch($db, $onlyRef);
     testing.assertFalse($a.ok);
     testing.assertContains($a.message, "both --ref and --commit");
     def onlyCommit as list of string init [
-        "deckadmin", "add", "@acme/ansi", "1.0.0", "u", "--commit", COMMIT
+        "deckadmin",
+        "add",
+        "@acme/ansi",
+        "1.0.0",
+        "https://x/u",
+        "--commit",
+        COMMIT
     ];
     def b as AdminResult init dispatch($db, $onlyCommit);
     testing.assertFalse($b.ok);
@@ -169,7 +145,15 @@ func testGitAddNeedsBothRefAndCommit() {
 
 func testGitAddRejectsAbbreviatedCommit() {
     def args as list of string init [
-        "deckadmin", "add", "@acme/ansi", "1.0.0", "u", "--ref", "v1.0.0", "--commit", "9f2c1d4"
+        "deckadmin",
+        "add",
+        "@acme/ansi",
+        "1.0.0",
+        "https://x/u",
+        "--ref",
+        "v1.0.0",
+        "--commit",
+        "9f2c1d4"
     ];
     def r as AdminResult init dispatch(registered(), $args);
     testing.assertFalse($r.ok);
@@ -178,8 +162,15 @@ func testGitAddRejectsAbbreviatedCommit() {
 
 func testGitAddRejectsUppercaseCommit() {
     def args as list of string init [
-        "deckadmin", "add", "@acme/ansi", "1.0.0", "u",
-        "--ref", "v1.0.0", "--commit", "9F2C1D4E5A6B7C8D9E0F1A2B3C4D5E6F70819293"
+        "deckadmin",
+        "add",
+        "@acme/ansi",
+        "1.0.0",
+        "https://x/u",
+        "--ref",
+        "v1.0.0",
+        "--commit",
+        "9F2C1D4E5A6B7C8D9E0F1A2B3C4D5E6F70819293"
     ];
     def r as AdminResult init dispatch(registered(), $args);
     testing.assertFalse($r.ok);
@@ -187,8 +178,17 @@ func testGitAddRejectsUppercaseCommit() {
 
 func testGitAddRejectsAChecksum() {
     def args as list of string init [
-        "deckadmin", "add", "@acme/ansi", "1.0.0", "u",
-        "--ref", "v1.0.0", "--commit", COMMIT, "--checksum", CHECKSUM
+        "deckadmin",
+        "add",
+        "@acme/ansi",
+        "1.0.0",
+        "https://x/u",
+        "--ref",
+        "v1.0.0",
+        "--commit",
+        COMMIT,
+        "--checksum",
+        CHECKSUM
     ];
     def r as AdminResult init dispatch(registered(), $args);
     testing.assertFalse($r.ok);
@@ -198,9 +198,19 @@ func testGitAddRejectsAChecksum() {
 func testAddRefusesARefShapedLikeAnObjectId() {
     # a record written by an operator is indistinguishable from one written over
     # HTTP, so the ref rule cannot live only on the endpoint
-    def r as AdminResult init dispatch(registered(),
-        ["deckadmin", "add", "@acme/ansi", "1.0.0", "https://x/a",
-         "--ref", COMMIT, "--commit", COMMIT]);
+    def r as AdminResult init dispatch(
+        registered(),
+        [
+            "deckadmin",
+            "add",
+            "@acme/ansi",
+            "1.0.0",
+            "https://x/a",
+            "--ref",
+            COMMIT,
+            "--commit",
+            COMMIT
+        ]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "object id");
     testing.assertFalse(store.hasVersion($r.db, "@acme/ansi", "1.0.0"));
@@ -208,8 +218,7 @@ func testAddRefusesARefShapedLikeAnObjectId() {
 
 func testAddStillTakesAnOrdinaryTag() {
     # the guard refuses a shape, not tags in general
-    def r as AdminResult init dispatch(registered(),
-        gitAdd("@acme/ansi", "1.0.0", "https://x/a"));
+    def r as AdminResult init dispatch(registered(), gitAdd("@acme/ansi", "1.0.0", "https://x/a"));
     testing.assertTrue($r.ok);
 }
 
@@ -217,7 +226,13 @@ func testAddStillTakesAnOrdinaryTag() {
 
 func testTarGzAddRecordsChecksum() {
     def args as list of string init [
-        "deckadmin", "add", "@acme/ros", "0.1.0", "https://x/ros.tgz", "--checksum", CHECKSUM
+        "deckadmin",
+        "add",
+        "@acme/ros",
+        "0.1.0",
+        "https://x/ros.tgz",
+        "--checksum",
+        CHECKSUM
     ];
     def r as AdminResult init dispatch(registered(), $args);
     testing.assertTrue($r.ok);
@@ -228,15 +243,22 @@ func testTarGzAddRecordsChecksum() {
 }
 
 func testTarGzAddNeedsAChecksum() {
-    def r as AdminResult init dispatch(registered(),
-        ["deckadmin", "add", "@acme/ros", "0.1.0", "u"]);
+    def r as AdminResult init dispatch(
+        registered(),
+        ["deckadmin", "add", "@acme/ros", "0.1.0", "https://x/u"]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "needs --checksum");
 }
 
 func testTarGzAddRejectsMalformedChecksum() {
     def args as list of string init [
-        "deckadmin", "add", "@acme/ros", "0.1.0", "u", "--checksum", "sha256:abc"
+        "deckadmin",
+        "add",
+        "@acme/ros",
+        "0.1.0",
+        "https://x/u",
+        "--checksum",
+        "sha256:abc"
     ];
     def r as AdminResult init dispatch(registered(), $args);
     testing.assertFalse($r.ok);
@@ -246,7 +268,7 @@ func testTarGzAddRejectsMalformedChecksum() {
 # --- names, scopes, and versions --------------------------------------------
 
 func testBareNameIsRejected() {
-    def r as AdminResult init dispatch(emptyStore(), gitAdd("ansi", "1.0.0", "u"));
+    def r as AdminResult init dispatch(emptyStore(), gitAdd("ansi", "1.0.0", "https://x/u"));
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "not a registry deck name");
 }
@@ -254,53 +276,97 @@ func testBareNameIsRejected() {
 func testAddRejectsAHyphenInTheDeckHalf() {
     # the deck half becomes the bound namespace, so it takes no hyphen even
     # though the scope half does
-    def r as AdminResult init dispatch(registered(), gitAdd("@acme/bad-name", "1.0.0", "u"));
+    def r as AdminResult init dispatch(
+        registered(),
+        gitAdd("@acme/bad-name", "1.0.0", "https://x/u"));
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "valid deck name");
 }
 
 func testAddRejectsAWindowsDeviceName() {
-    def r as AdminResult init dispatch(registered(), gitAdd("@acme/con", "1.0.0", "u"));
+    def r as AdminResult init dispatch(registered(), gitAdd("@acme/con", "1.0.0", "https://x/u"));
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "valid deck name");
 }
 
 func testAddFoldsTheDeckName() {
-    def r as AdminResult init dispatch(registered(), gitAdd("@ACME/Routeros", "1.0.0", "u"));
+    def r as AdminResult init dispatch(
+        registered(),
+        gitAdd("@ACME/Routeros", "1.0.0", "https://x/u"));
     testing.assertTrue($r.ok);
     testing.assertTrue(store.hasVersion($r.db, "@acme/routeros", "1.0.0"));
     testing.assertEqual(store.listDecks($r.db)[0], "@acme/routeros");
 }
 
 func testScopedAddRequiresNamespace() {
-    def r as AdminResult init dispatch(emptyStore(), gitAdd("@acme/ros", "0.1.0", "u"));
+    def r as AdminResult init dispatch(emptyStore(), gitAdd("@acme/ros", "0.1.0", "https://x/u"));
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "not registered");
 }
 
 func testAddRejectsBadVersion() {
-    def r as AdminResult init dispatch(registered(), gitAdd("@acme/ansi", "vX", "u"));
+    def r as AdminResult init dispatch(registered(), gitAdd("@acme/ansi", "vX", "https://x/u"));
     testing.assertFalse($r.ok);
     testing.assertFalse($r.changed);
 }
 
+func testAddRejectsAVersionTooLargeToOrder() {
+    # an operator-written record is held to the same rule as a published one
+    def r as AdminResult init dispatch(
+        registered(),
+        gitAdd("@acme/ansi", "99999999999999999999.0.0", "https://x/u"));
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "18 digits");
+}
+
+func requiresAdd(spec as string) {
+    return [
+        "deckadmin",
+        "add",
+        "@acme/ros",
+        "1.0.0",
+        "https://x/u",
+        "--ref",
+        "v1.0.0",
+        "--commit",
+        COMMIT,
+        "--requires",
+        $spec
+    ];
+}
+
+func testAddRejectsABadDependency() {
+    def badName as AdminResult init dispatch(registered(), requiresAdd("net ^1.0.0"));
+    testing.assertFalse($badName.ok);
+    testing.assertContains($badName.message, "not a deck name");
+    def badConstraint as AdminResult init dispatch(registered(), requiresAdd("@acme/net ~>1.2"));
+    testing.assertFalse($badConstraint.ok);
+    testing.assertContains($badConstraint.message, "not a valid version constraint");
+}
+
+func testAddFoldsDependencyNames() {
+    def r as AdminResult init dispatch(registered(), requiresAdd("@ACME/Net ^1.0.0"));
+    testing.assertTrue($r.ok);
+    testing.assertEqual(store.versionRequires($r.db, "@acme/ros", "1.0.0")["@acme/net"], "^1.0.0");
+}
+
 func testUpdateUpserts() {
     def db as flatdb.DB init registered();
-    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "u1")).db;
-    def argv as list of string init gitAdd("@acme/ansi", "1.0.0", "u2");
+    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "https://x/u1")).db;
+    def argv as list of string init gitAdd("@acme/ansi", "1.0.0", "https://x/u2");
     $argv[1] = "update";
     def r as AdminResult init dispatch($db, $argv);
     testing.assertTrue($r.changed);
     def rec as json.Value init store.getVersionJson($r.db, "@acme/ansi", "1.0.0");
-    testing.assertEqual(json.asString($rec, "/url"), "u2");
+    testing.assertEqual(json.asString($rec, "/url"), "https://x/u2");
 }
 
 # --- removal and listing ----------------------------------------------------
 
 func testRemoveVersion() {
     def db as flatdb.DB init registered();
-    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "u1")).db;
-    $db = dispatch($db, gitAdd("@acme/ansi", "1.1.0", "u2")).db;
+    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "https://x/u1")).db;
+    $db = dispatch($db, gitAdd("@acme/ansi", "1.1.0", "https://x/u2")).db;
     def r as AdminResult init dispatch($db, ["deckadmin", "remove", "@acme/ansi", "1.0.0"]);
     testing.assertTrue($r.changed);
     testing.assertFalse(store.hasVersion($r.db, "@acme/ansi", "1.0.0"));
@@ -309,7 +375,7 @@ func testRemoveVersion() {
 
 func testRemoveWholeDeck() {
     def db as flatdb.DB init registered();
-    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "u1")).db;
+    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "https://x/u1")).db;
     def r as AdminResult init dispatch($db, ["deckadmin", "remove", "@acme/ansi"]);
     testing.assertTrue($r.changed);
     testing.assertFalse(store.hasDeck($r.db, "@acme/ansi"));
@@ -323,8 +389,8 @@ func testRemoveMissingFails() {
 
 func testListDecks() {
     def db as flatdb.DB init registered();
-    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "u1")).db;
-    $db = dispatch($db, gitAdd("@acme/csv", "0.4.0", "u2")).db;
+    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "https://x/u1")).db;
+    $db = dispatch($db, gitAdd("@acme/csv", "0.4.0", "https://x/u2")).db;
     def r as AdminResult init dispatch($db, ["deckadmin", "list"]);
     testing.assertTrue($r.ok);
     testing.assertFalse($r.changed);
@@ -334,8 +400,8 @@ func testListDecks() {
 
 func testListOneDeckVersions() {
     def db as flatdb.DB init registered();
-    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "u1")).db;
-    $db = dispatch($db, gitAdd("@acme/ansi", "1.2.0", "u2")).db;
+    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "https://x/u1")).db;
+    $db = dispatch($db, gitAdd("@acme/ansi", "1.2.0", "https://x/u2")).db;
     def r as AdminResult init dispatch($db, ["deckadmin", "list", "@acme/ansi"]);
     testing.assertContains($r.message, "1.0.0");
     testing.assertContains($r.message, "1.2.0");
@@ -373,7 +439,8 @@ func testRegisterNamespaceRejectsBadScope() {
     # deckname_test.j; these are the ones that parse as positionals.
     def bad as list of string init ["acme-", "a--b", "my_org", "con"];
     for (def scope in $bad) {
-        def r as AdminResult init dispatch(emptyStore(),
+        def r as AdminResult init dispatch(
+            emptyStore(),
             ["deckadmin", "register-namespace", $scope]);
         testing.assertFalse($r.ok);
         testing.assertContains($r.message, "valid scope name");
@@ -381,8 +448,7 @@ func testRegisterNamespaceRejectsBadScope() {
 }
 
 func testRegisterNamespaceFoldsTheScope() {
-    def r as AdminResult init dispatch(emptyStore(),
-        ["deckadmin", "register-namespace", "@Acme"]);
+    def r as AdminResult init dispatch(emptyStore(), ["deckadmin", "register-namespace", "@Acme"]);
     testing.assertTrue($r.ok);
     testing.assertTrue(store.hasNamespace($r.db, "acme"));
     testing.assertEqual(store.listNamespaces($r.db)[0], "acme");
@@ -397,9 +463,18 @@ func testNamespacesList() {
 
 func testAddCapturesEngines() {
     def args as list of string init [
-        "deckadmin", "add", "@acme/ansi", "1.0.0", "u", "styling",
-        "--ref", "v1.0.0", "--commit", COMMIT,
-        "--engines", "jennifer ^0.24.0, jennifer-tiny ^0.5.0"
+        "deckadmin",
+        "add",
+        "@acme/ansi",
+        "1.0.0",
+        "https://x/u",
+        "styling",
+        "--ref",
+        "v1.0.0",
+        "--commit",
+        COMMIT,
+        "--engines",
+        "jennifer ^0.24.0, jennifer-tiny ^0.5.0"
     ];
     def r as AdminResult init dispatch(registered(), $args);
     testing.assertTrue($r.ok);
@@ -413,9 +488,19 @@ func testAddCapturesEngines() {
 
 func testAddCapturesRequiresAndCapabilities() {
     def args as list of string init [
-        "deckadmin", "add", "@acme/ros", "1.0.0", "u",
-        "--ref", "v1.0.0", "--commit", COMMIT,
-        "--requires", "@acme/net ^1.0.0", "--capabilities", "net, exec"
+        "deckadmin",
+        "add",
+        "@acme/ros",
+        "1.0.0",
+        "https://x/u",
+        "--ref",
+        "v1.0.0",
+        "--commit",
+        COMMIT,
+        "--requires",
+        "@acme/net ^1.0.0",
+        "--capabilities",
+        "net, exec"
     ];
     def r as AdminResult init dispatch(registered(), $args);
     testing.assertTrue($r.ok);
@@ -430,12 +515,26 @@ func testAddCapturesRequiresAndCapabilities() {
 
 func testRevokeDropsThatAccountsRefreshTokens() {
     def db as flatdb.DB init emptyStore();
-    $db = store.putRefresh($db, "aaaa", store.Refresh{
-        accountId: 42, login: "alice", expiresAt: 1800000000, orgs: {}, orgsCheckedAt: 0
-    });
-    $db = store.putRefresh($db, "bbbb", store.Refresh{
-        accountId: 99, login: "bob", expiresAt: 1800000000, orgs: {}, orgsCheckedAt: 0
-    });
+    $db = store.putRefresh(
+        $db,
+        "aaaa",
+        store.Refresh{
+            accountId: 42,
+            login: "alice",
+            expiresAt: 1800000000,
+            orgs: {},
+            orgsCheckedAt: 0
+        });
+    $db = store.putRefresh(
+        $db,
+        "bbbb",
+        store.Refresh{
+            accountId: 99,
+            login: "bob",
+            expiresAt: 1800000000,
+            orgs: {},
+            orgsCheckedAt: 0
+        });
     def r as AdminResult init dispatch($db, ["deckadmin", "revoke", "42"]);
     testing.assertTrue($r.ok);
     testing.assertTrue($r.changed);
@@ -465,8 +564,14 @@ func testLogOptionsFallBackToTheEnvironment() {
 
 func testAFlagBeatsTheEnvironment() {
     # the point of the flag: override a container-wide setting for one command
-    def r as args.Result init parse(["deckadmin", "--log", "/tmp/one.log",
-        "--log-level", "debug", "list"]);
+    def r as args.Result init parse([
+        "deckadmin",
+        "--log",
+        "/tmp/one.log",
+        "--log-level",
+        "debug",
+        "list"
+    ]);
     def o as LogOptions init logOptions($r, "data/registry.log", "warn", "json");
     testing.assertEqual($o.path, "/tmp/one.log");
     testing.assertEqual($o.level, "debug");
@@ -495,7 +600,8 @@ func testVerboseAndQuietAreReadFromTheRootParser() {
 }
 
 func testAPublishRecordsAnEventForTheLog() {
-    def out as AdminResult init dispatch(registered(),
+    def out as AdminResult init dispatch(
+        registered(),
         gitAdd("@acme/ansi", "1.2.0", "https://x/a"));
     testing.assertTrue($out.ok);
     testing.assertEqual($out.event.fields["deck"], "@acme/ansi");
@@ -504,8 +610,8 @@ func testAPublishRecordsAnEventForTheLog() {
 }
 
 func testRepublishingTheSameVersionIsRecordedAsAReplacement() {
-    def db as flatdb.DB init dispatch(registered(),
-        gitAdd("@acme/ansi", "1.2.0", "https://x/a")).db;
+    def argv as list of string init gitAdd("@acme/ansi", "1.2.0", "https://x/a");
+    def db as flatdb.DB init dispatch(registered(), $argv).db;
     def out as AdminResult init dispatch($db, gitAdd("@acme/ansi", "1.2.0", "https://x/b"));
     testing.assertContains($out.event.message, "replaced");
 }
@@ -516,8 +622,7 @@ func testAListRecordsNothing() {
 }
 
 func testAFailedCommandIsRecorded() {
-    def out as AdminResult init dispatch(emptyStore(),
-        gitAdd("@ghost/x", "1.0.0", "https://x/a"));
+    def out as AdminResult init dispatch(emptyStore(), gitAdd("@ghost/x", "1.0.0", "https://x/a"));
     testing.assertFalse($out.ok);
     testing.assertContains($out.event.message, "failed");
     testing.assertContains($out.event.fields["reason"], "not registered");
@@ -526,9 +631,18 @@ func testAFailedCommandIsRecorded() {
 # --- trusted publishers -------------------------------------------------------
 
 func trusted() {
-    return dispatch(owned(), ["deckadmin", "trust", "@acme/ansi", "123456789",
-        "--repository", "acme/deck-ansi",
-        "--workflow", "acme/deck-ansi/.github/workflows/publish.yml"]);
+    return dispatch(
+        owned(),
+        [
+            "deckadmin",
+            "trust",
+            "@acme/ansi",
+            "123456789",
+            "--repository",
+            "acme/deck-ansi",
+            "--workflow",
+            "acme/deck-ansi/.github/workflows/publish.yml"
+        ]);
 }
 
 func testTrustRegistersABinding() {
@@ -544,7 +658,8 @@ func testTrustRegistersABinding() {
 
 func testTrustNeedsTheRepositoryId() {
     # the path is renameable and re-registerable, so it cannot be the key
-    def r as AdminResult init dispatch(owned(),
+    def r as AdminResult init dispatch(
+        owned(),
         ["deckadmin", "trust", "@acme/ansi", "", "--repository", "acme/deck-ansi"]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "repository id");
@@ -553,8 +668,7 @@ func testTrustNeedsTheRepositoryId() {
 func testTrustNeedsARegisteredScope() {
     # a binding is a standing grant to write under a scope, so it is gated
     # exactly as a publish is
-    def r as AdminResult init dispatch(emptyStore(),
-        ["deckadmin", "trust", "@ghost/x", "1"]);
+    def r as AdminResult init dispatch(emptyStore(), ["deckadmin", "trust", "@ghost/x", "1"]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "not registered");
 }
@@ -563,7 +677,8 @@ func testTrustNeedsAnOwnedScope() {
     # registered is not owned. A reserved scope is held precisely so that nobody
     # can write under it, and a trusted publisher acts *for* an owner - so with
     # no owner the binding would be a standing way around the reservation.
-    def r as AdminResult init dispatch(registered(),
+    def r as AdminResult init dispatch(
+        registered(),
         ["deckadmin", "trust", "@acme/ansi", "123456789"]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "reserved");
@@ -571,7 +686,8 @@ func testTrustNeedsAnOwnedScope() {
 }
 
 func testTrustRejectsAnUnknownProvider() {
-    def r as AdminResult init dispatch(owned(),
+    def r as AdminResult init dispatch(
+        owned(),
         ["deckadmin", "trust", "@acme/ansi", "1", "--provider", "jenkins"]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "unknown CI provider");
@@ -582,8 +698,7 @@ func testABindingOnADecklessScopeIsPending() {
     def b as trustpub.Binding init store.getBinding(trusted().db, "@acme/ansi");
     testing.assertTrue($b.pending);
 
-    def db as flatdb.DB init dispatch(owned(),
-        gitAdd("@acme/ansi", "1.0.0", "https://x/a")).db;
+    def db as flatdb.DB init dispatch(owned(), gitAdd("@acme/ansi", "1.0.0", "https://x/a")).db;
     def after as AdminResult init dispatch($db, ["deckadmin", "trust", "@acme/ansi", "1"]);
     testing.assertFalse(store.getBinding($after.db, "@acme/ansi").pending);
 }
@@ -656,10 +771,13 @@ func testReserveDefaultsHoldsThemAll() {
 func testAReservedScopeCannotBeClaimed() {
     def db as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
     def who as identity.Subject init identity.Subject{
-        provider: "github", id: "1", login: "admin", orgs: {}, orgsCheckedAt: ""
+        provider: "github",
+        id: "1",
+        login: "admin",
+        orgs: {},
+        orgsCheckedAt: ""
     };
-    def out as scope.ClaimResult init scope.claim($db, firstcome.policy(), $who,
-        "admin", [], NOW);
+    def out as scope.ClaimResult init scope.claim($db, firstcome.policy(), $who, "admin", [], NOW);
     testing.assertFalse($out.allowed);
     # and it says *reserved*, not "claimed by another account", because nobody
     # holds it and sending the caller after a person would be a lie
@@ -677,7 +795,8 @@ func testReserveDefaultsIsIdempotent() {
 func testReserveDefaultsNeverSeizesAnOwnedScope() {
     # a bootstrap convenience, not an eviction tool: the operator grant is the
     # deliberate path for taking a name back
-    def db as flatdb.DB init dispatch(emptyStore(),
+    def db as flatdb.DB init dispatch(
+        emptyStore(),
         ["deckadmin", "register-namespace", "api", "--owner", "42", "--login", "eve"]).db;
     def r as AdminResult init dispatch($db, ["deckadmin", "reserve-defaults"]);
     testing.assertEqual(store.getNamespace($r.db, "api").subject, "42");
@@ -686,7 +805,8 @@ func testReserveDefaultsNeverSeizesAnOwnedScope() {
 }
 
 func testDryRunChangesNothing() {
-    def r as AdminResult init dispatch(emptyStore(),
+    def r as AdminResult init dispatch(
+        emptyStore(),
         ["deckadmin", "reserve-defaults", "--dry-run"]);
     testing.assertFalse($r.changed);
     testing.assertContains($r.message, "dry run");
@@ -697,8 +817,9 @@ func testNamespacesDistinguishesOwnedFromReserved() {
     # once the defaults are reserved the store holds scores of names, so a bare
     # list stops answering the only question an operator has
     def db as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
-    $db = dispatch($db, ["deckadmin", "register-namespace", "jennifer",
-        "--owner", "12345", "--login", "mplx"]).db;
+    $db = dispatch(
+        $db,
+        ["deckadmin", "register-namespace", "jennifer", "--owner", "12345", "--login", "mplx"]).db;
     def r as AdminResult init dispatch($db, ["deckadmin", "namespaces"]);
     testing.assertContains($r.message, "1 owned");
     testing.assertContains($r.message, "@jennifer  mplx [github 12345]");
@@ -707,8 +828,9 @@ func testNamespacesDistinguishesOwnedFromReserved() {
 
 func testNamespacesFilters() {
     def db as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
-    $db = dispatch($db, ["deckadmin", "register-namespace", "jennifer",
-        "--owner", "12345", "--login", "mplx"]).db;
+    $db = dispatch(
+        $db,
+        ["deckadmin", "register-namespace", "jennifer", "--owner", "12345", "--login", "mplx"]).db;
     def owned as AdminResult init dispatch($db, ["deckadmin", "namespaces", "--owned"]);
     testing.assertContains($owned.message, "@jennifer");
     testing.assertFalse(strings.contains($owned.message, "@admin"));
@@ -721,8 +843,9 @@ func testGrantingAReservedScopeMakesItPublishable() {
     # the whole point of reserving: held until an operator hands it to somebody
     def db as flatdb.DB init dispatch(emptyStore(), ["deckadmin", "reserve-defaults"]).db;
     testing.assertEqual(store.getNamespace($db, "jennifer").subject, "");
-    $db = dispatch($db, ["deckadmin", "register-namespace", "jennifer",
-        "--owner", "12345", "--login", "mplx"]).db;
+    $db = dispatch(
+        $db,
+        ["deckadmin", "register-namespace", "jennifer", "--owner", "12345", "--login", "mplx"]).db;
     testing.assertTrue(store.ownsNamespace($db, "jennifer", "github", "12345"));
     def r as AdminResult init dispatch($db, gitAdd("@jennifer/routeros", "0.1.0", "https://x/a"));
     testing.assertTrue($r.ok);
@@ -731,20 +854,28 @@ func testGrantingAReservedScopeMakesItPublishable() {
 # --- co-owners ----------------------------------------------------------------
 
 func owned() {
-    return dispatch(emptyStore(), ["deckadmin", "register-namespace", "acme",
-        "--owner", "1000", "--login", "alice"]).db;
+    return dispatch(
+        emptyStore(),
+        ["deckadmin", "register-namespace", "acme", "--owner", "1000", "--login", "alice"]).db;
 }
 
 func testACoOwnerMayWriteUnderTheScope() {
-    def db as flatdb.DB init dispatch(owned(),
-        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
     def bob as identity.Subject init identity.Subject{
-        provider: "github", id: "2000", login: "bob", orgs: {}, orgsCheckedAt: ""
+        provider: "github",
+        id: "2000",
+        login: "bob",
+        orgs: {},
+        orgsCheckedAt: ""
     };
     testing.assertTrue(scope.authorise($db, $bob, "acme").allowed);
     # and the owner still can
     def alice as identity.Subject init identity.Subject{
-        provider: "github", id: "1000", login: "alice", orgs: {}, orgsCheckedAt: ""
+        provider: "github",
+        id: "1000",
+        login: "alice",
+        orgs: {},
+        orgsCheckedAt: ""
     };
     testing.assertTrue(scope.authorise($db, $alice, "acme").allowed);
 }
@@ -752,17 +883,19 @@ func testACoOwnerMayWriteUnderTheScope() {
 func testACoOwnerIsNotTheOwner() {
     # adding one must not move the scope's identity: that is a transfer, and a
     # different verb
-    def db as flatdb.DB init dispatch(owned(),
-        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
     testing.assertEqual(store.getNamespace($db, "acme").subject, "1000");
     testing.assertEqual(len(store.ownersOf($db, "acme")), 2);
 }
 
 func testAStrangerStillCannot() {
-    def db as flatdb.DB init dispatch(owned(),
-        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
     def eve as identity.Subject init identity.Subject{
-        provider: "github", id: "3000", login: "eve", orgs: {}, orgsCheckedAt: ""
+        provider: "github",
+        id: "3000",
+        login: "eve",
+        orgs: {},
+        orgsCheckedAt: ""
     };
     testing.assertFalse(scope.authorise($db, $eve, "acme").allowed);
 }
@@ -770,17 +903,19 @@ func testAStrangerStillCannot() {
 func testACoOwnerOfAnotherProviderIsNotAMatch() {
     # a scope binds to one provider; the same numeric id elsewhere is a
     # different principal
-    def db as flatdb.DB init dispatch(owned(),
-        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
     def elsewhere as identity.Subject init identity.Subject{
-        provider: "gitea", id: "2000", login: "bob", orgs: {}, orgsCheckedAt: ""
+        provider: "gitea",
+        id: "2000",
+        login: "bob",
+        orgs: {},
+        orgsCheckedAt: ""
     };
     testing.assertFalse(scope.authorise($db, $elsewhere, "acme").allowed);
 }
 
 func testAddingACoOwnerIsIdempotent() {
-    def db as flatdb.DB init dispatch(owned(),
-        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
     def again as AdminResult init dispatch($db, ["deckadmin", "add-owner", "acme", "2000"]);
     testing.assertFalse($again.changed);
     testing.assertContains($again.message, "already a co-owner");
@@ -789,8 +924,8 @@ func testAddingACoOwnerIsIdempotent() {
 func testAReservedScopeCannotTakeACoOwner() {
     # no owner to co-own with; accepting one would leave a scope nobody holds
     # that somebody can nevertheless write to
-    def db as flatdb.DB init dispatch(emptyStore(),
-        ["deckadmin", "register-namespace", "jennifer"]).db;
+    def argv as list of string init ["deckadmin", "register-namespace", "jennifer"];
+    def db as flatdb.DB init dispatch(emptyStore(), $argv).db;
     def r as AdminResult init dispatch($db, ["deckadmin", "add-owner", "jennifer", "2000"]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "reserved");
@@ -798,8 +933,7 @@ func testAReservedScopeCannotTakeACoOwner() {
 
 func testTheOwnerCannotBeRemovedAsACoOwner() {
     # losing the last owner would leave decks nobody can yank
-    def db as flatdb.DB init dispatch(owned(),
-        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
     def r as AdminResult init dispatch($db, ["deckadmin", "remove-owner", "acme", "1000"]);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "is the owner");
@@ -807,11 +941,14 @@ func testTheOwnerCannotBeRemovedAsACoOwner() {
 }
 
 func testRemovingACoOwnerRevokesTheirWrite() {
-    def db as flatdb.DB init dispatch(owned(),
-        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
     $db = dispatch($db, ["deckadmin", "remove-owner", "acme", "2000"]).db;
     def bob as identity.Subject init identity.Subject{
-        provider: "github", id: "2000", login: "bob", orgs: {}, orgsCheckedAt: ""
+        provider: "github",
+        id: "2000",
+        login: "bob",
+        orgs: {},
+        orgsCheckedAt: ""
     };
     testing.assertFalse(scope.authorise($db, $bob, "acme").allowed);
     testing.assertEqual(len(store.ownersOf($db, "acme")), 1);
@@ -823,8 +960,7 @@ func testRemovingSomebodyWhoIsNotACoOwnerFails() {
 }
 
 func testCoOwnersAreShownInTheListing() {
-    def db as flatdb.DB init dispatch(owned(),
-        ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
     def r as AdminResult init dispatch($db, ["deckadmin", "namespaces"]);
     testing.assertContains($r.message, "co-owner(s): 2000");
 }
@@ -837,8 +973,8 @@ func testARecordWithoutCoOwnersReadsAsOne() {
 }
 
 func testAReservedScopeHasNoOwnersAtAll() {
-    def db as flatdb.DB init dispatch(emptyStore(),
-        ["deckadmin", "register-namespace", "jennifer"]).db;
+    def argv as list of string init ["deckadmin", "register-namespace", "jennifer"];
+    def db as flatdb.DB init dispatch(emptyStore(), $argv).db;
     testing.assertEqual(len(store.ownersOf($db, "jennifer")), 0);
 }
 
@@ -847,8 +983,7 @@ func testAReservedScopeHasNoOwnersAtAll() {
 func testKeywordsListsTheRefusedTermsDecoded() {
     # the operator's window into a list that is deliberately unreadable in the
     # source; without this there is no way to audit what is actually refused
-    def out as AdminResult init cmdKeywords(emptyStore(),
-        parse(["deckadmin", "keywords"]), NOW);
+    def out as AdminResult init cmdKeywords(emptyStore(), parse(["deckadmin", "keywords"]), NOW);
     testing.assertTrue($out.ok);
     testing.assertFalse($out.changed);
     testing.assertContains($out.message, keywords.abuse()[0]);
@@ -856,8 +991,10 @@ func testKeywordsListsTheRefusedTermsDecoded() {
 }
 
 func testKeywordsEncodesATermForTheList() {
-    def out as AdminResult init cmdKeywords(emptyStore(),
-        parse(["deckadmin", "keywords", "gambling"]), NOW);
+    def out as AdminResult init cmdKeywords(
+        emptyStore(),
+        parse(["deckadmin", "keywords", "gambling"]),
+        NOW);
     testing.assertTrue($out.ok);
     testing.assertContains($out.message, keywords.encode("gambling"));
 }
@@ -865,21 +1002,93 @@ func testKeywordsEncodesATermForTheList() {
 func testKeywordsFlagsATermThatCouldNeverMatch() {
     # every lookup runs on a folded, well-formed keyword, so encoding a term
     # with a space in it would produce a line that can never fire
-    def out as AdminResult init cmdKeywords(emptyStore(),
-        parse(["deckadmin", "keywords", "two words"]), NOW);
+    def out as AdminResult init cmdKeywords(
+        emptyStore(),
+        parse(["deckadmin", "keywords", "two words"]),
+        NOW);
     testing.assertContains($out.message, "never match");
 }
 
 func testKeywordsSaysWhenATermIsAlreadyRefused() {
-    def out as AdminResult init cmdKeywords(emptyStore(),
-        parse(["deckadmin", "keywords", keywords.adult()[0]]), NOW);
+    def out as AdminResult init cmdKeywords(
+        emptyStore(),
+        parse(["deckadmin", "keywords", keywords.adult()[0]]),
+        NOW);
     testing.assertContains($out.message, "already refused");
 }
 
 func testKeywordsNeverWrites() {
     # it reads a compiled-in word list, so it must work against no registry at
     # all - which is exactly the situation an operator is in when curating it
-    def out as AdminResult init cmdKeywords(emptyStore(),
-        parse(["deckadmin", "keywords"]), NOW);
+    def out as AdminResult init cmdKeywords(emptyStore(), parse(["deckadmin", "keywords"]), NOW);
     testing.assertFalse($out.changed);
+}
+
+func testAddRefusesAnUnfetchableUrl() {
+    def bad as list of string init ["", "javascript:alert(1)", "relative/path"];
+    $bad[] = 'https://x/a"b';
+    $bad[] = "https://x/a b";
+    for (def url in $bad) {
+        def r as AdminResult init dispatch(registered(), gitAdd("@acme/ansi", "1.0.0", $url));
+        testing.assertFalse($r.ok);
+        testing.assertFalse(store.hasVersion($r.db, "@acme/ansi", "1.0.0"));
+    }
+    testing.assertTrue(dispatch(registered(), gitAdd("@acme/ansi", "1.0.0", "file:///srv/a")).ok);
+}
+
+func testAddRefusesAnInvalidEngineConstraint() {
+    def argv as list of string init gitAdd("@acme/ansi", "1.0.0", "https://x/a");
+    $argv[] = "--engines";
+    $argv[] = "jennifer ^abc";
+    def r as AdminResult init dispatch(registered(), $argv);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "engine jennifer");
+}
+
+func testAddRefusesASecondBuildOfOneVersion() {
+    # 1.0.0+b is the same release as 1.0.0+a; storing both is two commits behind
+    # one version number
+    def first as list of string init gitAdd("@acme/ansi", "1.0.0+a", "https://x/a");
+    def db as flatdb.DB init dispatch(registered(), $first).db;
+    def r as AdminResult init dispatch($db, gitAdd("@acme/ansi", "1.0.0+b", "https://x/b"));
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "1.0.0+a");
+    testing.assertFalse(store.hasVersion($r.db, "@acme/ansi", "1.0.0+b"));
+    # the exact string still replaces, as an operator override
+    testing.assertTrue(dispatch($db, gitAdd("@acme/ansi", "1.0.0+a", "https://x/c")).ok);
+}
+
+# delegated returns owned() with a trusted publisher and a CI token under @acme.
+func delegated() {
+    def db as flatdb.DB init trusted().db;
+    return dispatch($db, ["deckadmin", "mint-token", "acme"]).db;
+}
+
+func testReassigningAScopeDropsTheOldOwnersDelegations() {
+    # the old owner's pipelines must not keep publishing under the new owner
+    def db as flatdb.DB init delegated();
+    testing.assertEqual(len(store.listCiTokens($db)), 1);
+    def r as AdminResult init dispatch(
+        $db,
+        ["deckadmin", "register-namespace", "acme", "--owner", "2000", "--login", "bob"]);
+    testing.assertTrue($r.ok);
+    testing.assertFalse(store.hasBinding($r.db, "@acme/ansi"));
+    testing.assertEqual(len(store.listCiTokens($r.db)), 0);
+    testing.assertContains($r.message, "dropped");
+}
+
+func testRegrantingToTheSameOwnerKeepsThem() {
+    def r as AdminResult init dispatch(
+        delegated(),
+        ["deckadmin", "register-namespace", "acme", "--owner", "1000", "--login", "alice"]);
+    testing.assertTrue(store.hasBinding($r.db, "@acme/ansi"));
+    testing.assertEqual(len(store.listCiTokens($r.db)), 1);
+}
+
+func testRemovingADeckRemovesItsTrustedPublisher() {
+    def db as flatdb.DB init trusted().db;
+    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "https://x/a")).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "remove", "@acme/ansi"]);
+    testing.assertTrue($r.ok);
+    testing.assertFalse(store.hasBinding($r.db, "@acme/ansi"));
 }

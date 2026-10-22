@@ -65,7 +65,10 @@ export def const GITHUB_ISSUER as string init "https://token.actions.githubuserc
  * @field repositoryId {string} the forge's immutable numeric repository id
  * @field repository {string} the repository path, for display only
  * @field workflow {string} the workflow file that ran, without any ref suffix
- * @field ref {string} the git ref the job ran against
+ * @field ref {string} the git ref the job ran against, always in its full
+ *     `refs/...` form (GitLab's bare name is completed from `ref_type`)
+ * @field sha {string} the commit the job ran at ("" when the token has none)
+ * @field issuedAt {int} the `iat` claim, Unix seconds (0 when absent)
  */
 export def struct Claims {
     provider as string,
@@ -74,7 +77,9 @@ export def struct Claims {
     repositoryId as string,
     repository as string,
     workflow as string,
-    ref as string
+    ref as string,
+    sha as string,
+    issuedAt as int
 };
 
 /**
@@ -115,7 +120,7 @@ export def struct Verdict {
 };
 
 func no(reason as string) {
-    return Verdict{ allowed: false, reason: $reason };
+    return Verdict{allowed: false, reason: $reason};
 }
 
 /**
@@ -177,13 +182,22 @@ export func claimsFrom(provider as string, doc as json.Value) {
         repositoryId: "",
         repository: "",
         workflow: "",
-        ref: text($doc, "/ref")
+        ref: text($doc, "/ref"),
+        sha: strings.lower(text($doc, "/sha")),
+        issuedAt: 0
     };
+    if (json.has($doc, "/iat") and json.typeOf($doc, "/iat") == "int") {
+        $out.issuedAt = json.asInt($doc, "/iat");
+    }
     match ($provider) {
         when GITLAB {
             $out.repositoryId = text($doc, "/project_id");
             $out.repository = text($doc, "/project_path");
             $out.workflow = workflowPath(text($doc, "/workflow_ref"));
+            # GitLab's `ref` is a bare name, `v1.2.0` or `main`, and `ref_type`
+            # says which. Completed here, so `refs/tags/*` means a tag on every
+            # provider; left bare, a pattern such as `v*` matched branches too.
+            $out.ref = fullRef($out.ref, text($doc, "/ref_type"));
         }
         when GITHUB, GITEA {
             $out.repositoryId = text($doc, "/repository_id");
@@ -196,6 +210,53 @@ export func claimsFrom(provider as string, doc as json.Value) {
         }
     }
     return $out;
+}
+
+# fullRef completes a bare ref name from its type ("tag" or "branch"). A ref
+# that is already full, or whose type is unknown, is returned as it is; an
+# unknown type cannot match a `refs/...` pattern, which is the safe way to fail.
+func fullRef(ref as string, refType as string) {
+    if ($ref == "" or strings.startsWith($ref, "refs/")) {
+        return $ref;
+    }
+    match ($refType) {
+        when "tag" { return "refs/tags/" + $ref; }
+        when "branch" { return "refs/heads/" + $ref; }
+    }
+    return $ref;
+}
+
+/**
+ * Does the CI run a token speaks for match the release being published?
+ *
+ * The binding says which repository and workflow may publish; this says that
+ * the run published **what it built**. Without it, any run of a bound workflow
+ * on any matching ref could publish any tag of the repository, an older or an
+ * unreviewed one included. Three checks:
+ *
+ * - the token's `sha`, where it carries one, must be the commit the tag points
+ *   at;
+ * - a token issued for a tag must be for this tag;
+ * - a token must not be issued in the future (8.9 step 2, `iat`), with a minute
+ *   of clock skew allowed.
+ * @param c {Claims} the verified token's claims
+ * @param tag {string} the tag in the publish request
+ * @param commit {string} the commit that tag resolved to
+ * @param now {int} the current time, Unix seconds
+ * @return {Verdict} allowed, or why not
+ */
+export func matchesRelease(c as Claims, tag as string, commit as string, now as int) {
+    if ($c.issuedAt > $now + 60) {
+        return no("the token was issued in the future");
+    }
+    if (not ($c.sha == "") and not ($c.sha == strings.lower($commit))) {
+        return no("the token is for a run at commit " + $c.sha + ", but " + $tag +
+            " points at " + $commit);
+    }
+    if (strings.startsWith($c.ref, "refs/tags/") and not ($c.ref == "refs/tags/" + $tag)) {
+        return no("the token is for " + $c.ref + ", not for the tag " + $tag);
+    }
+    return Verdict{allowed: true, reason: "the run built " + $tag};
 }
 
 /**
@@ -303,7 +364,7 @@ export func check(b as Binding, c as Claims, audience as string, issuer as strin
     if (not refMatches($b.refPattern, $c.ref)) {
         return no("ref " + $c.ref + " does not match " + $b.refPattern);
     }
-    return Verdict{ allowed: true, reason: "published by " + $c.repository + " via " + $c.ref };
+    return Verdict{allowed: true, reason: "published by " + $c.repository + " via " + $c.ref};
 }
 
 /**
@@ -354,31 +415,45 @@ export func discoveryUrl(issuer as string) {
  * @throws {Error} when either request fails or the document has no `jwks_uri`
  */
 export func fetchJwks(issuer as string) {
-    def headers as map of string to string init { "Accept": "application/json" };
-    def disco as http.Response init http.requestWith("GET", discoveryUrl($issuer),
-        $headers, "", TIMEOUT_MS, MAX_BYTES);
+    def headers as map of string to string init {"Accept": "application/json"};
+    def disco as http.Response init http.requestWith(
+        "GET",
+        discoveryUrl($issuer),
+        $headers,
+        "",
+        TIMEOUT_MS,
+        MAX_BYTES);
     def doc as json.Value init json.decode($disco.body);
     if (not json.has($doc, "/jwks_uri")) {
         throw Error{
             kind: "trustpub",
             message: "the OIDC discovery document for " + $issuer + " has no jwks_uri",
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
-    def keys as http.Response init http.requestWith("GET",
-        json.asString($doc, "/jwks_uri"), $headers, "", TIMEOUT_MS, MAX_BYTES);
+    def keys as http.Response init http.requestWith(
+        "GET",
+        json.asString($doc, "/jwks_uri"),
+        $headers,
+        "",
+        TIMEOUT_MS,
+        MAX_BYTES);
     return $keys.body;
 }
 
 /**
  * Verify a CI identity token's signature against a JWKS, and read its claims.
  *
- * **Signature and expiry only.** `jwt.verifyJwks` resolves the `kid`, checks the
- * RS256 signature, and enforces `exp` / `nbf`; it does not check `iss` or `aud`,
- * which is why `check` exists and why calling this alone authorises nothing. The
- * algorithm is pinned to RS256 rather than read from the token, which is what
- * stops the classic confusion attack of a token that nominates `none` or an HMAC
- * the attacker can compute.
+ * **Signature and expiry only.** `jwt.verifyJwksWith` resolves the `kid`, checks
+ * the RS256 signature, enforces `exp` / `nbf`, and with `requireExp` refuses a
+ * token with no `exp` at all, which plain `verifyJwks` would accept as never
+ * expiring (8.9 step 2 verifies `exp`, so it must be there). `iss` and `aud` are
+ * left to `check`, which names which of them failed; calling this alone
+ * authorises nothing. The algorithm is pinned to RS256 rather than read from the
+ * token, which is what stops the classic confusion attack of a token that
+ * nominates `none` or an HMAC the attacker can compute.
  * @param token {string} the raw compact JWT
  * @param jwksJson {string} the issuer's key set
  * @param provider {string} which claim shape to read
@@ -386,5 +461,6 @@ export func fetchJwks(issuer as string) {
  * @throws {Error} when the signature, the expiry, or the encoding is bad
  */
 export func verified(token as string, jwksJson as string, provider as string) {
-    return claimsFrom($provider, jwt.verifyJwks($token, $jwksJson, "RS256"));
+    def policy as jwt.Policy init jwt.Policy{iss: "", aud: "", requireExp: true};
+    return claimsFrom($provider, jwt.verifyJwksWith($token, $jwksJson, "RS256", $policy));
 }
