@@ -432,7 +432,8 @@ func hitList(hits as list of search.Hit, emptyMessage as string) {
 export func home(db as flatdb.DB) {
     def total as int init len(store.listDecks($db));
     def body as string init '<h1>Jennifer registry</h1>
-<p class="lede">The registry jvc resolves and fetches decks from.</p>' +
+<p class="lede">The registry <a href="https://jvc.jennifer-lang.dev/">jvc</a> ' +
+        'resolves and fetches decks from.</p>' +
         searchForm("") +
         '<ul class="facts">' +
         '<div class="fact"><dt>Browse</dt><dd><a href="/browse">All ' +
@@ -820,10 +821,29 @@ func factsSection(db as flatdb.DB, name as string, latest as store.DeckVersion) 
             esc($latest.ref) + '</code></dd></div>';
     }
     $items = $items + ownerFact($db, $name);
+    def p as store.Provenance init store.provenanceOf($db, $name, $latest.version);
+    if (not ($p.repoOwner == "")) {
+        $items = $items + '<div class="fact"><dt>Repository owner</dt><dd>' +
+            esc($p.repoOwner) + '</dd></div>';
+    }
     if ($items == "") {
         return "";
     }
-    return '<h2>Source</h2><dl class="facts">' + $items + '</dl>';
+    return '<h2>Source</h2>' + ownerChangeNotice($db, $name, $p) + '<dl class="facts">' +
+        $items + '</dl>';
+}
+
+# ownerChangeNotice warns when the repository the newest version came from had a
+# different owner for an earlier version (6.4): a reclaimed repository keeps its
+# id, and a reader has no other way to see the change.
+func ownerChangeNotice(db as flatdb.DB, name as string, p as store.Provenance) {
+    def earlier as string init store.ownerChangeOf($db, $name, $p.repoId, $p.repoOwnerId);
+    if ($earlier == "") {
+        return "";
+    }
+    return '<p class="notice">The repository changed owner since version <code>' +
+        esc($earlier) + '</code> was published. Check that the new owner is ' +
+        'who you expect before upgrading.</p>';
 }
 
 # ownerFact renders the scope a deck belongs to and who holds it.

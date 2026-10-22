@@ -97,6 +97,11 @@ func testEmptyRegistrySaysSo() {
     testing.assertContains($page.body, "No decks published yet");
 }
 
+func testHomeLinksJvc() {
+    def page as Page init home(seeded());
+    testing.assertContains($page.body, '<a href="https://jvc.jennifer-lang.dev/">jvc</a>');
+}
+
 func testHomeDoesNotListEveryDeck() {
     # the full listing is /browse, not the landing page
     def page as Page init home(seeded());
@@ -489,6 +494,29 @@ func testADeckPageLinksItsRepository() {
     testing.assertContains($page.body, 'href="https://github.com/acme/deck-routeros"');
     # and reads without the scheme
     testing.assertContains($page.body, ">github.com/acme/deck-routeros<");
+}
+
+func testADeckPageShowsTheRepositoryOwnerAndWarnsWhenItChanged() {
+    def db as flatdb.DB init seeded();
+    def was as store.Provenance init store.Provenance{
+        repoId: "7",
+        repoOwnerId: "42",
+        repoOwner: "acme"
+    };
+    $db = store.putProvenance($db, "@acme/routeros", "0.1.0", $was);
+    $db = store.putProvenance($db, "@acme/routeros", "0.2.0", $was);
+    def page as Page init deck($db, "@acme/routeros", NOW);
+    testing.assertContains($page.body, "Repository owner");
+    testing.assertFalse(strings.contains($page.body, "changed owner"));
+    def now as store.Provenance init store.Provenance{
+        repoId: "7",
+        repoOwnerId: "666",
+        repoOwner: "<b>mallory</b>"
+    };
+    $db = store.putProvenance($db, "@acme/routeros", "0.2.0", $now);
+    $page = deck($db, "@acme/routeros", NOW);
+    testing.assertContains($page.body, "changed owner since version <code>0.1.0</code>");
+    testing.assertContains($page.body, "&lt;b&gt;mallory&lt;/b&gt;");
 }
 
 func testARepositoryUrlIsOnlyLinkedWhenItIsHttp() {
