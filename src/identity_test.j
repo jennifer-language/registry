@@ -44,3 +44,10 @@ func testEndpointToleratesATrailingSlash() {
         endpoint("https://git.example.test/", "https://x", "/login"),
         "https://git.example.test/login");
 }
+
+func testOnlyA401MarksATokenAsRejected() {
+    # 8.5: a refresh treats REJECTED as a revoked grant, anything else as an outage
+    testing.assertEqual(rejectionKind(401), REJECTED);
+    testing.assertEqual(rejectionKind(403), "identity");
+    testing.assertEqual(rejectionKind(500), "identity");
+}

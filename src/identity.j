@@ -88,6 +88,25 @@ export def struct Poll {
 };
 
 /**
+ * The error kind `subject` throws when the provider refuses the token outright
+ * (HTTP 401): it was revoked or has expired. Any other failure is `identity` or
+ * a network kind, which says nothing about the grant (specification 8.5).
+ */
+export def const REJECTED as string init "rejected";
+
+/**
+ * The error kind for a provider refusing a token with `status`.
+ * @param status {int} the provider's HTTP status
+ * @return {string} `REJECTED` for 401, `identity` otherwise
+ */
+export func rejectionKind(status as int) {
+    if ($status == 401) {
+        return REJECTED;
+    }
+    return "identity";
+}
+
+/**
  * An identity provider, as a set of func values.
  *
  * Every function takes the `Config` as its first argument: Jennifer has no
@@ -97,14 +116,18 @@ export def struct Poll {
  * @field flow {func} `func(Config) -> string`: "device" or "authcode" (12.2)
  * @field startDevice {func} `func(Config) -> Device`: begin a device authorization
  * @field poll {func} `func(Config, deviceCode) -> Poll`: poll once for approval
- * @field authorizeUrl {func} `func(Config, state, challenge) -> string`: the URL a
- *     client opens under `authcode`; "" for a device-only provider
- * @field exchangeCode {func} `func(Config, code, verifier) -> string`: swap an
- *     authorization code for a provider token
+ * @field authorizeUrl {func} `func(Config) -> string`: the provider's authorization
+ *     endpoint, advertised as `auth.authorizeUrl` under `authcode` (12.2); "" for a
+ *     device-only provider
+ * @field exchangeCode {func} `func(Config, code, verifier, redirectUri) -> string`:
+ *     swap an authorization code (PKCE) for a provider token; throws on refusal
+ * @field scopes {func} `func(Config) -> string`: the space-separated scopes a
+ *     login requests, advertised as `auth.scopes` under `authcode`
  * @field memberships {func} `func(Config, accessToken) -> map of string to string`:
  *     the organisations this token's owner is an active member of, as folded
  *     login -> id. Asked once, at login (8.7).
- * @field subject {func} `func(Config, accessToken) -> Subject`: who this token is
+ * @field subject {func} `func(Config, accessToken) -> Subject`: who this token is;
+ *     throws kind `REJECTED` when the provider answers 401
  */
 export def struct Provider {
     name as string,
@@ -113,6 +136,7 @@ export def struct Provider {
     poll as func,
     authorizeUrl as func,
     exchangeCode as func,
+    scopes as func,
     subject as func,
     memberships as func
 };

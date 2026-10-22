@@ -258,21 +258,16 @@ func pollOnce(cfg as identity.Config, deviceCode as string) {
     return pollFrom(post(endpointFrom(metadata($cfg), "token_endpoint"), $body));
 }
 
-func authorize(cfg as identity.Config, state as string, challenge as string) {
-    return endpointFrom(metadata($cfg), "authorization_endpoint") + "?" +
-        formField("client_id", $cfg.clientId) + "&" +
-        formField("response_type", "code") + "&" +
-        formField("scope", scopesFor($cfg)) + "&" +
-        formField("state", $state) + "&" +
-        formField("code_challenge_method", "S256") + "&" +
-        formField("code_challenge", $challenge);
+func authorize(cfg as identity.Config) {
+    return endpointFrom(metadata($cfg), "authorization_endpoint");
 }
 
-func exchange(cfg as identity.Config, code as string, verifier as string) {
+func exchange(cfg as identity.Config, code as string, verifier as string, redirectUri as string) {
     def body as string init formField("client_id", $cfg.clientId) + "&" +
         formField("grant_type", "authorization_code") + "&" +
         formField("code", $code) + "&" +
-        formField("code_verifier", $verifier);
+        formField("code_verifier", $verifier) + "&" +
+        formField("redirect_uri", $redirectUri);
     def doc as json.Value init post(endpointFrom(metadata($cfg), "token_endpoint"), $body);
     return json.asString($doc, "/access_token");
 }
@@ -284,7 +279,7 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
     def res as http.Response init http.requestWith("GET", $url, $h, "", TIMEOUT_MS, MAX_BYTES);
     if (not ($res.status == 200)) {
         throw Error{
-            kind: "identity",
+            kind: identity.rejectionKind($res.status),
             message: "the provider rejected the token: " + convert.toString($res.status),
             file: "",
             line: 0,
@@ -314,6 +309,7 @@ export func provider() {
         poll: pollOnce,
         authorizeUrl: authorize,
         exchangeCode: exchange,
+        scopes: scopesFor,
         subject: subjectOf,
         memberships: membershipsOf
     };

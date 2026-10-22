@@ -285,12 +285,12 @@ func pollOnce(cfg as identity.Config, deviceCode as string) {
 }
 
 # authorize is unused: this provider runs the device flow.
-func authorize(cfg as identity.Config, state as string, challenge as string) {
+func authorize(cfg as identity.Config) {
     return "";
 }
 
 # exchange is unused for the same reason.
-func exchange(cfg as identity.Config, code as string, verifier as string) {
+func exchange(cfg as identity.Config, code as string, verifier as string, redirectUri as string) {
     return "";
 }
 
@@ -316,7 +316,7 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
     }
     if (not ($res.status == 200)) {
         throw Error{
-            kind: "identity",
+            kind: identity.rejectionKind($res.status),
             message: "GitHub rejected the token: " + convert.toString($res.status),
             file: "",
             line: 0,
@@ -354,6 +354,7 @@ export func provider() {
         poll: pollOnce,
         authorizeUrl: authorize,
         exchangeCode: exchange,
+        scopes: scopesFor,
         subject: subjectOf,
         memberships: membershipsOf
     };
