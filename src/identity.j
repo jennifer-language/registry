@@ -145,21 +145,11 @@ export def const STATE_EXPIRED as string init "expired";
  */
 export func pollState(code as string) {
     match ($code) {
-        when "" {
-            return STATE_OK;
-        }
-        when "authorization_pending" {
-            return STATE_PENDING;
-        }
-        when "slow_down" {
-            return STATE_SLOWDOWN;
-        }
-        when "access_denied" {
-            return STATE_DENIED;
-        }
-        when "expired_token" {
-            return STATE_EXPIRED;
-        }
+        when "" { return STATE_OK; }
+        when "authorization_pending" { return STATE_PENDING; }
+        when "slow_down" { return STATE_SLOWDOWN; }
+        when "access_denied" { return STATE_DENIED; }
+        when "expired_token" { return STATE_EXPIRED; }
     }
     return STATE_DENIED;
 }

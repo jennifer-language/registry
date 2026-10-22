@@ -14,7 +14,7 @@ use testing;
 use json;
 
 func cfg() {
-    return forge.Config{ name: "github", baseUrl: "", apiToken: "", host: "" };
+    return forge.Config{name: "github", baseUrl: "", apiToken: "", host: ""};
 }
 
 func doc(text as string) {
@@ -28,8 +28,10 @@ func testHandlesTheHostedInstance() {
 
 func testAnEnterpriseInstanceClaimsItsOwnHost() {
     def ent as forge.Config init forge.Config{
-        name: "github", baseUrl: "https://gh.corp.test/api/v3",
-        apiToken: "", host: "gh.corp.test"
+        name: "github",
+        baseUrl: "https://gh.corp.test/api/v3",
+        apiToken: "",
+        host: "gh.corp.test"
     };
     testing.assertTrue(handlesUrl($ent, "https://gh.corp.test/acme/deck.git"));
     testing.assertFalse(handlesUrl($ent, "https://github.com/acme/deck.git"));
@@ -56,8 +58,8 @@ func testAMissingPermissionsBlockIsUnknown() {
 }
 
 func testRepoCarriesTheIdsThatSurviveARename() {
-    def r as forge.Repo init repoFrom(
-        doc('{"id":1296269,"name":"deck","owner":{"id":6154722,"login":"acme"}}'));
+    def body as string init '{"id":1296269,"name":"deck","owner":{"id":6154722,"login":"acme"}}';
+    def r as forge.Repo init repoFrom(doc($body));
     testing.assertEqual($r.id, "1296269");
     testing.assertEqual($r.ownerId, "6154722");
     testing.assertEqual($r.owner, "acme");

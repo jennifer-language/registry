@@ -81,7 +81,7 @@ func safeName(domain as string) {
     }
     # A name that filtered down to nothing, or to dots alone, addresses the
     # directory itself rather than something inside it.
-    if (strings.trim($out) == "" or $out == "." ) {
+    if (strings.trim($out) == "" or $out == ".") {
         return "_";
     }
     return $out;
@@ -124,8 +124,7 @@ export func accountKeyPath(tls as config.Tls) {
 # distinct tokens collide on one file, and the second challenge would be answered
 # with the first one's response.
 func safeToken(token as string) {
-    def allowed as string init
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    def allowed as string init "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     def out as string init "";
     for (def ch in strings.chars(strings.trim($token))) {
         if (strings.indexOf($allowed, $ch) < 0) {
@@ -240,8 +239,7 @@ export func hasBundle(tls as config.Tls, domain as string) {
  * @param key {string} the PEM private key
  * @param now {int} the issue time (Unix seconds)
  */
-export func save(tls as config.Tls, domain as string, cert as string, key as string,
-        now as int) {
+export func save(tls as config.Tls, domain as string, cert as string, key as string, now as int) {
     def paths as list of string init pathsFor($tls, $domain);
     fs.mkdirAll(dirFor($tls, $domain));
     fs.writeString($paths[0], $cert);
@@ -281,8 +279,11 @@ func settle(client as acme.Client, tls as config.Tls, authzUrl as string) {
     fs.mkdirAll($tls.challengeDir);
     fs.writeString(challengePath($tls, $ch.token), $answer);
     acme.accept($client, $ch.url);
-    def settled as acme.Authorization init acme.pollAuthorization($client, $authzUrl,
-        POLL_INTERVAL_MS, POLL_TRIES);
+    def settled as acme.Authorization init acme.pollAuthorization(
+        $client,
+        $authzUrl,
+        POLL_INTERVAL_MS,
+        POLL_TRIES);
     try {
         fs.remove(challengePath($tls, $ch.token));
     } catch (err) { # lint-disable: L103
@@ -294,7 +295,9 @@ func settle(client as acme.Client, tls as config.Tls, authzUrl as string) {
             message: "the CA could not verify " + $settled.domain + " (" +
                 $settled.status + "); check that port 80 reaches this registry " +
                 "and that the domain resolves to it",
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return null;
@@ -326,12 +329,16 @@ export func obtain(tls as config.Tls, now as int) {
     }
     def certKey as bytes init crypto.ecGenerateKey("p256");
     def csr as bytes init crypto.csr($certKey, $tls.domains);
-    def finished as acme.Order init acme.finalize($client, $order, $csr,
-        POLL_INTERVAL_MS, POLL_TRIES);
+    def finished as acme.Order init acme.finalize(
+        $client,
+        $order,
+        $csr,
+        POLL_INTERVAL_MS,
+        POLL_TRIES);
     def chain as string init acme.downloadCertificate($client, $finished);
     def keyPem as string init convert.stringFromBytes($certKey, "utf-8");
     save($tls, $tls.domains[0], $chain, $keyPem, $now);
-    return Bundle{ cert: $chain, key: $keyPem, issuedAt: $now };
+    return Bundle{cert: $chain, key: $keyPem, issuedAt: $now};
 }
 
 /**

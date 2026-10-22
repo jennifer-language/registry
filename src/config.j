@@ -51,10 +51,8 @@ export def const LEGACY_PREFIX as string init "JVC_";
 # certificates with far higher rate limits, which is what a first run should use:
 # the production limits are per registered domain per week, and a misconfigured
 # deployment can exhaust them long before anybody notices.
-export def const LE_PRODUCTION as string init
-    "https://acme-v02.api.letsencrypt.org/directory";
-export def const LE_STAGING as string init
-    "https://acme-staging-v02.api.letsencrypt.org/directory";
+export def const LE_PRODUCTION as string init "https://acme-v02.api.letsencrypt.org/directory";
+export def const LE_STAGING as string init "https://acme-staging-v02.api.letsencrypt.org/directory";
 
 /**
  * The TLS half of the configuration.
@@ -103,6 +101,13 @@ export def struct Tls {
  * @field forgeBaseUrl {string} the forge API root, self-hosted
  * @field forgeToken {string} a service token, where the forge needs one
  * @field forgeHost {string} the hostname whose URLs this forge claims
+ * @field maxInFlight {int} how many requests are worked on at once; reads share
+ *     one parsed copy, but each large page is built per request, so this bounds memory
+ * @field respondTimeoutSeconds {int} how long a request may take before the
+ *     engine answers `503` itself; above the slowest publish (forge calls)
+ * @field sourceAuthority {string} how a publish proves push access to its
+ *     repository (7.1 route A): `login`, `service`, or "" to choose by whether
+ *     identity and forge are the same service (see `sourceAuthorityOf`)
  * @field trustpubAudience {string} the `aud` a CI token must carry (8.9)
  * @field trustpubProvider {string} which CI issuer is accepted
  * @field trustpubIssuer {string} the OIDC issuer, for anything self-hosted
@@ -128,6 +133,9 @@ export def struct Config {
     forgeBaseUrl as string,
     forgeToken as string,
     forgeHost as string,
+    sourceAuthority as string,
+    maxInFlight as int,
+    respondTimeoutSeconds as int,
     trustpubAudience as string,
     trustpubProvider as string,
     trustpubIssuer as string,
@@ -163,6 +171,9 @@ export func defaults() {
         forgeBaseUrl: "",
         forgeToken: "",
         forgeHost: "",
+        sourceAuthority: "",
+        maxInFlight: 32,
+        respondTimeoutSeconds: 120,
         trustpubAudience: "",
         trustpubProvider: "github-actions",
         trustpubIssuer: "",
@@ -228,8 +239,10 @@ func names(doc as toml.Value, pointer as string, fallback as list of string) {
     def n as int init toml.length($doc, $pointer);
     def i as int init 0;
     while ($i < $n) {
-        def one as string init strings.trim(toml.asString($doc, $pointer + "/" +
-            convert.toString($i)));
+        def one as string init strings.trim(toml.asString(
+            $doc,
+            $pointer + "/" +
+                convert.toString($i)));
         if (not ($one == "")) {
             $out[] = $one;
         }
@@ -258,6 +271,8 @@ export func applyToml(base as Config, text as string) {
     $out.canonicalUrl = trimSlash(str($doc, "/url", $out.canonicalUrl));
     $out.clientIpHeader = str($doc, "/clientIpHeader", $out.clientIpHeader);
     $out.addr = str($doc, "/addr", $out.addr);
+    $out.maxInFlight = count($doc, "/maxInFlight", $out.maxInFlight);
+    $out.respondTimeoutSeconds = count($doc, "/respondTimeout", $out.respondTimeoutSeconds);
     $out.dbPath = str($doc, "/db", $out.dbPath);
     $out.logFile = str($doc, "/log/file", $out.logFile);
     $out.logLevel = str($doc, "/log/level", $out.logLevel);
@@ -274,10 +289,9 @@ export func applyToml(base as Config, text as string) {
     $out.forgeBaseUrl = str($doc, "/forge/baseUrl", $out.forgeBaseUrl);
     $out.forgeToken = str($doc, "/forge/token", $out.forgeToken);
     $out.forgeHost = str($doc, "/forge/host", $out.forgeHost);
-    $out.trustpubAudience = str($doc, "/trustedPublishing/audience",
-        $out.trustpubAudience);
-    $out.trustpubProvider = str($doc, "/trustedPublishing/provider",
-        $out.trustpubProvider);
+    $out.sourceAuthority = str($doc, "/forge/sourceAuthority", $out.sourceAuthority);
+    $out.trustpubAudience = str($doc, "/trustedPublishing/audience", $out.trustpubAudience);
+    $out.trustpubProvider = str($doc, "/trustedPublishing/provider", $out.trustpubProvider);
     $out.trustpubIssuer = str($doc, "/trustedPublishing/issuer", $out.trustpubIssuer);
     $out.tls = Tls{
         enabled: flag($doc, "/tls/enabled", $out.tls.enabled),
@@ -362,8 +376,7 @@ func envList(env as map of string to string, key as string, fallback as list of 
 export func applyEnv(base as Config, env as map of string to string) {
     def out as Config init $base;
     $out.canonicalUrl = trimSlash(envStr($env, "REGISTRY_URL", $out.canonicalUrl));
-    $out.clientIpHeader = envStr($env, "REGISTRY_CLIENT_IP_HEADER",
-        $out.clientIpHeader);
+    $out.clientIpHeader = envStr($env, "REGISTRY_CLIENT_IP_HEADER", $out.clientIpHeader);
     $out.addr = envStr($env, "REGISTRY_ADDR", $out.addr);
     $out.dbPath = envStr($env, "REGISTRY_DB", $out.dbPath);
     $out.logFile = envStr($env, "REGISTRY_LOG", $out.logFile);
@@ -381,6 +394,7 @@ export func applyEnv(base as Config, env as map of string to string) {
     $out.forgeBaseUrl = envStr($env, "REGISTRY_FORGE_BASEURL", $out.forgeBaseUrl);
     $out.forgeToken = envStr($env, "REGISTRY_FORGE_TOKEN", $out.forgeToken);
     $out.forgeHost = envStr($env, "REGISTRY_FORGE_HOST", $out.forgeHost);
+    $out.sourceAuthority = envStr($env, "REGISTRY_SOURCE_AUTHORITY", $out.sourceAuthority);
     $out.trustpubAudience = envStr($env, "REGISTRY_TRUSTPUB_AUDIENCE", $out.trustpubAudience);
     $out.trustpubProvider = envStr($env, "REGISTRY_TRUSTPUB_PROVIDER", $out.trustpubProvider);
     $out.trustpubIssuer = envStr($env, "REGISTRY_TRUSTPUB_ISSUER", $out.trustpubIssuer);
@@ -395,17 +409,33 @@ export func applyEnv(base as Config, env as map of string to string) {
         renewBeforeDays: $out.tls.renewBeforeDays,
         agreeTos: envFlag($env, "REGISTRY_ACME_AGREE_TOS", $out.tls.agreeTos)
     };
-    if (maps.has($env, "REGISTRY_TLS_RENEW_BEFORE_DAYS")) {
-        def raw as string init strings.trim($env["REGISTRY_TLS_RENEW_BEFORE_DAYS"]);
-        if (not ($raw == "")) {
-            try {
-                $out.tls.renewBeforeDays = convert.toInt($raw);
-            } catch (err) { # lint-disable: L103
-                # a non-numeric value leaves the configured one in place
-            }
-        }
-    }
+    $out.tls.renewBeforeDays = envInt(
+        $env,
+        "REGISTRY_TLS_RENEW_BEFORE_DAYS",
+        $out.tls.renewBeforeDays);
+    $out.maxInFlight = envInt($env, "REGISTRY_MAX_IN_FLIGHT", $out.maxInFlight);
+    $out.respondTimeoutSeconds = envInt(
+        $env,
+        "REGISTRY_RESPOND_TIMEOUT",
+        $out.respondTimeoutSeconds);
     return $out;
+}
+
+# envInt reads a whole number from the environment. Unset, empty, or not a number
+# leaves the configured value in place, like every other setting here.
+func envInt(env as map of string to string, name as string, fallback as int) {
+    if (not maps.has($env, $name)) {
+        return $fallback;
+    }
+    def raw as string init strings.trim($env[$name]);
+    if ($raw == "") {
+        return $fallback;
+    }
+    try {
+        return convert.toInt($raw);
+    } catch (err) {
+        return $fallback;
+    }
 }
 
 /**
@@ -426,6 +456,11 @@ export func legacyNameOf(name as string) {
 }
 
 /**
+ * The shortest `tokenKey` accepted, in characters.
+ */
+export def const MIN_TOKEN_KEY as int init 32;
+
+/**
  * Why this configuration cannot be served, or "" when it can.
  *
  * Checked once at boot rather than discovered at the first request. A registry
@@ -435,6 +470,23 @@ export func legacyNameOf(name as string) {
  * @return {string} the complaint, or "" when the configuration is usable
  */
 export func problem(cfg as Config) {
+    if ($cfg.maxInFlight < 1) {
+        return "maxInFlight must be at least 1";
+    }
+    if ($cfg.respondTimeoutSeconds < 1) {
+        return "respondTimeout must be at least 1 second";
+    }
+    # The key signs every bearer token and seals every stored forge credential,
+    # so a short one is a guessable one. 32 characters is what the documented
+    # `openssl rand -hex 32` gives with room to spare (it gives 64).
+    if (not ($cfg.tokenKey == "") and len($cfg.tokenKey) < MIN_TOKEN_KEY) {
+        return "tokenKey must be at least " + convert.toString(MIN_TOKEN_KEY) +
+            " characters; generate one with: openssl rand -hex 32";
+    }
+    def authority as string init authorityProblem($cfg);
+    if (not ($authority == "")) {
+        return $authority;
+    }
     if (not $cfg.tls.enabled) {
         return "";
     }
@@ -447,6 +499,81 @@ export func problem(cfg as Config) {
     if (not $cfg.tls.agreeTos) {
         return "tls.enabled is set but tls.agreeTos is false; the CA's terms " +
             "must be accepted deliberately, not by default";
+    }
+    return "";
+}
+
+/**
+ * How a publish proves the caller may push to the repository it names
+ * (specification 7.1, route A), resolved from the configuration.
+ *
+ * - `login`: the identity provider's token, kept from the caller's own login,
+ *   asks the forge. Only possible when identity and forge are **one service**,
+ *   since otherwise the forge would not accept that token (12.5).
+ * - `service`: the registry's own forge token asks the forge about the caller,
+ *   by username. For a deployment where identity and forge are different
+ *   services sharing one user directory, so a username means the same account
+ *   on both - which is the operator's assertion to make, not something checked.
+ *
+ * Unset, it is `login` when identity and forge are the same service and
+ * `service` otherwise.
+ * @param cfg {Config} the merged configuration
+ * @return {string} `login` or `service`, or the unrecognised value as given
+ */
+export func sourceAuthorityOf(cfg as Config) {
+    def explicit as string init strings.lower(strings.trim($cfg.sourceAuthority));
+    if (not ($explicit == "")) {
+        return $explicit;
+    }
+    if (sameService($cfg)) {
+        return "login";
+    }
+    return "service";
+}
+
+# sameService reports whether the identity provider and the forge are one
+# service, which is when a token from the login is one the forge accepts. Forgejo
+# logs in through the gitea identity module, so the two names are one family;
+# self-hosted instances must also share a base URL, since two Gitea servers are
+# two services.
+func sameService(cfg as Config) {
+    def forgeFamily as string init strings.lower($cfg.forge);
+    if ($forgeFamily == "forgejo") {
+        $forgeFamily = "gitea";
+    }
+    if (not (strings.lower($cfg.identity) == $forgeFamily)) {
+        return false;
+    }
+    return rootOf($cfg.identityBaseUrl) == rootOf($cfg.forgeBaseUrl);
+}
+
+# rootOf is a base URL compared loosely: case and trailing slashes aside.
+func rootOf(url as string) {
+    def out as string init strings.lower(strings.trim($url));
+    while (strings.endsWith($out, "/")) {
+        $out = strings.substring($out, 0, len($out) - 1);
+    }
+    return $out;
+}
+
+# authorityProblem refuses a source-authority setting that cannot work. It only
+# matters once logins are on, since without them nothing can publish.
+func authorityProblem(cfg as Config) {
+    def mode as string init sourceAuthorityOf($cfg);
+    if (not ($mode == "login" or $mode == "service")) {
+        return "forge.sourceAuthority must be `login` or `service`, not `" + $mode + "`";
+    }
+    if (strings.trim($cfg.identityClientId) == "" or strings.trim($cfg.tokenKey) == "") {
+        return "";
+    }
+    if ($mode == "login" and not sameService($cfg)) {
+        return "forge.sourceAuthority is `login`, but the identity provider and the " +
+            "forge are different services, so the forge would not accept a login " +
+            "token; use `service` with a forge token";
+    }
+    if ($mode == "service" and strings.trim($cfg.forgeToken) == "") {
+        return "forge.sourceAuthority is `service`, which needs forge.token " +
+            "(REGISTRY_FORGE_TOKEN) to ask the forge who may push";
     }
     return "";
 }
@@ -550,5 +677,5 @@ export func readEnv(names as list of string) {
             $deprecated[] = $old + " (use " + $name + ")";
         }
     }
-    return EnvRead{ values: $values, deprecated: $deprecated };
+    return EnvRead{values: $values, deprecated: $deprecated};
 }

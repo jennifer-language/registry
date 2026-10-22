@@ -11,20 +11,28 @@ use json;
 
 func cfg() {
     return identity.Config{
-        name: "forgejo", baseUrl: "https://git.corp.test",
-        clientId: "registry", clientSecret: "", scopes: ""
+        name: "forgejo",
+        baseUrl: "https://git.corp.test",
+        clientId: "registry",
+        clientSecret: "",
+        scopes: ""
     };
 }
 
 func testEndpointsHangOffTheConfiguredBase() {
-    testing.assertEqual(endpointFor(cfg(), "device"),
+    testing.assertEqual(
+        endpointFor(cfg(), "device"),
         "https://git.corp.test/login/oauth/device/code");
     testing.assertEqual(endpointFor(cfg(), "user"), "https://git.corp.test/api/v1/user");
 }
 
 func throwsWithoutABase() {
     def blank as identity.Config init identity.Config{
-        name: "gitea", baseUrl: "", clientId: "x", clientSecret: "", scopes: ""
+        name: "gitea",
+        baseUrl: "",
+        clientId: "x",
+        clientSecret: "",
+        scopes: ""
     };
     endpointFor($blank, "user");
 }
@@ -37,14 +45,23 @@ func testAnUnsetBaseIsAnErrorNotAGuess() {
 
 func testSubjectCarriesTheProviderNameFromConfig() {
     # one module serves both Gitea and Forgejo, so the deployment names it
-    def s as identity.Subject init subjectFrom(cfg(),
-        json.decode('{"id":42,"login":"mplx"}'));
+    def s as identity.Subject init subjectFrom(cfg(), json.decode('{"id":42,"login":"mplx"}'));
     testing.assertEqual($s.provider, "forgejo");
     testing.assertEqual($s.id, "42");
     testing.assertEqual($s.login, "mplx");
 }
 
 func testPollUsesTheSharedVocabulary() {
-    testing.assertEqual(pollFrom(json.decode('{"error":"slow_down"}')).state,
+    testing.assertEqual(
+        pollFrom(json.decode('{"error":"slow_down"}')).state,
         identity.STATE_SLOWDOWN);
 }
+
+func testTheProviderCanBeBuilt() {
+    # every name in the vtable must exist: a missing one stopped the server from
+    # booting with this provider. Lint flags it since 0.24.0-dev+113 (L108); no
+    # test that calls a function directly can, only building the struct
+    def p as identity.Provider init provider();
+    testing.assertEqual(len($p.memberships(cfg(), "any-token")), 0);
+}
+

@@ -124,6 +124,53 @@ export func permissionFrom(doc as json.Value) {
 }
 
 /**
+ * The id of the account with exactly this username, from a `GET /users?username=`
+ * answer, or "" when there is none. Pure. GitLab usernames are matched without
+ * regard to case, and the search is exact rather than a prefix, so only an equal
+ * name is taken.
+ * @param doc {json.Value} the decoded response, a list of users
+ * @param username {string} the username asked about
+ * @return {string} the numeric id as text, or ""
+ */
+export func userIdFrom(doc as json.Value, username as string) {
+    if (not (json.typeOf($doc, "") == "list")) {
+        return "";
+    }
+    for (def i in 0..json.length($doc, "")) {
+        def at as string init "/" + convert.toString($i);
+        if (json.has($doc, $at + "/username") and json.has($doc, $at + "/id") and
+            strings.lower(json.asString($doc, $at + "/username")) ==
+            strings.lower($username)) {
+            return convert.toString(json.asInt($doc, $at + "/id"));
+        }
+    }
+    return "";
+}
+
+/**
+ * Read a project-membership payload (`GET /projects/:id/members/all/:user_id`)
+ * as a push permission. Pure. The `all` form includes access inherited from
+ * groups. Developer (30) is the lowest level that may push, and a membership
+ * that is not active grants nothing.
+ * @param doc {json.Value} the decoded response
+ * @return {forge.Permission} granted, refused, or unknown
+ */
+export func memberPermissionFrom(doc as json.Value) {
+    if (not json.has($doc, "/access_level")) {
+        return forge.unknown("the forge returned no access level for this account");
+    }
+    if (json.has($doc, "/state") and not (json.asString($doc, "/state") == "active")) {
+        return forge.refused("the account's membership is " + json.asString($doc, "/state"));
+    }
+    def level as int init json.asInt($doc, "/access_level");
+    if ($level >= LEVEL_DEVELOPER) {
+        return forge.granted("the account has access level " + convert.toString($level));
+    }
+    return forge.refused("access level " + convert.toString($level) +
+        " is below developer, which is the lowest that may push");
+}
+
+/**
  * Build a `Repo` from a GitLab project payload. Pure. The owning entity is the
  * project's namespace, which may be a user or a group.
  * @param doc {json.Value} the decoded response
@@ -146,7 +193,7 @@ export func repoFrom(doc as json.Value) {
     if (json.has($doc, "/path")) {
         $name = json.asString($doc, "/path");
     }
-    return forge.Repo{ id: $id, ownerId: $ownerId, owner: $owner, name: $name };
+    return forge.Repo{id: $id, ownerId: $ownerId, owner: $owner, name: $name};
 }
 
 /**
@@ -165,13 +212,17 @@ export func tagCommitFrom(doc as json.Value) {
 }
 
 func get(cfg as forge.Config, path as string, callerToken as string) {
+    return send($cfg, "GET", $path, $callerToken);
+}
+
+func send(cfg as forge.Config, method as string, path as string, callerToken as string) {
     def h as map of string to string init jsonHeaders();
     if (not ($callerToken == "")) {
         $h["Authorization"] = "Bearer " + $callerToken;
     } elseif (not ($cfg.apiToken == "")) {
         $h["Authorization"] = "Bearer " + $cfg.apiToken;
     }
-    return http.requestWith("GET", apiBase($cfg) + $path, $h, "", TIMEOUT_MS, MAX_BYTES);
+    return http.requestWith($method, apiBase($cfg) + $path, $h, "", TIMEOUT_MS, MAX_BYTES);
 }
 
 func handles(cfg as forge.Config, url as string) {
@@ -179,14 +230,18 @@ func handles(cfg as forge.Config, url as string) {
 }
 
 func resolveTag(cfg as forge.Config, url as string, tag as string) {
-    def res as http.Response init get($cfg,
-        "/projects/" + projectId($url) + "/repository/tags/" + $tag, "");
+    def res as http.Response init get(
+        $cfg,
+        "/projects/" + projectId($url) + "/repository/tags/" + $tag,
+        "");
     if (not ($res.status == 200)) {
         throw Error{
             kind: "forge",
             message: "could not resolve the tag " + $tag + ": the forge answered " +
                 convert.toString($res.status),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return tagCommitFrom(json.decode($res.body));
@@ -195,14 +250,19 @@ func resolveTag(cfg as forge.Config, url as string, tag as string) {
 func readFile(cfg as forge.Config, url as string, commit as string, path as string) {
     def raw as bytes init convert.bytesFromString($path, "utf-8");
     def encoded as string init encoding.toText($raw, "uri-percent");
-    def res as http.Response init get($cfg, "/projects/" + projectId($url) +
-        "/repository/files/" + $encoded + "/raw?ref=" + $commit, "");
+    def res as http.Response init get(
+        $cfg,
+        "/projects/" + projectId($url) +
+            "/repository/files/" + $encoded + "/raw?ref=" + $commit,
+        "");
     if (not ($res.status == 200)) {
         throw Error{
             kind: "forge",
             message: "could not read " + $path + " at " + $commit + ": the forge answered " +
                 convert.toString($res.status),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return $res.body;
@@ -215,14 +275,39 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
 func refExists(cfg as forge.Config, url as string, name as string) {
     def raw as bytes init convert.bytesFromString($name, "utf-8");
     def encoded as string init encoding.toText($raw, "uri-percent");
-    def branch as http.Response init get($cfg, "/projects/" + projectId($url) +
-        "/repository/branches/" + $encoded, "");
+    def branch as http.Response init get(
+        $cfg,
+        "/projects/" + projectId($url) +
+            "/repository/branches/" + $encoded,
+        "");
     if (forge.refPresence($branch.status)) {
         return true;
     }
-    def tag as http.Response init get($cfg, "/projects/" + projectId($url) +
-        "/repository/tags/" + $encoded, "");
+    def tag as http.Response init get(
+        $cfg,
+        "/projects/" + projectId($url) +
+            "/repository/tags/" + $encoded,
+        "");
     return forge.refPresence($tag.status);
+}
+
+# filePath is the files-API address of one path at one commit. The whole path is
+# a single segment there, so its slashes are escaped along with everything else.
+func filePath(url as string, commit as string, path as string) {
+    def raw as bytes init convert.bytesFromString($path, "utf-8");
+    return "/projects/" + projectId($url) + "/repository/files/" +
+        encoding.toText($raw, "uri-percent") + "?ref=" + $commit;
+}
+
+# fileExists asks the files API with a `HEAD`, which answers from the file's
+# metadata without sending its content, so the entry module's size does not
+# matter. GitLab's files API serves blobs only, so a directory named like the
+# entry module is a `404` here, exactly like a path that is not there; any other
+# failure throws through `refPresence` rather than reading as absence. (GitHub
+# and Gitea answer a directory with `200` too, which is why they read a listing.)
+func fileExists(cfg as forge.Config, url as string, commit as string, path as string) {
+    def res as http.Response init send($cfg, "HEAD", filePath($url, $commit, $path), "");
+    return forge.refPresence($res.status);
 }
 
 func permission(cfg as forge.Config, url as string, callerToken as string) {
@@ -237,6 +322,36 @@ func permission(cfg as forge.Config, url as string, callerToken as string) {
     return permissionFrom(json.decode($res.body));
 }
 
+# permissionFor asks, with the registry's own token, what a named account may do
+# in this project (12.5, the service-account route): the username is resolved to
+# an id, then the membership is read, inherited access included. Anything but a
+# stated access level is unknown, and unknown is never permission.
+func permissionFor(cfg as forge.Config, url as string, username as string) {
+    def problem as string init forge.askProblem($cfg, $username);
+    if (not ($problem == "")) {
+        return forge.unknown($problem);
+    }
+    def users as http.Response init get($cfg, "/users?username=" + $username, "");
+    if (not ($users.status == 200)) {
+        return forge.unknown("the forge answered " + convert.toString($users.status) +
+            " when asked for the account " + $username);
+    }
+    def uid as string init userIdFrom(json.decode($users.body), $username);
+    if ($uid == "") {
+        return forge.unknown("the forge has no account named " + $username);
+    }
+    def res as http.Response init get(
+        $cfg,
+        "/projects/" + projectId($url) +
+            "/members/all/" + $uid,
+        "");
+    if (not ($res.status == 200)) {
+        return forge.unknown("the forge answered " + convert.toString($res.status) +
+            " when asked what " + $username + " may do in this project");
+    }
+    return memberPermissionFrom(json.decode($res.body));
+}
+
 func repo(cfg as forge.Config, url as string) {
     def res as http.Response init get($cfg, "/projects/" + projectId($url), "");
     if (not ($res.status == 200)) {
@@ -244,7 +359,9 @@ func repo(cfg as forge.Config, url as string) {
             kind: "forge",
             message: "could not read the project: the forge answered " +
                 convert.toString($res.status),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return repoFrom(json.decode($res.body));
@@ -261,7 +378,9 @@ export func forge() {
         resolveTag: resolveTag,
         readFile: readFile,
         refExists: refExists,
+        fileExists: fileExists,
         permission: permission,
+        permissionFor: permissionFor,
         repo: repo
     };
 }

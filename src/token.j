@@ -88,9 +88,14 @@ export def struct Identity {
  * @param now {int} the current time (Unix seconds), passed in so this stays pure
  * @return {string} the compact JWT
  */
-export func mint(key as bytes, accountId as int, login as string,
-        orgs as map of string to string, checkedAt as int, ttl as int,
-        now as int) {
+export func mint(
+    key as bytes,
+    accountId as int,
+    login as string,
+    orgs as map of string to string,
+    checkedAt as int,
+    ttl as int,
+    now as int) {
     def claims as json.Value init json.map();
     # `sub` is the account id as text: a JWT subject is a string, and the id is
     # what ownership binds to.
@@ -109,15 +114,20 @@ export func mint(key as bytes, accountId as int, login as string,
 
 /**
  * Verify a bearer token and return who it authenticates. Rejects a bad
- * signature, a token signed with a different algorithm, and an expired one:
- * `jwt.verify` enforces `exp` itself.
+ * signature, a token signed with a different algorithm, an expired one, and one
+ * with no `exp` at all: `mint` always sets it, so a token without one was not
+ * minted here, and `jwt.verify` alone would accept it for ever.
  * @param key {bytes} the HMAC signing secret
  * @param token {string} the compact JWT
  * @return {Identity} the authenticated identity
  * @throws {Error} when the token is malformed, forged, or expired
  */
 export func verify(key as bytes, token as string) {
-    def claims as json.Value init jwt.verify($token, $key, ALG);
+    def claims as json.Value init jwt.verifyWith(
+        $token,
+        $key,
+        ALG,
+        jwt.Policy{iss: "", aud: "", requireExp: true});
     def orgs as map of string to string init {};
     if (json.has($claims, "/orgs")) {
         for (def name in json.keys($claims, "/orgs")) {

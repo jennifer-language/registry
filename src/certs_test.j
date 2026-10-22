@@ -80,8 +80,7 @@ func testADomainCannotEscapeTheCertificateDirectory() {
 }
 
 func testADomainIsFolded() {
-    testing.assertEqual(dirFor(tls(), "Registry.Example.COM"),
-        "data/tls/registry.example.com");
+    testing.assertEqual(dirFor(tls(), "Registry.Example.COM"), "data/tls/registry.example.com");
 }
 
 func testAChallengeTokenCannotEscapeItsDirectory() {
@@ -96,8 +95,7 @@ func testAnOrdinaryTokenSurvivesIntact() {
     # the filter must not mangle a real token, or the CA looks for a file that
     # is not there
     def token as string init "abc123-XYZ_token";
-    testing.assertEqual(challengePath(tls(), $token),
-        "data/acme-challenge/abc123-XYZ_token");
+    testing.assertEqual(challengePath(tls(), $token), "data/acme-challenge/abc123-XYZ_token");
 }
 
 func testATokenKeepsItsCase() {

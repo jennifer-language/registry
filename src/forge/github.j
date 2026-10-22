@@ -28,6 +28,7 @@
  */
 
 use json;
+use lists;
 use strings;
 use convert;
 import "http.j" as http;
@@ -110,7 +111,7 @@ export func repoFrom(doc as json.Value) {
     if (json.has($doc, "/id")) {
         $id = convert.toString(json.asInt($doc, "/id"));
     }
-    return forge.Repo{ id: $id, ownerId: $ownerId, owner: $owner, name: $name };
+    return forge.Repo{id: $id, ownerId: $ownerId, owner: $owner, name: $name};
 }
 
 /**
@@ -154,7 +155,9 @@ func resolveTag(cfg as forge.Config, url as string, tag as string) {
             kind: "forge",
             message: "could not resolve the tag " + $tag + ": the forge answered " +
                 convert.toString($res.status),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     def sha as string init refTargetFrom(json.decode($res.body));
@@ -177,14 +180,15 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
     }
     def target as string init apiBase($cfg) + repoPath($url) + "/contents/" + $path +
         "?ref=" + $commit;
-    def res as http.Response init http.requestWith("GET", $target, $h, "",
-        TIMEOUT_MS, MAX_BYTES);
+    def res as http.Response init http.requestWith("GET", $target, $h, "", TIMEOUT_MS, MAX_BYTES);
     if (not ($res.status == 200)) {
         throw Error{
             kind: "forge",
             message: "could not read " + $path + " at " + $commit + ": the forge answered " +
                 convert.toString($res.status),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return $res.body;
@@ -204,6 +208,23 @@ func refExists(cfg as forge.Config, url as string, name as string) {
     return forge.refPresence($tags.status);
 }
 
+# fileExists answers from a listing of the file's directory rather than from the
+# file: the entry module may be far larger than any cap worth setting on a read,
+# and a listing is a small JSON document whatever the files in it weigh. A
+# missing directory is a `404`, which is a provable "no"; any other failure
+# throws through `refPresence` rather than reading as absence.
+func fileExists(cfg as forge.Config, url as string, commit as string, path as string) {
+    def parts as list of string init forge.splitPath($path);
+    def res as http.Response init get(
+        $cfg,
+        repoPath($url) + "/contents/" + $parts[0] + "?ref=" + $commit,
+        "");
+    if (not forge.refPresence($res.status)) {
+        return false;
+    }
+    return lists.contains(forge.fileNames(json.decode($res.body), "file"), $parts[1]);
+}
+
 func permission(cfg as forge.Config, url as string, callerToken as string) {
     if ($callerToken == "" and $cfg.apiToken == "") {
         return forge.unknown("the registry holds no credential this forge accepts");
@@ -216,6 +237,25 @@ func permission(cfg as forge.Config, url as string, callerToken as string) {
     return permissionFrom(json.decode($res.body));
 }
 
+# permissionFor asks, with the registry's own token, what a named account may do
+# in this repository (12.5, the service-account route). Anything but a role the
+# forge states is unknown, and unknown is never permission.
+func permissionFor(cfg as forge.Config, url as string, username as string) {
+    def problem as string init forge.askProblem($cfg, $username);
+    if (not ($problem == "")) {
+        return forge.unknown($problem);
+    }
+    def res as http.Response init get(
+        $cfg,
+        repoPath($url) + "/collaborators/" + $username + "/permission",
+        "");
+    if (not ($res.status == 200)) {
+        return forge.unknown("the forge answered " + convert.toString($res.status) +
+            " when asked what " + $username + " may do in this repository");
+    }
+    return forge.collaboratorPermissionFrom(json.decode($res.body));
+}
+
 func repo(cfg as forge.Config, url as string) {
     def res as http.Response init get($cfg, repoPath($url), "");
     if (not ($res.status == 200)) {
@@ -223,7 +263,9 @@ func repo(cfg as forge.Config, url as string) {
             kind: "forge",
             message: "could not read the repository: the forge answered " +
                 convert.toString($res.status),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return repoFrom(json.decode($res.body));
@@ -240,7 +282,9 @@ export func forge() {
         resolveTag: resolveTag,
         readFile: readFile,
         refExists: refExists,
+        fileExists: fileExists,
         permission: permission,
+        permissionFor: permissionFor,
         repo: repo
     };
 }

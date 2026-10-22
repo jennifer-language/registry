@@ -62,7 +62,9 @@ func requireBase(cfg as identity.Config) {
         throw Error{
             kind: "identity",
             message: "the gitea identity provider needs a baseUrl; there is no hosted default",
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return strings.trim($cfg.baseUrl);
@@ -77,15 +79,9 @@ func requireBase(cfg as identity.Config) {
 export func endpointFor(cfg as identity.Config, which as string) {
     def base as string init requireBase($cfg);
     match ($which) {
-        when "device" {
-            return identity.endpoint($base, $base, "/login/oauth/device/code");
-        }
-        when "token" {
-            return identity.endpoint($base, $base, "/login/oauth/access_token");
-        }
-        when "authorize" {
-            return identity.endpoint($base, $base, "/login/oauth/authorize");
-        }
+        when "device" { return identity.endpoint($base, $base, "/login/oauth/device/code"); }
+        when "token" { return identity.endpoint($base, $base, "/login/oauth/access_token"); }
+        when "authorize" { return identity.endpoint($base, $base, "/login/oauth/authorize"); }
     }
     return identity.endpoint($base, $base, "/api/v1/user");
 }
@@ -114,7 +110,9 @@ export func subjectFrom(cfg as identity.Config, doc as json.Value) {
         throw Error{
             kind: "identity",
             message: "the instance returned an account with no id",
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     def login as string init "";
@@ -145,7 +143,9 @@ export func deviceFrom(doc as json.Value) {
         throw Error{
             kind: "identity",
             message: "device authorization refused: " + json.asString($doc, "/error"),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return identity.Device{
@@ -169,7 +169,7 @@ export func pollFrom(doc as json.Value) {
     }
     def state as string init identity.pollState($code);
     if (not ($state == identity.STATE_OK)) {
-        return identity.Poll{ state: $state, accessToken: "" };
+        return identity.Poll{state: $state, accessToken: ""};
     }
     return identity.Poll{
         state: identity.STATE_OK,
@@ -178,8 +178,13 @@ export func pollFrom(doc as json.Value) {
 }
 
 func post(url as string, body as string) {
-    def res as http.Response init http.requestWith("POST", $url, jsonHeaders(), $body,
-        TIMEOUT_MS, MAX_BYTES);
+    def res as http.Response init http.requestWith(
+        "POST",
+        $url,
+        jsonHeaders(),
+        $body,
+        TIMEOUT_MS,
+        MAX_BYTES);
     return json.decode($res.body);
 }
 
@@ -221,16 +226,31 @@ func exchange(cfg as identity.Config, code as string, verifier as string) {
 func subjectOf(cfg as identity.Config, accessToken as string) {
     def h as map of string to string init jsonHeaders();
     $h["Authorization"] = "Bearer " + $accessToken;
-    def res as http.Response init http.requestWith("GET", endpointFor($cfg, "user"), $h,
-        "", TIMEOUT_MS, MAX_BYTES);
+    def res as http.Response init http.requestWith(
+        "GET",
+        endpointFor($cfg, "user"),
+        $h,
+        "",
+        TIMEOUT_MS,
+        MAX_BYTES);
     if (not ($res.status == 200)) {
         throw Error{
             kind: "identity",
             message: "the instance rejected the token: " + convert.toString($res.status),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return subjectFrom($cfg, json.decode($res.body));
+}
+
+# membershipsOf reports no organisations. Organisation scopes are implemented for
+# GitHub only (8.7), and an empty answer makes an organisation scope unwritable
+# through this provider rather than writable by anybody.
+func membershipsOf(cfg as identity.Config, accessToken as string) {
+    def none as map of string to string init {};
+    return $none;
 }
 
 /**

@@ -14,7 +14,7 @@ use testing;
 use json;
 
 func cfg() {
-    return forge.Config{ name: "gitlab", baseUrl: "", apiToken: "", host: "" };
+    return forge.Config{name: "gitlab", baseUrl: "", apiToken: "", host: ""};
 }
 
 func doc(text as string) {
@@ -28,7 +28,8 @@ func testHandlesTheHostedInstance() {
 
 func testProjectIdEncodesNestedGroups() {
     # GitLab addresses a project by its URL-encoded path, not by segments
-    testing.assertEqual(projectId("https://gitlab.com/group/sub/project.git"),
+    testing.assertEqual(
+        projectId("https://gitlab.com/group/sub/project.git"),
         "group%2Fsub%2Fproject");
 }
 
@@ -37,16 +38,16 @@ func testProjectIdHandlesTheFlatCase() {
 }
 
 func testDeveloperMayPush() {
-    def p as forge.Permission init permissionFrom(
-        doc('{"permissions":{"project_access":{"access_level":30}}}'));
+    def body as string init '{"permissions":{"project_access":{"access_level":30}}}';
+    def p as forge.Permission init permissionFrom(doc($body));
     testing.assertTrue($p.known);
     testing.assertTrue($p.push);
 }
 
 func testReporterMayNot() {
     # 20 is reporter, below the developer threshold
-    def p as forge.Permission init permissionFrom(
-        doc('{"permissions":{"project_access":{"access_level":20}}}'));
+    def body as string init '{"permissions":{"project_access":{"access_level":20}}}';
+    def p as forge.Permission init permissionFrom(doc($body));
     testing.assertTrue($p.known);
     testing.assertFalse($p.push);
     testing.assertContains($p.reason, "below developer");
@@ -54,15 +55,16 @@ func testReporterMayNot() {
 
 func testInheritedGroupAccessCounts() {
     # a member may hold no direct project membership and still be able to push
-    def p as forge.Permission init permissionFrom(
-        doc('{"permissions":{"project_access":null,"group_access":{"access_level":40}}}'));
+    def body as string init '{"permissions":{"project_access":null,' +
+        '"group_access":{"access_level":40}}}';
+    def p as forge.Permission init permissionFrom(doc($body));
     testing.assertTrue($p.push);
 }
 
 func testTheHigherOfTheTwoDecides() {
-    def p as forge.Permission init permissionFrom(doc(
-        '{"permissions":{"project_access":{"access_level":10},' +
-        '"group_access":{"access_level":30}}}'));
+    def body as string init '{"permissions":{"project_access":{"access_level":10},' +
+        '"group_access":{"access_level":30}}}';
+    def p as forge.Permission init permissionFrom(doc($body));
     testing.assertTrue($p.push);
 }
 
@@ -78,8 +80,9 @@ func testAMissingPermissionsBlockIsUnknown() {
 }
 
 func testRepoUsesTheNamespaceAsOwner() {
-    def r as forge.Repo init repoFrom(doc(
-        '{"id":42,"path":"project","namespace":{"id":9,"full_path":"group/sub"}}'));
+    def body as string init '{"id":42,"path":"project",' +
+        '"namespace":{"id":9,"full_path":"group/sub"}}';
+    def r as forge.Repo init repoFrom(doc($body));
     testing.assertEqual($r.id, "42");
     testing.assertEqual($r.ownerId, "9");
     testing.assertEqual($r.owner, "group/sub");
@@ -89,4 +92,45 @@ func testRepoUsesTheNamespaceAsOwner() {
 func testTagCommitPrefersTheCommitId() {
     testing.assertEqual(tagCommitFrom(doc('{"commit":{"id":"abc"},"target":"xyz"}')), "abc");
     testing.assertEqual(tagCommitFrom(doc('{"target":"xyz"}')), "xyz");
+}
+
+# --- the service-account route (12.5) -----------------------------------------
+
+func testAUserIsFoundByExactUsername() {
+    def users as json.Value init doc('[{"id": 7, "username": "alice2"},' +
+        '{"id": 9, "username": "Alice"}]');
+    testing.assertEqual(userIdFrom($users, "alice"), "9");
+    testing.assertEqual(userIdFrom($users, "ali"), "");
+    testing.assertEqual(userIdFrom(doc('{"message": "403 Forbidden"}'), "alice"), "");
+}
+
+func testDeveloperAccessMayPush() {
+    def body as string init '{"id": 9, "access_level": 30, "state": "active"}';
+    def p as forge.Permission init memberPermissionFrom(doc($body));
+    testing.assertTrue($p.push);
+}
+
+func testReporterAccessMayNot() {
+    def body as string init '{"id": 9, "access_level": 20, "state": "active"}';
+    def p as forge.Permission init memberPermissionFrom(doc($body));
+    testing.assertTrue($p.known);
+    testing.assertFalse($p.push);
+}
+
+func testABlockedMembershipGrantsNothing() {
+    def body as string init '{"id": 9, "access_level": 50, "state": "blocked"}';
+    def p as forge.Permission init memberPermissionFrom(doc($body));
+    testing.assertFalse($p.push);
+}
+
+func testAMembershipWithoutALevelIsUnknown() {
+    testing.assertFalse(memberPermissionFrom(doc('{"id": 9}')).known);
+}
+
+func testAFileIsAskedAboutAsOneSegment() {
+    # the files API takes the whole path as one escaped segment, and the commit as
+    # the ref, so a branch moving later cannot change the answer
+    testing.assertEqual(
+        filePath("https://gitlab.com/acme/tool", "c0ffee", "src/tool.j"),
+        "/projects/acme%2Ftool/repository/files/src%2Ftool.j?ref=c0ffee");
 }

@@ -32,18 +32,19 @@ func testAnUnrecognisedErrorIsTerminal() {
 }
 
 func testEndpointUsesTheFallbackWhenUnset() {
-    testing.assertEqual(endpoint("", "https://github.com", "/login"),
-        "https://github.com/login");
+    testing.assertEqual(endpoint("", "https://github.com", "/login"), "https://github.com/login");
 }
 
 func testEndpointPrefersTheConfiguredBase() {
-    testing.assertEqual(endpoint("https://git.example.test", "https://github.com", "/login"),
+    testing.assertEqual(
+        endpoint("https://git.example.test", "https://github.com", "/login"),
         "https://git.example.test/login");
 }
 
 func testEndpointToleratesATrailingSlash() {
     # self-hosted instances differ only here, so this is where a whole class of
     # per-provider bug would otherwise live
-    testing.assertEqual(endpoint("https://git.example.test/", "https://x", "/login"),
+    testing.assertEqual(
+        endpoint("https://git.example.test/", "https://x", "/login"),
         "https://git.example.test/login");
 }

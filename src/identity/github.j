@@ -61,8 +61,13 @@ def const RETRY_DELAY_MS as int init 400;
 # Only 5xx is retried. A 401 or 403 is a real answer and repeating it would just
 # be a slower failure, and a louder one from the point of view of GitHub.
 func getRetrying(url as string, headers as map of string to string) {
-    def res as http.Response init http.requestWith("GET", $url, $headers, "",
-        TIMEOUT_MS, MAX_BYTES);
+    def res as http.Response init http.requestWith(
+        "GET",
+        $url,
+        $headers,
+        "",
+        TIMEOUT_MS,
+        MAX_BYTES);
     def attempt as int init 1;
     while ($res.status >= 500 and $attempt < RETRY_TRIES) {
         time.sleep(time.fromMilliseconds(RETRY_DELAY_MS * $attempt));
@@ -110,7 +115,9 @@ export func subjectFrom(doc as json.Value) {
         throw Error{
             kind: "identity",
             message: "GitHub returned an account with no id",
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     def login as string init "";
@@ -137,7 +144,9 @@ export func deviceFrom(doc as json.Value) {
         throw Error{
             kind: "identity",
             message: "device authorization refused: " + json.asString($doc, "/error"),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return identity.Device{
@@ -161,7 +170,7 @@ export func pollFrom(doc as json.Value) {
     }
     def state as string init identity.pollState($code);
     if (not ($state == identity.STATE_OK)) {
-        return identity.Poll{ state: $state, accessToken: "" };
+        return identity.Poll{state: $state, accessToken: ""};
     }
     return identity.Poll{
         state: identity.STATE_OK,
@@ -216,8 +225,8 @@ export func membershipsFrom(doc as json.Value) {
         }
         # Keyed by the folded login, because that is how a claim names it, and
         # valued by the id, because that is what ownership binds to.
-        $out[strings.lower(json.asString($doc, $at + "/organization/login"))] =
-            convert.toString(json.asInt($doc, $at + "/organization/id"));
+        def login as string init json.asString($doc, $at + "/organization/login");
+        $out[strings.lower($login)] = convert.toString(json.asInt($doc, $at + "/organization/id"));
     }
     return $out;
 }
@@ -230,9 +239,7 @@ export func membershipsFrom(doc as json.Value) {
  */
 export func endpointFor(cfg as identity.Config, which as string) {
     match ($which) {
-        when "device" {
-            return identity.endpoint($cfg.baseUrl, WEB_BASE, "/login/device/code");
-        }
+        when "device" { return identity.endpoint($cfg.baseUrl, WEB_BASE, "/login/device/code"); }
         when "token" {
             return identity.endpoint($cfg.baseUrl, WEB_BASE, "/login/oauth/access_token");
         }
@@ -241,7 +248,9 @@ export func endpointFor(cfg as identity.Config, which as string) {
         # `active` only, from the API rather than filtered here as well: fewer
         # rows over the wire, and the pure filter above still rejects anything
         # that slips through.
-        return identity.endpoint($cfg.baseUrl, API_BASE,
+        return identity.endpoint(
+            $cfg.baseUrl,
+            API_BASE,
             "/user/memberships/orgs?state=active&per_page=100");
     }
     return identity.endpoint($cfg.baseUrl, API_BASE, "/user");
@@ -261,8 +270,13 @@ export func scopesFor(cfg as identity.Config) {
 
 # post issues a form-urlencoded POST and returns the decoded JSON body.
 func post(url as string, body as string) {
-    def res as http.Response init http.requestWith("POST", $url, jsonHeaders(), $body,
-        TIMEOUT_MS, MAX_BYTES);
+    def res as http.Response init http.requestWith(
+        "POST",
+        $url,
+        jsonHeaders(),
+        $body,
+        TIMEOUT_MS,
+        MAX_BYTES);
     return json.decode($res.body);
 }
 
@@ -315,14 +329,18 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
                 convert.toString($res.status) + " after " +
                 convert.toString(RETRY_TRIES) + " attempts); the login can be " +
                 "retried once it recovers",
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     if (not ($res.status == 200)) {
         throw Error{
             kind: "identity",
             message: "GitHub rejected the token: " + convert.toString($res.status),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return subjectFrom(json.decode($res.body));

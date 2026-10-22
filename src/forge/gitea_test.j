@@ -11,8 +11,10 @@ use json;
 
 func cfg() {
     return forge.Config{
-        name: "gitea", baseUrl: "https://git.corp.test",
-        apiToken: "", host: "git.corp.test"
+        name: "gitea",
+        baseUrl: "https://git.corp.test",
+        apiToken: "",
+        host: "git.corp.test"
     };
 }
 
@@ -28,7 +30,10 @@ func testHandlesOnlyItsConfiguredHost() {
 func testAnInstanceWithNoHostClaimsNothing() {
     # guessing would let a self-hosted forge answer for a stranger's server
     def blank as forge.Config init forge.Config{
-        name: "gitea", baseUrl: "https://git.corp.test", apiToken: "", host: ""
+        name: "gitea",
+        baseUrl: "https://git.corp.test",
+        apiToken: "",
+        host: ""
     };
     testing.assertFalse(handlesUrl($blank, "https://git.corp.test/acme/deck.git"));
 }
@@ -53,8 +58,8 @@ func testTagFallsBackToId() {
 }
 
 func testRepoCarriesTheIds() {
-    def r as forge.Repo init repoFrom(
-        doc('{"id":7,"name":"deck","owner":{"id":3,"login":"acme"}}'));
+    def body as string init '{"id":7,"name":"deck","owner":{"id":3,"login":"acme"}}';
+    def r as forge.Repo init repoFrom(doc($body));
     testing.assertEqual($r.id, "7");
     testing.assertEqual($r.ownerId, "3");
 }

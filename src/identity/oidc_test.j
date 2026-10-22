@@ -15,8 +15,11 @@ use json;
 
 func cfg() {
     return identity.Config{
-        name: "authelia", baseUrl: "https://auth.corp.test",
-        clientId: "registry", clientSecret: "", scopes: ""
+        name: "authelia",
+        baseUrl: "https://auth.corp.test",
+        clientId: "registry",
+        clientSecret: "",
+        scopes: ""
     };
 }
 
@@ -38,12 +41,14 @@ func withoutDevice() {
 }
 
 func testDiscoveryUrlIsTheStandardPath() {
-    testing.assertEqual(discoveryUrl(cfg()),
+    testing.assertEqual(
+        discoveryUrl(cfg()),
         "https://auth.corp.test/.well-known/openid-configuration");
 }
 
 func testEndpointsComeFromTheDocument() {
-    testing.assertEqual(endpointFrom(withDevice(), "token_endpoint"),
+    testing.assertEqual(
+        endpointFrom(withDevice(), "token_endpoint"),
         "https://auth.corp.test/api/oidc/token");
     testing.assertEqual(endpointFrom(withDevice(), "not_advertised"), "");
 }
@@ -55,7 +60,8 @@ func testFlowIsTakenFromTheProviderNotAssumed() {
 }
 
 func testSubjectBindsToTheSubClaim() {
-    def s as identity.Subject init subjectFrom(cfg(),
+    def s as identity.Subject init subjectFrom(
+        cfg(),
         doc('{"sub":"a1b2c3","preferred_username":"mplx"}'));
     testing.assertEqual($s.provider, "authelia");
     # a sub is an opaque string, not a number
@@ -78,7 +84,15 @@ func testAPayloadWithoutSubIsRejected() {
 }
 
 func testPollUsesTheSharedVocabulary() {
-    testing.assertEqual(pollFrom(doc('{"error":"expired_token"}')).state,
-        identity.STATE_EXPIRED);
+    testing.assertEqual(pollFrom(doc('{"error":"expired_token"}')).state, identity.STATE_EXPIRED);
     testing.assertEqual(pollFrom(doc('{"access_token":"t"}')).accessToken, "t");
 }
+
+func testTheProviderCanBeBuilt() {
+    # every name in the vtable must exist: a missing one stopped the server from
+    # booting with this provider. Lint flags it since 0.24.0-dev+113 (L108); no
+    # test that calls a function directly can, only building the struct
+    def p as identity.Provider init provider();
+    testing.assertEqual(len($p.memberships(cfg(), "any-token")), 0);
+}
+

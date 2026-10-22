@@ -28,6 +28,7 @@ clientId = "file-client"
 
 [forge]
 provider = "gitlab"
+token = "file-forge-token"
 
 [tls]
 enabled = true
@@ -122,7 +123,7 @@ func testTheEnvironmentOverridesTheFile() {
 
 func testAnEmptyVariableDoesNotBlankASetting() {
     # a stray empty value in a compose file must not silently erase configuration
-    def env as map of string to string init { "REGISTRY_ADDR": "", "REGISTRY_DB": "   " };
+    def env as map of string to string init {"REGISTRY_ADDR": "", "REGISTRY_DB": "   "};
     def c as Config init applyEnv(applyToml(defaults(), sample()), $env);
     testing.assertEqual($c.addr, ":9000");
     testing.assertEqual($c.dbPath, "/srv/registry.json");
@@ -131,37 +132,37 @@ func testAnEmptyVariableDoesNotBlankASetting() {
 func testABooleanCanBeTurnedOffFromTheEnvironment() {
     # the exception to the rule above: "0" has to be able to disable something
     # the file enabled, so booleans parse rather than test for emptiness
-    def env as map of string to string init { "REGISTRY_TLS": "0" };
+    def env as map of string to string init {"REGISTRY_TLS": "0"};
     testing.assertFalse(applyEnv(applyToml(defaults(), sample()), $env).tls.enabled);
-    def on as map of string to string init { "REGISTRY_TLS": "true" };
+    def on as map of string to string init {"REGISTRY_TLS": "true"};
     testing.assertTrue(applyEnv(defaults(), $on).tls.enabled);
 }
 
 func testBooleanSpellings() {
     def base as bool init false;
     for (def yes in ["1", "true", "TRUE", "yes", "on"]) {
-        def env as map of string to string init { "K": $yes };
+        def env as map of string to string init {"K": $yes};
         testing.assertTrue(envFlag($env, "K", $base));
     }
     for (def no in ["0", "false", "no", "off"]) {
-        def env as map of string to string init { "K": $no };
+        def env as map of string to string init {"K": $no};
         testing.assertFalse(envFlag($env, "K", true));
     }
 }
 
 func testAnUnrecognisedBooleanKeepsTheConfiguredValue() {
     # reading "maybe" as "no" would quietly disable TLS
-    def env as map of string to string init { "K": "perhaps" };
+    def env as map of string to string init {"K": "perhaps"};
     testing.assertTrue(envFlag($env, "K", true));
     testing.assertFalse(envFlag($env, "K", false));
 }
 
 func testDomainsFromTheEnvironment() {
-    def commas as map of string to string init { "REGISTRY_TLS_DOMAINS": "a.test, b.test" };
+    def commas as map of string to string init {"REGISTRY_TLS_DOMAINS": "a.test, b.test"};
     def c as Config init applyEnv(defaults(), $commas);
     testing.assertEqual(len($c.tls.domains), 2);
     testing.assertEqual($c.tls.domains[1], "b.test");
-    def spaces as map of string to string init { "REGISTRY_TLS_DOMAINS": "a.test b.test" };
+    def spaces as map of string to string init {"REGISTRY_TLS_DOMAINS": "a.test b.test"};
     testing.assertEqual(len(applyEnv(defaults(), $spaces).tls.domains), 2);
 }
 
@@ -169,25 +170,99 @@ func testDomainsFromTheEnvironment() {
 
 func testAUsableConfigurationHasNoProblem() {
     testing.assertEqual(problem(defaults()), "");
-    testing.assertEqual(problem(applyToml(defaults(), sample())), "");
+    # the sample's key is a placeholder, too short to serve with
+    def c as Config init applyToml(defaults(), sample());
+    $c.tokenKey = strings.repeat("k", 32);
+    testing.assertEqual(problem($c), "");
+}
+
+# --- source authority (7.1 route A) -------------------------------------------
+
+# loginsOn is a configuration that accepts logins, so the source-authority rules
+# apply to it.
+func loginsOn(identity as string, forge as string) {
+    def c as Config init defaults();
+    $c.identity = $identity;
+    $c.forge = $forge;
+    $c.identityClientId = "client";
+    $c.tokenKey = "0123456789abcdef0123456789abcdef";
+    return $c;
+}
+
+func testOneServiceDefaultsToTheLoginToken() {
+    testing.assertEqual(sourceAuthorityOf(loginsOn("github", "github")), "login");
+    # Forgejo logs in through the gitea identity module
+    testing.assertEqual(sourceAuthorityOf(loginsOn("gitea", "forgejo")), "login");
+    testing.assertEqual(problem(loginsOn("github", "github")), "");
+}
+
+func testTwoServicesDefaultToTheServiceAccount() {
+    testing.assertEqual(sourceAuthorityOf(loginsOn("oidc", "gitea")), "service");
+    # two self-hosted instances of one forge are two services
+    def two as Config init loginsOn("gitea", "gitea");
+    $two.identityBaseUrl = "https://login.example.com/";
+    $two.forgeBaseUrl = "https://git.example.com";
+    testing.assertEqual(sourceAuthorityOf($two), "service");
+    $two.forgeBaseUrl = "https://LOGIN.example.com";
+    testing.assertEqual(sourceAuthorityOf($two), "login");
+}
+
+func testAServiceAccountNeedsAToken() {
+    testing.assertContains(problem(loginsOn("oidc", "gitea")), "forge.token");
+    def withToken as Config init loginsOn("oidc", "gitea");
+    $withToken.forgeToken = "svc";
+    testing.assertEqual(problem($withToken), "");
+}
+
+func testALoginTokenCannotBeAskedOfAnotherForge() {
+    def c as Config init loginsOn("oidc", "gitea");
+    $c.sourceAuthority = "login";
+    testing.assertContains(problem($c), "different services");
+}
+
+func testAnUnknownSourceAuthorityIsRefused() {
+    def c as Config init defaults();
+    $c.sourceAuthority = "trust-me";
+    testing.assertContains(problem($c), "`login` or `service`");
+}
+
+func testSourceAuthorityReadsFileAndEnvironment() {
+    def file as Config init applyToml(defaults(), '[forge]
+sourceAuthority = "service"
+');
+    testing.assertEqual($file.sourceAuthority, "service");
+    def env as map of string to string init {"REGISTRY_SOURCE_AUTHORITY": "login"};
+    testing.assertEqual(applyEnv($file, $env).sourceAuthority, "login");
+}
+
+func testWithoutLoginsNothingIsRequired() {
+    # a read-only registry publishes nothing, so it needs no forge credential
+    def c as Config init defaults();
+    $c.identity = "oidc";
+    $c.forge = "gitea";
+    testing.assertEqual(problem($c), "");
 }
 
 func testTlsWithoutADomainIsRefused() {
-    def env as map of string to string init { "REGISTRY_TLS": "1" };
+    def env as map of string to string init {"REGISTRY_TLS": "1"};
     def c as Config init applyEnv(defaults(), $env);
     testing.assertContains(problem($c), "no tls.domains");
 }
 
 func testTlsWithoutAnEmailIsRefused() {
     def env as map of string to string init {
-        "REGISTRY_TLS": "1", "REGISTRY_TLS_DOMAINS": "a.test", "REGISTRY_ACME_AGREE_TOS": "1"
+        "REGISTRY_TLS": "1",
+        "REGISTRY_TLS_DOMAINS": "a.test",
+        "REGISTRY_ACME_AGREE_TOS": "1"
     };
     testing.assertContains(problem(applyEnv(defaults(), $env)), "tls.email");
 }
 
 func testTheTermsMustBeAcceptedDeliberately() {
     def env as map of string to string init {
-        "REGISTRY_TLS": "1", "REGISTRY_TLS_DOMAINS": "a.test", "REGISTRY_TLS_EMAIL": "o@a.test"
+        "REGISTRY_TLS": "1",
+        "REGISTRY_TLS_DOMAINS": "a.test",
+        "REGISTRY_TLS_EMAIL": "o@a.test"
     };
     testing.assertContains(problem(applyEnv(defaults(), $env)), "agreeTos");
 }
@@ -216,18 +291,16 @@ func testSomethingElseHasNoLegacyName() {
 func testTheCanonicalUrlLosesATrailingSlash() {
     # a client records this string to say where a deck came from; two spellings
     # of one registry would read as two registries
-    def env as map of string to string init {
-        "REGISTRY_URL": "https://registry.jennifer-lang.dev/"
-    };
-    testing.assertEqual(applyEnv(defaults(), $env).canonicalUrl,
+    def env as map of string to string init {"REGISTRY_URL": "https://registry.jennifer-lang.dev/"};
+    testing.assertEqual(
+        applyEnv(defaults(), $env).canonicalUrl,
         "https://registry.jennifer-lang.dev");
 }
 
 func testTheCanonicalUrlComesFromEitherSource() {
-    def fromFile as Config init applyToml(defaults(),
-        'url = "https://from-file.example/"' + "\n");
+    def fromFile as Config init applyToml(defaults(), 'url = "https://from-file.example/"' + "\n");
     testing.assertEqual($fromFile.canonicalUrl, "https://from-file.example");
-    def env as map of string to string init { "REGISTRY_URL": "https://from-env.example" };
+    def env as map of string to string init {"REGISTRY_URL": "https://from-env.example"};
     testing.assertEqual(applyEnv($fromFile, $env).canonicalUrl, "https://from-env.example");
 }
 
@@ -239,9 +312,7 @@ func testTheClientIpHeaderIsOptInAndOff() {
     # reading a forwarded header unconditionally would let any caller write its
     # own address into the audit log
     testing.assertEqual(defaults().clientIpHeader, "");
-    def env as map of string to string init {
-        "REGISTRY_CLIENT_IP_HEADER": "CF-Connecting-IP"
-    };
+    def env as map of string to string init {"REGISTRY_CLIENT_IP_HEADER": "CF-Connecting-IP"};
     testing.assertEqual(applyEnv(defaults(), $env).clientIpHeader, "CF-Connecting-IP");
 }
 
@@ -251,8 +322,44 @@ func testTheBannerOnlyInventsAHostWhenThereIsNone() {
     testing.assertEqual(displayUrl("http", ":8080"), "http://localhost:8080");
     # but an address that already names a host must keep it: prefixing produced
     # "localhost127.0.0.1:8080", which is not a URL and lies about the binding
-    testing.assertEqual(displayUrl("http", "127.0.0.1:8080"),
-        "http://127.0.0.1:8080");
-    testing.assertEqual(displayUrl("https", "0.0.0.0:8443"),
-        "https://0.0.0.0:8443");
+    testing.assertEqual(displayUrl("http", "127.0.0.1:8080"), "http://127.0.0.1:8080");
+    testing.assertEqual(displayUrl("https", "0.0.0.0:8443"), "https://0.0.0.0:8443");
+}
+
+func testTheInFlightLimitIsASetting() {
+    testing.assertEqual(defaults().maxInFlight, 32);
+    def file as Config init applyToml(defaults(), 'maxInFlight = 4
+');
+    testing.assertEqual($file.maxInFlight, 4);
+    def env as map of string to string init {"REGISTRY_MAX_IN_FLIGHT": "2"};
+    testing.assertEqual(applyEnv($file, $env).maxInFlight, 2);
+    def junk as map of string to string init {"REGISTRY_MAX_IN_FLIGHT": "lots"};
+    testing.assertEqual(applyEnv($file, $junk).maxInFlight, 4);
+}
+
+func testTheRespondTimeoutIsASetting() {
+    # above the slowest publish: about nine forge calls of up to 10 s each
+    testing.assertEqual(defaults().respondTimeoutSeconds, 120);
+    def file as Config init applyToml(defaults(), 'respondTimeout = 300
+');
+    testing.assertEqual($file.respondTimeoutSeconds, 300);
+    def env as map of string to string init {"REGISTRY_RESPOND_TIMEOUT": "90"};
+    testing.assertEqual(applyEnv($file, $env).respondTimeoutSeconds, 90);
+    def c as Config init defaults();
+    $c.respondTimeoutSeconds = 0;
+    testing.assertContains(problem($c), "respondTimeout");
+}
+
+func testAnInFlightLimitBelowOneIsRefused() {
+    def c as Config init defaults();
+    $c.maxInFlight = 0;
+    testing.assertContains(problem($c), "maxInFlight");
+}
+
+func testAShortTokenKeyIsRefusedAtBoot() {
+    def c as Config init loginsOn("github", "github");
+    $c.tokenKey = "secret";
+    testing.assertContains(problem($c), "at least 32");
+    $c.tokenKey = strings.repeat("k", 32);
+    testing.assertEqual(problem($c), "");
 }

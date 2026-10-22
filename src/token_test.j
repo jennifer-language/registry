@@ -93,6 +93,19 @@ func testExpiryIsEnforced() {
     testing.assertTrue($threw);
 }
 
+# throwsOnNoExpiry signs, with the right key, a token that never expires, the
+# kind a bug in minting or a leaked key would produce.
+func throwsOnNoExpiry() {
+    def claims as json.Value init json.map();
+    $claims = json.set($claims, "/sub", convert.toString(ACCOUNT));
+    $claims = json.set($claims, "/login", "alice");
+    verify(key(), jwt.sign($claims, key(), ALG));
+}
+
+func testATokenWithoutExpiryIsRejected() {
+    testing.assertThrows("throwsOnNoExpiry", "value");
+}
+
 # --- refresh tokens ---------------------------------------------------------
 
 func testRefreshTokensAreUniqueAndLongEnough() {

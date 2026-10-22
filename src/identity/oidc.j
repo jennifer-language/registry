@@ -72,7 +72,9 @@ func requireBase(cfg as identity.Config) {
         throw Error{
             kind: "identity",
             message: "the oidc provider needs a baseUrl to discover endpoints from",
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return strings.trim($cfg.baseUrl);
@@ -133,7 +135,9 @@ export func subjectFrom(cfg as identity.Config, doc as json.Value) {
         throw Error{
             kind: "identity",
             message: "the provider returned no `sub` claim, which OIDC requires",
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     def login as string init "";
@@ -164,7 +168,9 @@ export func deviceFrom(doc as json.Value) {
         throw Error{
             kind: "identity",
             message: "device authorization refused: " + json.asString($doc, "/error"),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     # RFC 8628 names it verification_uri; some providers also send
@@ -194,7 +200,7 @@ export func pollFrom(doc as json.Value) {
     }
     def state as string init identity.pollState($code);
     if (not ($state == identity.STATE_OK)) {
-        return identity.Poll{ state: $state, accessToken: "" };
+        return identity.Poll{state: $state, accessToken: ""};
     }
     return identity.Poll{
         state: identity.STATE_OK,
@@ -211,14 +217,24 @@ func scopesFor(cfg as identity.Config) {
 
 # metadata fetches and decodes the provider's discovery document.
 func metadata(cfg as identity.Config) {
-    def res as http.Response init http.requestWith("GET", discoveryUrl($cfg), jsonHeaders(),
-        "", TIMEOUT_MS, MAX_BYTES);
+    def res as http.Response init http.requestWith(
+        "GET",
+        discoveryUrl($cfg),
+        jsonHeaders(),
+        "",
+        TIMEOUT_MS,
+        MAX_BYTES);
     return json.decode($res.body);
 }
 
 func post(url as string, body as string) {
-    def res as http.Response init http.requestWith("POST", $url, jsonHeaders(), $body,
-        TIMEOUT_MS, MAX_BYTES);
+    def res as http.Response init http.requestWith(
+        "POST",
+        $url,
+        jsonHeaders(),
+        $body,
+        TIMEOUT_MS,
+        MAX_BYTES);
     return json.decode($res.body);
 }
 
@@ -232,7 +248,9 @@ func start(cfg as identity.Config) {
         throw Error{
             kind: "identity",
             message: "this provider does not offer the device grant; use the authcode flow",
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     def body as string init formField("client_id", $cfg.clientId) + "&" +
@@ -270,16 +288,25 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
     def url as string init endpointFrom(metadata($cfg), "userinfo_endpoint");
     def h as map of string to string init jsonHeaders();
     $h["Authorization"] = "Bearer " + $accessToken;
-    def res as http.Response init http.requestWith("GET", $url, $h, "",
-        TIMEOUT_MS, MAX_BYTES);
+    def res as http.Response init http.requestWith("GET", $url, $h, "", TIMEOUT_MS, MAX_BYTES);
     if (not ($res.status == 200)) {
         throw Error{
             kind: "identity",
             message: "the provider rejected the token: " + convert.toString($res.status),
-            file: "", line: 0, col: 0
+            file: "",
+            line: 0,
+            col: 0
         };
     }
     return subjectFrom($cfg, json.decode($res.body));
+}
+
+# membershipsOf reports no organisations. Organisation scopes are implemented for
+# GitHub only (8.7), and an empty answer makes an organisation scope unwritable
+# through this provider rather than writable by anybody.
+func membershipsOf(cfg as identity.Config, accessToken as string) {
+    def none as map of string to string init {};
+    return $none;
 }
 
 /**

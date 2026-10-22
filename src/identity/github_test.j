@@ -11,7 +11,11 @@ use json;
 
 func cfg() {
     return identity.Config{
-        name: "github", baseUrl: "", clientId: "Iv1.abc", clientSecret: "", scopes: ""
+        name: "github",
+        baseUrl: "",
+        clientId: "Iv1.abc",
+        clientSecret: "",
+        scopes: ""
     };
 }
 
@@ -36,8 +40,7 @@ func testAnAccountWithNoIdIsRejected() {
 }
 
 func testDeviceCarriesTheCodesAndDefaults() {
-    def d as identity.Device init deviceFrom(doc(
-        '{"device_code":"dc","user_code":"WXYZ-1234",' +
+    def d as identity.Device init deviceFrom(doc('{"device_code":"dc","user_code":"WXYZ-1234",' +
         '"verification_uri":"https://github.com/login/device"}'));
     testing.assertEqual($d.userCode, "WXYZ-1234");
     # RFC 8628 defaults when the provider omits them
@@ -54,10 +57,10 @@ func testARefusedAuthorizationThrows() {
 }
 
 func testPollMapsThroughTheSharedVocabulary() {
-    testing.assertEqual(pollFrom(doc('{"error":"authorization_pending"}')).state,
+    testing.assertEqual(
+        pollFrom(doc('{"error":"authorization_pending"}')).state,
         identity.STATE_PENDING);
-    testing.assertEqual(pollFrom(doc('{"error":"slow_down"}')).state,
-        identity.STATE_SLOWDOWN);
+    testing.assertEqual(pollFrom(doc('{"error":"slow_down"}')).state, identity.STATE_SLOWDOWN);
     def ok as identity.Poll init pollFrom(doc('{"access_token":"gho_x"}'));
     testing.assertEqual($ok.state, identity.STATE_OK);
     testing.assertEqual($ok.accessToken, "gho_x");
@@ -68,24 +71,29 @@ func testAFailedPollCarriesNoToken() {
 }
 
 func testHostedEndpoints() {
-    testing.assertEqual(endpointFor(cfg(), "device"),
-        "https://github.com/login/device/code");
+    testing.assertEqual(endpointFor(cfg(), "device"), "https://github.com/login/device/code");
     testing.assertEqual(endpointFor(cfg(), "user"), "https://api.github.com/user");
 }
 
 func testEnterpriseOverridesTheBase() {
     def ent as identity.Config init identity.Config{
-        name: "github", baseUrl: "https://gh.corp.test",
-        clientId: "x", clientSecret: "", scopes: ""
+        name: "github",
+        baseUrl: "https://gh.corp.test",
+        clientId: "x",
+        clientSecret: "",
+        scopes: ""
     };
-    testing.assertEqual(endpointFor($ent, "device"),
-        "https://gh.corp.test/login/device/code");
+    testing.assertEqual(endpointFor($ent, "device"), "https://gh.corp.test/login/device/code");
 }
 
 func testScopesDefaultButAreOverridable() {
     testing.assertContains(scopesFor(cfg()), "read:user");
     def custom as identity.Config init identity.Config{
-        name: "github", baseUrl: "", clientId: "x", clientSecret: "", scopes: "read:user"
+        name: "github",
+        baseUrl: "",
+        clientId: "x",
+        clientSecret: "",
+        scopes: "read:user"
     };
     testing.assertEqual(scopesFor($custom), "read:user");
 }
@@ -108,8 +116,7 @@ func membershipNamed(state as string, role as string, orgId as int, login as str
 }
 
 func testAnActiveMemberCounts() {
-    def out as map of string to string init membershipsFrom(
-        membershipDoc("active", "member", 42));
+    def out as map of string to string init membershipsFrom(membershipDoc("active", "member", 42));
     testing.assertEqual(len($out), 1);
     # keyed by the folded login, because that is how a claim names it, and valued
     # by the id, because that is what ownership binds to
@@ -139,10 +146,10 @@ func testTheOrgIdIsReadAsText() {
 
 func testTheLoginIsFolded() {
     # a claim arrives folded, so the key has to be too or the lookup misses
-    testing.assertEqual(len(membershipsFrom(membershipNamed("active", "member", 7,
-        "Viverto"))), 1);
-    testing.assertEqual(membershipsFrom(membershipNamed("active", "member", 7,
-        "Viverto"))["viverto"], "7");
+    testing.assertEqual(len(membershipsFrom(membershipNamed("active", "member", 7, "Viverto"))), 1);
+    testing.assertEqual(
+        membershipsFrom(membershipNamed("active", "member", 7, "Viverto"))["viverto"],
+        "7");
 }
 
 func testAnOrganisationWithoutALoginIsSkipped() {
@@ -160,7 +167,9 @@ func testAMalformedPayloadYieldsNothing() {
     # fail closed: an unreadable answer must not authorise anything
     testing.assertEqual(len(membershipsFrom(json.map())), 0);
     testing.assertEqual(len(membershipsFrom(json.list())), 0);
-    def noOrg as json.Value init json.append(json.list(), "",
+    def noOrg as json.Value init json.append(
+        json.list(),
+        "",
         json.set(json.map(), "/state", "active"));
     testing.assertEqual(len(membershipsFrom($noOrg)), 0);
 }

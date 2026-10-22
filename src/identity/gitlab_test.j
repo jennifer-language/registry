@@ -11,14 +11,21 @@ use json;
 
 func hosted() {
     return identity.Config{
-        name: "gitlab", baseUrl: "", clientId: "app", clientSecret: "", scopes: ""
+        name: "gitlab",
+        baseUrl: "",
+        clientId: "app",
+        clientSecret: "",
+        scopes: ""
     };
 }
 
 func selfHosted() {
     return identity.Config{
-        name: "gitlab", baseUrl: "https://gl.corp.test/",
-        clientId: "app", clientSecret: "", scopes: ""
+        name: "gitlab",
+        baseUrl: "https://gl.corp.test/",
+        clientId: "app",
+        clientSecret: "",
+        scopes: ""
     };
 }
 
@@ -28,16 +35,13 @@ func testHostedFallsBackToGitlabCom() {
 
 func testSelfHostedDiffersOnlyInTheBase() {
     # the reason there is one module rather than two
-    testing.assertEqual(endpointFor(selfHosted(), "user"),
-        "https://gl.corp.test/api/v4/user");
-    testing.assertEqual(endpointFor(selfHosted(), "token"),
-        "https://gl.corp.test/oauth/token");
+    testing.assertEqual(endpointFor(selfHosted(), "user"), "https://gl.corp.test/api/v4/user");
+    testing.assertEqual(endpointFor(selfHosted(), "token"), "https://gl.corp.test/oauth/token");
 }
 
 func testSubjectReadsGitlabsUsernameField() {
     # GitLab calls it `username`, where the GitHub-shaped forges say `login`
-    def s as identity.Subject init subjectFrom(hosted(),
-        json.decode('{"id":7,"username":"mplx"}'));
+    def s as identity.Subject init subjectFrom(hosted(), json.decode('{"id":7,"username":"mplx"}'));
     testing.assertEqual($s.id, "7");
     testing.assertEqual($s.login, "mplx");
 }
@@ -46,3 +50,12 @@ func testScopeDefaultUsesGitlabsSpelling() {
     # read_user, with an underscore, not read:user
     testing.assertEqual(scopesFor(hosted()), "read_user");
 }
+
+func testTheProviderCanBeBuilt() {
+    # every name in the vtable must exist: a missing one stopped the server from
+    # booting with this provider. Lint flags it since 0.24.0-dev+113 (L108); no
+    # test that calls a function directly can, only building the struct
+    def p as identity.Provider init provider();
+    testing.assertEqual(len($p.memberships(hosted(), "any-token")), 0);
+}
+
