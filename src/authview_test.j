@@ -16,6 +16,7 @@ import "./identity/github.j" as githubIdentity;
 def const ACCOUNT as int init 1234567;
 def const TOKEN_TTL as int init 3600;
 def const REFRESH_TTL as int init 1209600;
+def const ORG_MAX_AGE as int init 604800;
 
 func emptyDb() {
     return store.open("/no/such/jvc/auth/missing.json");
@@ -45,7 +46,7 @@ func config() {
         signingKey: convert.bytesFromString("a signing secret nobody else has", "utf-8"),
         tokenTtl: TOKEN_TTL,
         refreshTtl: REFRESH_TTL,
-        keepForgeToken: true
+        orgMaxAge: ORG_MAX_AGE
     };
 }
 
@@ -58,7 +59,7 @@ func offConfig() {
         signingKey: $none,
         tokenTtl: 0,
         refreshTtl: 0,
-        keepForgeToken: false
+        orgMaxAge: 0
     };
 }
 
@@ -78,7 +79,7 @@ func testEveryEndpoint404sWhenAuthIsOff() {
     def db as flatdb.DB init emptyDb();
     testing.assertEqual(device(offConfig(), $db).status, 404);
     testing.assertEqual(token(offConfig(), $db, '{}', nowish()).status, 404);
-    testing.assertEqual(refresh(offConfig(), $db, '{}', nowish()).status, 404);
+    testing.assertEqual(refresh(offConfig(), $db, '{}', nowish(), GRANT_VALID).status, 404);
 }
 
 # --- reading the request body -----------------------------------------------
@@ -152,18 +153,179 @@ func testTheForgeTokenIsNeverInTheReply() {
     testing.assertFalse(strings.contains(json.encode($out.body), "gho_secret"));
 }
 
-func testWithoutRouteANoForgeTokenIsKept() {
-    # where identity and forge differ the forge would not accept it
+func testTheProviderTokenIsKeptForEveryLogin() {
+    # 8.5: a refresh re-checks the grant with it, whatever the source authority
+    def out as AuthReply init issueLogin(config(), emptyDb(), identified("gho_secret"), nowish());
+    testing.assertFalse(store.getForgeToken($out.db, ACCOUNT) == "");
+}
+
+# --- re-checking the grant on refresh (8.5) -----------------------------------
+
+# A provider whose `subject` answers from the token: "ok" names ACCOUNT, "other"
+# another account, "revoked" is a 401, anything else an outage.
+func fakeFlow(cfg as identity.Config) {
+    return "device";
+}
+
+func fakeSubject(cfg as identity.Config, accessToken as string) {
+    def none as map of string to string init {};
+    if ($accessToken == "revoked") {
+        throw Error{kind: identity.REJECTED, message: "rejected the token: 401"};
+    }
+    if ($accessToken == "ok" or $accessToken == "other") {
+        def id as string init convert.toString(ACCOUNT);
+        if ($accessToken == "other") {
+            $id = "999";
+        }
+        return identity.Subject{
+            provider: "fake",
+            id: $id,
+            login: "alice",
+            orgs: $none,
+            orgsCheckedAt: ""
+        };
+    }
+    throw Error{kind: "timeout", message: "no answer"};
+}
+
+func fakeConfig() {
     def c as Config init config();
-    $c.keepForgeToken = false;
-    def out as AuthReply init issueLogin($c, emptyDb(), identified("gho_secret"), nowish());
+    def p as identity.Provider init $c.provider;
+    $p.flow = fakeFlow;
+    $p.subject = fakeSubject;
+    $c.provider = $p;
+    return $c;
+}
+
+# grantFor logs in with `providerToken` kept, and asks `checkGrant`.
+func grantFor(providerToken as string) {
+    def got as AuthReply init issueLogin(
+        fakeConfig(),
+        emptyDb(),
+        identified($providerToken),
+        nowish());
+    def body as string init refreshBody(json.asString($got.body, "/refreshToken"));
+    return checkGrant(fakeConfig(), $got.db, $body);
+}
+
+func fakeExchange(
+    cfg as identity.Config,
+    code as string,
+    verifier as string,
+    redirectUri as string) {
+    if ($code == "good" and $verifier == "v") {
+        return "ok";
+    }
+    throw Error{kind: "identity", message: "invalid_grant"};
+}
+
+func codeConfig() {
+    def c as Config init fakeConfig();
+    def p as identity.Provider init $c.provider;
+    $p.exchangeCode = fakeExchange;
+    $c.provider = $p;
+    return $c;
+}
+
+func codeBody(code as string, redirect as string) {
+    return '{"code": "' + $code + '", "codeVerifier": "v", "redirectUri": "' + $redirect + '"}';
+}
+
+func testAnAuthorizationCodeLogsIn() {
+    # 12.2 authcode: the client ran PKCE against the provider and hands over the code
+    def got as Login init login(codeConfig(), codeBody("good", "http://127.0.0.1:53682/cb"));
+    testing.assertTrue($got.ok);
+    testing.assertEqual($got.accountId, ACCOUNT);
+    def v6 as Login init login(codeConfig(), codeBody("good", "http://[::1]:8000/"));
+    testing.assertTrue($v6.ok);
+}
+
+func testARefusedCodeIs400() {
+    def got as Login init login(codeConfig(), codeBody("bad", "http://127.0.0.1:53682/cb"));
+    testing.assertFalse($got.ok);
+    testing.assertEqual($got.reply.status, 400);
+}
+
+func testOnlyALoopbackRedirectIsAccepted() {
+    # RFC 8252: codes are exchanged only for a client on the user's machine
+    for (def bad in [
+        "https://evil.example/cb",
+        "http://localhost:53682/cb",
+        "http://127.0.0.1/cb",
+        "http://127.0.0.1:x/cb",
+        "http://127.0.0.1.evil.example:80/"
+    ]) {
+        def got as Login init login(codeConfig(), codeBody("good", $bad));
+        testing.assertEqual($got.reply.status, 400);
+    }
+}
+
+func testADeviceOnlyProviderRefusesACode() {
+    # github's exchange answers "" (it offers no authcode flow)
+    def got as Login init login(config(), codeBody("good", "http://127.0.0.1:53682/cb"));
+    testing.assertEqual($got.reply.status, 400);
+    testing.assertContains(json.asString($got.reply.body, "/error"), "authcode");
+}
+
+func testCheckGrantAsksTheProvider() {
+    testing.assertEqual(grantFor("ok"), GRANT_VALID);
+    testing.assertEqual(grantFor("revoked"), GRANT_REVOKED);
+    testing.assertEqual(grantFor("other"), GRANT_REVOKED);
+    testing.assertEqual(grantFor("unreachable"), GRANT_UNKNOWN);
+    testing.assertEqual(checkGrant(fakeConfig(), emptyDb(), refreshBody("nope")), "");
+}
+
+func testCheckGrantWithoutAKeptTokenIsMissing() {
+    def got as AuthReply init loggedIn(emptyDb());
+    def body as string init refreshBody(json.asString($got.body, "/refreshToken"));
+    testing.assertEqual(checkGrant(fakeConfig(), $got.db, $body), GRANT_MISSING);
+}
+
+func testARevokedGrantEndsTheLogin() {
+    def got as AuthReply init issueLogin(config(), emptyDb(), identified("gho_secret"), nowish());
+    def given as string init json.asString($got.body, "/refreshToken");
+    def out as AuthReply init refresh(
+        config(),
+        $got.db,
+        refreshBody($given),
+        nowish(),
+        GRANT_REVOKED);
+    testing.assertEqual($out.status, 401);
+    testing.assertContains(json.asString($out.body, "/error"), "log in again");
+    testing.assertFalse(store.hasRefresh($out.db, token.fingerprint($given)));
     testing.assertEqual(store.getForgeToken($out.db, ACCOUNT), "");
+}
+
+func testAMissingGrantEndsTheLogin() {
+    def got as AuthReply init loggedIn(emptyDb());
+    def given as string init json.asString($got.body, "/refreshToken");
+    def out as AuthReply init refresh(
+        config(),
+        $got.db,
+        refreshBody($given),
+        nowish(),
+        GRANT_MISSING);
+    testing.assertEqual($out.status, 401);
+    testing.assertFalse(store.hasRefresh($out.db, token.fingerprint($given)));
+}
+
+func testAnUnaskableProviderIs502AndKeepsTheRefreshToken() {
+    def got as AuthReply init loggedIn(emptyDb());
+    def given as string init json.asString($got.body, "/refreshToken");
+    def out as AuthReply init refresh(
+        config(),
+        $got.db,
+        refreshBody($given),
+        nowish(),
+        GRANT_UNKNOWN);
+    testing.assertEqual($out.status, 502);
+    testing.assertTrue(store.hasRefresh($out.db, token.fingerprint($given)));
 }
 
 func testMissingFieldsAre400() {
     def db as flatdb.DB init emptyDb();
     testing.assertEqual(token(config(), $db, '{}', nowish()).status, 400);
-    testing.assertEqual(refresh(config(), $db, '{}', nowish()).status, 400);
+    testing.assertEqual(refresh(config(), $db, '{}', nowish(), GRANT_VALID).status, 400);
 }
 
 # --- poll states ------------------------------------------------------------
@@ -266,7 +428,12 @@ func refreshBody(token as string) {
 func testRefreshReturnsANewPair() {
     def first as AuthReply init loggedIn(emptyDb());
     def given as string init json.asString($first.body, "/refreshToken");
-    def out as AuthReply init refresh(config(), $first.db, refreshBody($given), nowish());
+    def out as AuthReply init refresh(
+        config(),
+        $first.db,
+        refreshBody($given),
+        nowish(),
+        GRANT_VALID);
     testing.assertEqual($out.status, 200);
     testing.assertEqual(json.asInt($out.body, "/accountId"), ACCOUNT);
     # the identity survives without another provider call
@@ -276,7 +443,12 @@ func testRefreshReturnsANewPair() {
 func testRefreshRotatesTheToken() {
     def first as AuthReply init loggedIn(emptyDb());
     def given as string init json.asString($first.body, "/refreshToken");
-    def out as AuthReply init refresh(config(), $first.db, refreshBody($given), nowish());
+    def out as AuthReply init refresh(
+        config(),
+        $first.db,
+        refreshBody($given),
+        nowish(),
+        GRANT_VALID);
     def replacement as string init json.asString($out.body, "/refreshToken");
     testing.assertFalse($given == $replacement);
     # the spent token is gone, the replacement is on record
@@ -288,8 +460,18 @@ func testASpentRefreshTokenCannotBeReplayed() {
     # rotation: a captured token works once
     def first as AuthReply init loggedIn(emptyDb());
     def given as string init json.asString($first.body, "/refreshToken");
-    def used as AuthReply init refresh(config(), $first.db, refreshBody($given), nowish());
-    def again as AuthReply init refresh(config(), $used.db, refreshBody($given), nowish());
+    def used as AuthReply init refresh(
+        config(),
+        $first.db,
+        refreshBody($given),
+        nowish(),
+        GRANT_VALID);
+    def again as AuthReply init refresh(
+        config(),
+        $used.db,
+        refreshBody($given),
+        nowish(),
+        GRANT_VALID);
     testing.assertEqual($again.status, 401);
 }
 
@@ -298,7 +480,8 @@ func testAnUnknownRefreshTokenIs401() {
         config(),
         emptyDb(),
         refreshBody("0000000000000000000000000000000000000000000000000000000000000000"),
-        nowish());
+        nowish(),
+        GRANT_VALID);
     testing.assertEqual($out.status, 401);
 }
 
@@ -313,7 +496,7 @@ func testAnExpiredRefreshTokenIs401AndIsDropped() {
         orgsCheckedAt: 0
     };
     $db = store.putRefresh($db, token.fingerprint($token), $expired);
-    def out as AuthReply init refresh(config(), $db, refreshBody($token), nowish());
+    def out as AuthReply init refresh(config(), $db, refreshBody($token), nowish(), GRANT_VALID);
     testing.assertEqual($out.status, 401);
     testing.assertTrue($out.changed);
     testing.assertFalse(store.hasRefresh($out.db, token.fingerprint($token)));
@@ -351,7 +534,12 @@ func testALoginEndsAfterThirtyDaysHoweverOftenItIsRefreshed() {
     # refreshed every ten days, well inside each refresh token's own lifetime
     for (def days in [10, 20, 29]) {
         def given as string init json.asString($reply.body, "/refreshToken");
-        $reply = refresh(config(), $reply.db, refreshBody($given), $start + $days * 86400);
+        $reply = refresh(
+            config(),
+            $reply.db,
+            refreshBody($given),
+            $start + $days * 86400,
+            GRANT_VALID);
         testing.assertEqual($reply.status, 200);
     }
     def last as string init json.asString($reply.body, "/refreshToken");
@@ -359,10 +547,55 @@ func testALoginEndsAfterThirtyDaysHoweverOftenItIsRefreshed() {
         config(),
         $reply.db,
         refreshBody($last),
-        $start + 31 * 86400);
+        $start + 31 * 86400,
+        GRANT_VALID);
     testing.assertEqual($over.status, 401);
     testing.assertContains(json.asString($over.body, "/error"), "log in again");
     testing.assertFalse(store.hasRefresh($over.db, token.fingerprint($last)));
+}
+
+func testAgedOrganisationMembershipsEndTheRefreshChain() {
+    # 8.7: memberships older than the window must not reach a write
+    def start as int init nowish();
+    def member as AuthReply init issue(
+        config(),
+        emptyDb(),
+        ACCOUNT,
+        "alice",
+        {"acme": "7"},
+        $start,
+        $start);
+    def given as string init json.asString($member.body, "/refreshToken");
+    def fresh as AuthReply init refresh(
+        config(),
+        $member.db,
+        refreshBody($given),
+        $start + 86400,
+        GRANT_VALID);
+    testing.assertEqual($fresh.status, 200);
+    def next as string init json.asString($fresh.body, "/refreshToken");
+    def over as AuthReply init refresh(
+        config(),
+        $fresh.db,
+        refreshBody($next),
+        $start + ORG_MAX_AGE + 1,
+        GRANT_VALID);
+    testing.assertEqual($over.status, 401);
+    testing.assertContains(json.asString($over.body, "/error"), "organisation memberships");
+    testing.assertFalse(store.hasRefresh($over.db, token.fingerprint($next)));
+}
+
+func testTheMembershipWindowLeavesLoginsWithoutOrganisationsAlone() {
+    def start as int init nowish();
+    def plain as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", {}, $start, $start);
+    def given as string init json.asString($plain.body, "/refreshToken");
+    def out as AuthReply init refresh(
+        config(),
+        $plain.db,
+        refreshBody($given),
+        $start + ORG_MAX_AGE + 1,
+        GRANT_VALID);
+    testing.assertEqual($out.status, 200);
 }
 
 func testOnlyACanonicalNumberIsAnAccountId() {

@@ -229,11 +229,10 @@ export func authorise(db as flatdb.DB, who as identity.Subject, scope as string)
 #
 # Any active member qualifies, from the memberships captured at login (8.4);
 # the provider module already excludes `pending` invitations and
-# `billing_manager`. Memberships are only as fresh as the last login, and this
-# function does not look at `orgsCheckedAt` (8.7's configured window is not
-# built). Staleness is bounded upstream instead: `authview.refresh` refuses a
-# login older than `MAX_SESSION_SECONDS` (a refresh never advances
-# `orgsCheckedAt`), so memberships age out within that plus one bearer TTL.
+# `billing_manager`. Memberships are only as fresh as the last login. The 8.7
+# window is enforced upstream: `authview.refresh` refuses a login whose
+# memberships are older than `Config.orgMaxAge`, and a refresh never advances
+# `orgsCheckedAt`, so they age out within that plus one bearer TTL.
 func authoriseOrg(ns as store.Namespace, who as identity.Subject, folded as string) {
     if (not ($ns.provider == $who.provider)) {
         return policy.deny("@" + $folded + " belongs to an organisation on " +

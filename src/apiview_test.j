@@ -42,10 +42,17 @@ func version(v as string, url as string) {
 }
 
 func testIndex() {
-    def reply as Reply init index();
+    def reply as Reply init index(false);
     testing.assertEqual($reply.status, 200);
     testing.assertEqual(json.asString($reply.body, "/service"), "jennifer-registry");
-    testing.assertTrue(json.length($reply.body, "/endpoints") > 0);
+    testing.assertEqual(json.length($reply.body, "/endpoints"), 10);
+    testing.assertEqual(json.asString($reply.body, "/endpoints/9"), "POST /publish");
+}
+
+func testIndexListsTheLoginGatedRoutesWhenLoginsAreOn() {
+    def reply as Reply init index(true);
+    testing.assertEqual(json.length($reply.body, "/endpoints"), 17);
+    testing.assertEqual(json.asString($reply.body, "/endpoints/16"), "POST /auth/refresh");
 }
 
 # discoveryBase mimics what webapi.discovery derives from the route table, so
@@ -69,8 +76,13 @@ func noAuth() {
     return $none;
 }
 
+# noTrust is trusted publishing switched off.
+func noTrust() {
+    return TrustedPublishing{audience: "", providers: [], url: ""};
+}
+
 func testDiscoveryKeepsTheRouteDerivedBase() {
-    def reply as Reply init discovery(discoveryBase(), "", noAuth());
+    def reply as Reply init discovery(discoveryBase(), "", noAuth(), noTrust());
     testing.assertEqual($reply.status, 200);
     testing.assertEqual(json.asString($reply.body, "/registry"), SERVICE_NAME);
     testing.assertEqual(json.asString($reply.body, "/spec"), SPEC_VERSION);
@@ -82,7 +94,7 @@ func testDiscoveryKeepsTheRouteDerivedBase() {
 
 func testDiscoveryOmitsAuthWhenNoneIsConfigured() {
     # An absent `auth` means "accepts no logins" (specification).
-    def reply as Reply init discovery(discoveryBase(), "", noAuth());
+    def reply as Reply init discovery(discoveryBase(), "", noAuth(), noTrust());
     testing.assertFalse(json.has($reply.body, "/auth"));
 }
 
@@ -94,7 +106,7 @@ func testDiscoveryAdvertisesTheAuthEndpointsWhenConfigured() {
         "tokenUrl": "/v1/auth/token",
         "refreshUrl": "/v1/auth/refresh"
     };
-    def reply as Reply init discovery(discoveryBase(), "", $urls);
+    def reply as Reply init discovery(discoveryBase(), "", $urls, noTrust());
     # copied from the caller, whichever provider is configured
     testing.assertEqual(json.asString($reply.body, "/auth/provider"), "gitea");
     testing.assertEqual(json.asString($reply.body, "/auth/flow"), "device");
@@ -104,6 +116,44 @@ func testDiscoveryAdvertisesTheAuthEndpointsWhenConfigured() {
     testing.assertEqual(json.asString($reply.body, "/auth/refreshUrl"), "/v1/auth/refresh");
 }
 
+func testAuthcodeAdvertisesItsEndpointClientAndScopes() {
+    # 12.2: the client cannot construct these itself
+    def urls as map of string to string init {
+        "provider": "oidc",
+        "flow": "authcode",
+        "authorizeUrl": "https://id.example/authorize",
+        "clientId": "registry",
+        "scopes": "openid  profile",
+        "tokenUrl": "/v1/auth/token"
+    };
+    def reply as Reply init discovery(discoveryBase(), "", $urls, noTrust());
+    testing.assertEqual(
+        json.asString($reply.body, "/auth/authorizeUrl"),
+        "https://id.example/authorize");
+    testing.assertEqual(json.asString($reply.body, "/auth/clientId"), "registry");
+    testing.assertEqual(json.length($reply.body, "/auth/scopes"), 2);
+    testing.assertEqual(json.asString($reply.body, "/auth/scopes/1"), "profile");
+}
+
+func testTrustedPublishingIsANestedObjectWithAProviderList() {
+    # specification 4.1: `auth.trustedPublishing.{audience,providers,url}`
+    def tp as TrustedPublishing init TrustedPublishing{
+        audience: "registry.example",
+        providers: ["github-actions"],
+        url: "/v1/publish"
+    };
+    def reply as Reply init discovery(discoveryBase(), "", noAuth(), $tp);
+    testing.assertEqual(
+        json.asString($reply.body, "/auth/trustedPublishing/audience"),
+        "registry.example");
+    testing.assertEqual(
+        json.asString($reply.body, "/auth/trustedPublishing/providers/0"),
+        "github-actions");
+    testing.assertEqual(json.asString($reply.body, "/auth/trustedPublishing/url"), "/v1/publish");
+    # without logins there is no device flow to advertise
+    testing.assertFalse(json.has($reply.body, "/auth/deviceUrl"));
+}
+
 func testHealth() {
     def reply as Reply init health();
     testing.assertEqual($reply.status, 200);
@@ -111,17 +161,35 @@ func testHealth() {
 }
 
 func testListDecksEmpty() {
-    def reply as Reply init listDecks(emptyStore());
+    def reply as Reply init listDecks(emptyStore(), 1);
     testing.assertEqual($reply.status, 200);
     testing.assertEqual(json.length($reply.body, "/decks"), 0);
+    testing.assertEqual(json.asInt($reply.body, "/pages"), 1);
 }
 
 func testListDecks() {
     def db as flatdb.DB init seeded();
     $db = store.putVersion($db, "csv", "rfc 4180", version("0.4.0", "u"));
-    def reply as Reply init listDecks($db);
+    def reply as Reply init listDecks($db, 1);
     testing.assertEqual(json.length($reply.body, "/decks"), 2);
     testing.assertEqual(json.asString($reply.body, "/decks/0"), "ansi");
+    testing.assertEqual(json.asInt($reply.body, "/total"), 2);
+}
+
+func testListDecksIsPagedAndSorted() {
+    # 5.2: a large registry pages
+    def db as flatdb.DB init emptyStore();
+    for (def i in 0..(DECKS_PAGE_SIZE + 5)) {
+        $db = store.putVersion($db, "d" + convert.toString(10000 + $i), "", version("1.0.0", "u"));
+    }
+    def first as Reply init listDecks($db, 1);
+    testing.assertEqual(json.length($first.body, "/decks"), DECKS_PAGE_SIZE);
+    testing.assertEqual(json.asInt($first.body, "/pages"), 2);
+    testing.assertEqual(json.asString($first.body, "/decks/0"), "d10000");
+    def second as Reply init listDecks($db, 2);
+    testing.assertEqual(json.length($second.body, "/decks"), 5);
+    testing.assertEqual(json.asString($second.body, "/decks/4"), "d11004");
+    testing.assertEqual(json.length(listDecks($db, 3).body, "/decks"), 0);
 }
 
 func testGetDeckFound() {
@@ -256,18 +324,21 @@ func testTheCanonicalUrlIsAdvertisedWhenConfigured() {
     def reply as Reply init discovery(
         discoveryBase(),
         "https://registry.jennifer-lang.dev",
-        noAuth());
+        noAuth(),
+        noTrust());
     testing.assertEqual(json.asString($reply.body, "/url"), "https://registry.jennifer-lang.dev");
 }
 
 func testAnUndeclaredCanonicalUrlIsOmitted() {
     # A guessed URL would be recorded in lockfiles as the registry's identity.
-    testing.assertFalse(json.has(discovery(discoveryBase(), "", noAuth()).body, "/url"));
-    testing.assertFalse(json.has(discovery(discoveryBase(), "   ", noAuth()).body, "/url"));
+    testing.assertFalse(json.has(discovery(discoveryBase(), "", noAuth(), noTrust()).body, "/url"));
+    testing.assertFalse(json.has(
+        discovery(discoveryBase(), "   ", noAuth(), noTrust()).body,
+        "/url"));
 }
 
 func testTheCanonicalUrlDoesNotDisturbTheRestOfTheDocument() {
-    def reply as Reply init discovery(discoveryBase(), "https://r.example", noAuth());
+    def reply as Reply init discovery(discoveryBase(), "https://r.example", noAuth(), noTrust());
     testing.assertEqual(json.asString($reply.body, "/registry"), SERVICE_NAME);
     testing.assertEqual(json.asString($reply.body, "/spec"), SPEC_VERSION);
     testing.assertEqual(json.asInt($reply.body, "/apis/0/version"), 1);

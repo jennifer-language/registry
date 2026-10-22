@@ -19,6 +19,7 @@ use json;
 use strings;
 use convert;
 use maps;
+use lists;
 import "flatdb.j" as flatdb;
 import "./store.j" as store;
 import "./search.j" as search;
@@ -75,10 +76,13 @@ func stringList(items as list of string) {
 }
 
 /**
- * The index response: service identity plus the core read routes.
+ * The index response: service identity plus every API route served, under
+ * both `/v1` and the bare root.
+ * @param authOn {bool} whether logins are configured, which adds the routes
+ *     gated on them
  * @return {Reply} a 200 reply describing the service
  */
-export func index() {
+export func index(authOn as bool) {
     def endpoints as list of string init [
         "GET /health",
         "GET /decks",
@@ -86,8 +90,23 @@ export func index() {
         "GET /decks/:name",
         "GET /decks/:name/:version",
         "GET /resolve?name=<deck>&constraint=<range>",
-        "GET /resolve-graph?roots=<json>"
+        "GET /resolve-graph?roots=<json>",
+        "GET /search?q=<query>",
+        "GET /scopes",
+        "POST /publish"
     ];
+    if ($authOn) {
+        def gated as list of string init [
+            "POST /claim",
+            "POST /owners",
+            "POST /yank",
+            "POST /unyank",
+            "POST /auth/device",
+            "POST /auth/token",
+            "POST /auth/refresh"
+        ];
+        $endpoints = lists.concat($endpoints, $gated);
+    }
     def body as json.Value init json.map();
     $body = json.set($body, "/service", SERVICE_NAME);
     $body = json.set($body, "/version", SERVICE_VERSION);
@@ -95,6 +114,31 @@ export func index() {
     $body = json.set($body, "/endpoints", stringList($endpoints));
     return Reply{status: 200, body: $body};
 }
+
+# scopeList splits a space-separated scope string, dropping empty parts.
+func scopeList(scopes as string) {
+    def out as list of string init [];
+    for (def part in strings.split($scopes, " ")) {
+        if (not (strings.trim($part) == "")) {
+            $out[] = strings.trim($part);
+        }
+    }
+    return $out;
+}
+
+/**
+ * The `auth.trustedPublishing` members of the discovery document (specification
+ * 4.1, 8.9).
+ * @field audience {string} the `aud` a CI job must request; "" when trusted
+ *     publishing is off
+ * @field providers {list of string} the accepted issuers, e.g. `github-actions`
+ * @field url {string} where to present the token, an absolute path
+ */
+export def struct TrustedPublishing {
+    audience as string,
+    providers as list of string,
+    url as string
+};
 
 /**
  * The discovery document: the API versions and optional operations this
@@ -119,24 +163,41 @@ export func index() {
  * @param base {json.Value} the document from `webapi.discovery`
  * @param canonicalUrl {string} the registry's public base URL ("" to omit)
  * @param authUrls {map of string to string} the `auth` members: `provider`,
- *     `flow`, `deviceUrl`, `tokenUrl`, `refreshUrl`; empty when the registry
- *     accepts no logins
+ *     `flow`, `deviceUrl` or (`authcode`) `authorizeUrl`, `clientId` and `scopes`
+ *     (space-separated, written as an array), `tokenUrl`, `refreshUrl`; empty when
+ *     the registry accepts no logins
+ * @param trusted {TrustedPublishing} the trusted-publishing members; an empty
+ *     `audience` omits `auth.trustedPublishing`
  * @return {Reply} a 200 reply with the discovery document
  */
 export func discovery(
     base as json.Value,
     canonicalUrl as string,
-    authUrls as map of string to string) {
+    authUrls as map of string to string,
+    trusted as TrustedPublishing) {
     def body as json.Value init $base;
     if (not (strings.trim($canonicalUrl) == "")) {
         $body = json.set($body, "/url", strings.trim($canonicalUrl));
     }
-    if (len($authUrls) == 0) {
+    def tpOn as bool init not ($trusted.audience == "");
+    if (len($authUrls) == 0 and not $tpOn) {
         return Reply{status: 200, body: $body};
     }
     def auth as json.Value init json.map();
     for (def name in $authUrls) {
-        $auth = json.set($auth, "/" + $name, $authUrls[$name]);
+        if ($name == "scopes") {
+            # 12.2: an array, from the provider's space-separated form
+            $auth = json.set($auth, "/scopes", stringList(scopeList($authUrls[$name])));
+        } else {
+            $auth = json.set($auth, "/" + $name, $authUrls[$name]);
+        }
+    }
+    if ($tpOn) {
+        def tp as json.Value init json.map();
+        $tp = json.set($tp, "/audience", $trusted.audience);
+        $tp = json.set($tp, "/providers", stringList($trusted.providers));
+        $tp = json.set($tp, "/url", $trusted.url);
+        $auth = json.set($auth, "/trustedPublishing", $tp);
     }
     $body = json.set($body, "/auth", $auth);
     return Reply{status: 200, body: $body};
@@ -152,14 +213,38 @@ export func health() {
     return Reply{status: 200, body: $body};
 }
 
+/** Deck names per page of `GET /decks` (specification 5.2). */
+export def const DECKS_PAGE_SIZE as int init 1000;
+
 /**
- * The deck-listing response: every deck name in the registry.
+ * The deck-listing response: one page of deck names, sorted.
  * @param db {flatdb.DB} the registry to read
- * @return {Reply} a 200 reply with `{ "decks": [names...] }`
+ * @param page {int} the 1-based page; past the last one gives an empty list
+ * @return {Reply} a 200 reply with `{ "decks": [...], "page", "pages", "total" }`
  */
-export func listDecks(db as flatdb.DB) {
+export func listDecks(db as flatdb.DB, page as int) {
+    def names as list of string init lists.sort(store.listDecks($db));
+    def total as int init len($names);
+    def pages as int init convert.toInt(($total + DECKS_PAGE_SIZE - 1) / DECKS_PAGE_SIZE);
+    if ($pages < 1) {
+        $pages = 1;
+    }
+    def slice as list of string init [];
+    def from as int init ($page - 1) * DECKS_PAGE_SIZE;
+    if ($from < $total) {
+        def upto as int init $from + DECKS_PAGE_SIZE;
+        if ($upto > $total) {
+            $upto = $total;
+        }
+        for (def i in $from..$upto) {
+            $slice[] = $names[$i];
+        }
+    }
     def body as json.Value init json.map();
-    $body = json.set($body, "/decks", stringList(store.listDecks($db)));
+    $body = json.set($body, "/decks", stringList($slice));
+    $body = json.set($body, "/page", $page);
+    $body = json.set($body, "/pages", $pages);
+    $body = json.set($body, "/total", $total);
     return Reply{status: 200, body: $body};
 }
 

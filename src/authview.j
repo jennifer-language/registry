@@ -41,10 +41,6 @@ import "./identity.j" as identity;
  * @field signingKey {bytes} the HMAC secret the bearer token is signed with
  * @field tokenTtl {int} how long a bearer token lives, in seconds
  * @field refreshTtl {int} how long a refresh token lives, in seconds
- * @field keepForgeToken {bool} true to keep the provider's token, sealed, so a
- *     publish can ask the forge about the caller (7.1 route A). Only meaningful
- *     where identity and forge are one service; elsewhere the forge would not
- *     accept it, and it is not kept
  */
 export def struct Config {
     provider as identity.Provider,
@@ -52,7 +48,7 @@ export def struct Config {
     signingKey as bytes,
     tokenTtl as int,
     refreshTtl as int,
-    keepForgeToken as bool
+    orgMaxAge as int
 };
 
 /**
@@ -261,14 +257,19 @@ func early(reply as AuthReply) {
 }
 
 /**
- * The network half of `POST /auth/token`: poll the provider with the device
- * code and, once approved, identify the account and read its memberships.
+ * The network half of `POST /auth/token`: turn an approved device code, or an
+ * authorization code (`authcode`, 12.2), into a provider token, then identify
+ * the account and read its memberships.
+ *
+ * The body carries `deviceCode`, or `code`, `codeVerifier` and `redirectUri`
+ * (PKCE, RFC 7636). The redirect must be a loopback address (RFC 8252), so the
+ * registry exchanges codes only for a client running on the user's machine.
  *
  * Separate from `issueLogin` so these calls run without the write lock;
  * holding it across them would let a slow provider, or anybody polling with a
  * made-up code, stall every publish.
  * @param cfg {Config} the issuing configuration
- * @param body {string} the raw request body, carrying `deviceCode`
+ * @param body {string} the raw request body
  * @return {Login} the identified account, or an early answer
  */
 export func login(cfg as Config, body as string) {
@@ -276,8 +277,16 @@ export func login(cfg as Config, body as string) {
         return early(fail(noStore(), 404, "this registry does not accept logins"));
     }
     def deviceCode as string init bodyField($body, "deviceCode");
+    def code as string init bodyField($body, "code");
+    if ($deviceCode == "" and not ($code == "")) {
+        return byCode(
+            $cfg,
+            $code,
+            bodyField($body, "codeVerifier"),
+            bodyField($body, "redirectUri"));
+    }
     if ($deviceCode == "") {
-        return early(fail(noStore(), 400, "missing 'deviceCode' in the request body"));
+        return early(fail(noStore(), 400, "missing 'deviceCode' (or 'code') in the request body"));
     }
     def result as identity.Poll;
     try {
@@ -289,9 +298,86 @@ export func login(cfg as Config, body as string) {
     if (not ($result.state == "ok")) {
         return early(stateReply(noStore(), $result.state));
     }
+    return identify($cfg, $result.accessToken);
+}
+
+# byCode exchanges an authorization code for a provider token (12.2 `authcode`).
+func byCode(cfg as Config, code as string, verifier as string, redirectUri as string) {
+    if ($verifier == "" or $redirectUri == "") {
+        return early(fail(
+            noStore(),
+            400,
+            "an authorization code needs 'codeVerifier' and 'redirectUri'"));
+    }
+    if (not isLoopbackRedirect($redirectUri)) {
+        return early(fail(
+            noStore(),
+            400,
+            "'redirectUri' must be a loopback address (http://127.0.0.1:<port>/... or " +
+                "http://[::1]:<port>/...)"));
+    }
+    def accessToken as string init "";
+    try {
+        $accessToken = $cfg.provider.exchangeCode(
+            $cfg.providerConfig,
+            $code,
+            $verifier,
+            $redirectUri);
+    } catch (err) {
+        return early(fail(
+            noStore(),
+            400,
+            "the provider refused the authorization code: " +
+                $err.message));
+    }
+    if ($accessToken == "") {
+        return early(fail(
+            noStore(),
+            400,
+            "this registry's provider does not offer the authcode flow"));
+    }
+    return identify($cfg, $accessToken);
+}
+
+# isLoopbackRedirect accepts only `http` on an IP loopback literal with a port,
+# the redirect RFC 8252 section 7.3 prescribes for native clients.
+func isLoopbackRedirect(uri as string) {
+    for (def prefix in ["http://127.0.0.1:", "http://[::1]:"]) {
+        if (strings.startsWith($uri, $prefix)) {
+            return isPort(portOf(strings.substring($uri, len($prefix), len($uri))));
+        }
+    }
+    return false;
+}
+
+# portOf is the text before the first `/` of what follows `host:`.
+func portOf(rest as string) {
+    def slash as int init strings.indexOf($rest, "/");
+    if ($slash < 0) {
+        return $rest;
+    }
+    return strings.substring($rest, 0, $slash);
+}
+
+# isPort accepts one to five decimal digits.
+func isPort(s as string) {
+    if (len($s) == 0 or len($s) > 5) {
+        return false;
+    }
+    for (def ch in strings.chars($s)) {
+        if ($ch < "0" or $ch > "9") {
+            return false;
+        }
+    }
+    return true;
+}
+
+# identify asks the provider who a fresh provider token belongs to, and which
+# organisations it is in.
+func identify(cfg as Config, accessToken as string) {
     def who as identity.Subject;
     try {
-        $who = $cfg.provider.subject($cfg.providerConfig, $result.accessToken);
+        $who = $cfg.provider.subject($cfg.providerConfig, $accessToken);
     } catch (err) {
         return early(fail(
             noStore(),
@@ -300,13 +386,13 @@ export func login(cfg as Config, body as string) {
                 $err.message));
     }
     # The registry issues its own credential (specification 8.4); the provider
-    # token goes to `issueLogin` only to be kept sealed for 7.1 route A, never
+    # token goes to `issueLogin` only to be kept sealed (8.5, 7.1 route A), never
     # into a reply. Memberships are read only here (8.7). A provider that cannot
     # answer returns none, so an organisation scope is unwritable rather than
     # writable by anybody.
     def orgs as map of string to string init {};
     try {
-        $orgs = $cfg.provider.memberships($cfg.providerConfig, $result.accessToken);
+        $orgs = $cfg.provider.memberships($cfg.providerConfig, $accessToken);
     } catch (err) {
         def none as map of string to string init {};
         $orgs = $none;
@@ -329,7 +415,7 @@ export func login(cfg as Config, body as string) {
         accountId: $accountId,
         login: $who.login,
         orgs: $orgs,
-        accessToken: $result.accessToken
+        accessToken: $accessToken
     };
 }
 
@@ -353,9 +439,10 @@ func accountIdOf(id as string) {
  * found, or pass its early answer through. No network call; the caller holds
  * the write lock and passes a store opened under it.
  *
- * With `keepForgeToken` set, the provider's token is stored sealed against the
- * account, replacing any earlier one, so a publish can ask the forge whether
- * the account may push (7.1 route A). Revoking the account drops it.
+ * The provider's token is stored sealed against the account, replacing any
+ * earlier one: every refresh asks the provider with it whether the grant still
+ * stands (8.5), and in `login` source authority a publish asks the forge with it
+ * whether the account may push (7.1 route A). Revoking the account drops it.
  * @param cfg {Config} the issuing configuration
  * @param db {flatdb.DB} the store to record the refresh token in
  * @param got {Login} what `login` returned
@@ -367,7 +454,7 @@ export func issueLogin(cfg as Config, db as flatdb.DB, got as Login, now as int)
         return AuthReply{status: $got.reply.status, body: $got.reply.body, db: $db, changed: false};
     }
     def out as flatdb.DB init $db;
-    if ($cfg.keepForgeToken and not ($got.accessToken == "")) {
+    if (not ($got.accessToken == "")) {
         $out = store.putForgeToken(
             $out,
             $got.accountId,
@@ -401,19 +488,75 @@ export func token(cfg as Config, db as flatdb.DB, body as string, now as int) {
  */
 export def const MAX_SESSION_SECONDS as int init 2592000;
 
+/** The provider still accepts the login's token for the same account. */
+export def const GRANT_VALID as string init "valid";
+/** The provider refused the token (revoked or expired), or it names another account. */
+export def const GRANT_REVOKED as string init "revoked";
+/** No provider token is kept for the account, so the grant cannot be re-checked. */
+export def const GRANT_MISSING as string init "missing";
+/** The provider could not be asked; says nothing about the grant. */
+export def const GRANT_UNKNOWN as string init "unknown";
+
+/**
+ * The network half of `POST /auth/refresh`: ask the provider, with the token
+ * kept at login, whether the grant behind this refresh token still stands
+ * (specification 8.5: revoking it must prevent a new registry token).
+ *
+ * Runs without the write lock, like `login`. Answers "" when the body names no
+ * refresh token on record; `refresh` then refuses on its own.
+ * @param cfg {Config} the issuing configuration
+ * @param db {flatdb.DB} the store holding the refresh and provider tokens
+ * @param body {string} the raw request body, carrying `refreshToken`
+ * @return {string} one of the `GRANT_` values, or ""
+ */
+export func checkGrant(cfg as Config, db as flatdb.DB, body as string) {
+    def presented as string init bodyField($body, "refreshToken");
+    if ($presented == "" or not store.hasRefresh($db, token.fingerprint($presented))) {
+        return "";
+    }
+    def rec as store.Refresh init store.getRefresh($db, token.fingerprint($presented));
+    def sealed as string init store.getForgeToken($db, $rec.accountId);
+    if ($sealed == "") {
+        return GRANT_MISSING;
+    }
+    def accessToken as string init "";
+    try {
+        $accessToken = forgecred.unseal($cfg.signingKey, $sealed);
+    } catch (err) {
+        # sealed under another signing key: unreadable, so unverifiable
+        return GRANT_MISSING;
+    }
+    def who as identity.Subject;
+    try {
+        $who = $cfg.provider.subject($cfg.providerConfig, $accessToken);
+    } catch (err) {
+        if ($err.kind == identity.REJECTED) {
+            return GRANT_REVOKED;
+        }
+        return GRANT_UNKNOWN;
+    }
+    if (not (accountIdOf($who.id) == $rec.accountId)) {
+        return GRANT_REVOKED;
+    }
+    return GRANT_VALID;
+}
+
 /**
  * `POST /auth/refresh`: exchange a refresh token for a new token pair. No
- * network call.
+ * network call; `checkGrant` asked the provider first.
  *
  * The presented token is deleted before its replacement is recorded, so a
- * captured token works once and the theft shows as an unexpected logout.
+ * captured token works once and the theft shows as an unexpected logout. A
+ * revoked grant ends the login and drops the kept provider token; a provider
+ * that could not be asked is a `502` that keeps the refresh token for a retry.
  * @param cfg {Config} the issuing configuration
  * @param db {flatdb.DB} the store holding the refresh tokens
  * @param body {string} the raw request body, carrying `refreshToken`
  * @param now {int} the current time (Unix seconds)
+ * @param grant {string} what `checkGrant` answered
  * @return {AuthReply} a new token pair, or a 401 the client answers by logging in
  */
-export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int) {
+export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int, grant as string) {
     if (not enabled($cfg)) {
         return fail($db, 404, "this registry does not accept logins");
     }
@@ -440,6 +583,35 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int) 
             "this login is older than " +
                 convert.toString(MAX_SESSION_SECONDS / 86400) + " days; log in again");
         return AuthReply{status: $over.status, body: $over.body, db: $ended, changed: true};
+    }
+    # 8.7: memberships older than the window must not reach a write. Refusing the
+    # refresh bounds them to the window plus one bearer-token lifetime.
+    if ($cfg.orgMaxAge > 0 and len($rec.orgs) > 0 and $now - $rec.orgsCheckedAt > $cfg.orgMaxAge) {
+        def stale as flatdb.DB init store.deleteRefresh($db, $print);
+        def aged as AuthReply init fail(
+            $stale,
+            401,
+            "the organisation memberships of this login are older than " +
+                convert.toString($cfg.orgMaxAge / 3600) +
+                " hours; log in again to read them afresh");
+        return AuthReply{status: $aged.status, body: $aged.body, db: $stale, changed: true};
+    }
+    if ($grant == GRANT_REVOKED or $grant == GRANT_MISSING) {
+        def gone as flatdb.DB init store.deleteRefresh($db, $print);
+        def why as string init "the provider no longer accepts this login (revoked or expired)";
+        if ($grant == GRANT_REVOKED) {
+            $gone = store.deleteForgeToken($gone, $rec.accountId);
+        } else {
+            $why = "this login has no provider grant on record to re-check";
+        }
+        def ended as AuthReply init fail($gone, 401, $why + "; log in again");
+        return AuthReply{status: $ended.status, body: $ended.body, db: $gone, changed: true};
+    }
+    if (not ($grant == GRANT_VALID)) {
+        return fail(
+            $db,
+            502,
+            "the provider could not be asked whether this login still stands; try again");
     }
     def rotated as flatdb.DB init store.deleteRefresh($db, $print);
     # Keep `orgsCheckedAt`: a refresh proves possession of a token, not continued

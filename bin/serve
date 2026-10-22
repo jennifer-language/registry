@@ -87,6 +87,7 @@ def envNames as list of string init [
     "REGISTRY_IDENTITY_CLIENTID",
     "REGISTRY_IDENTITY_SECRET",
     "REGISTRY_IDENTITY_SCOPES",
+    "REGISTRY_ORG_MAX_AGE",
     "REGISTRY_TOKEN_KEY",
     "REGISTRY_FORGE",
     "REGISTRY_FORGE_BASEURL",
@@ -220,8 +221,7 @@ def auth as authview.Config init authview.Config{
     signingKey: convert.bytesFromString($cfg.tokenKey, "utf-8"),
     tokenTtl: TOKEN_TTL,
     refreshTtl: REFRESH_TTL,
-    # Kept only where it is a credential the forge accepts (7.1 route A).
-    keepForgeToken: config.sourceAuthorityOf($cfg) == "login"
+    orgMaxAge: $cfg.orgMaxAgeHours * 3600
 };
 def authOn as bool init authview.enabled($auth);
 
@@ -297,6 +297,23 @@ if ($authOn) {
             "warning: could not ask %s which flow it offers (%s); advertising device\n",
             $providerName,
             $err.message);
+    }
+}
+
+# Under `authcode` the client runs the flow against the provider itself, so the
+# discovery document carries the provider's authorization endpoint, the client
+# id and the scopes (12.2). Asked once, like the flow.
+def authAuthorize as string init "";
+def authScopes as string init "";
+if ($authOn and $authFlow == "authcode") {
+    try {
+        $authAuthorize = $auth.provider.authorizeUrl($auth.providerConfig);
+    } catch (err) {
+        $authAuthorize = "";
+    }
+    $authScopes = $auth.provider.scopes($auth.providerConfig);
+    if ($authAuthorize == "") {
+        io.printf("warning: %s offers authcode but no authorization endpoint\n", $providerName);
     }
 }
 
@@ -412,7 +429,7 @@ func apiIndex(ctx as web.Context) {
         web.html($ctx, $page.status, $page.body);
         return;
     }
-    def reply as view.Reply init view.index();
+    def reply as view.Reply init view.index($authOn);
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
@@ -543,20 +560,31 @@ func siteSpecs(ctx as web.Context) {
 func apiDiscovery(ctx as web.Context) {
     def base as json.Value init webapi.discovery($api, view.SERVICE_NAME, view.SPEC_VERSION);
     def urls as map of string to string init {};
+    def trusted as view.TrustedPublishing init view.TrustedPublishing{
+        audience: "",
+        providers: [],
+        url: ""
+    };
     if ($tpOn) {
         # A CI job must name this audience when minting its token.
-        $urls["trustedPublishing.audience"] = $tpAudience;
-        $urls["trustedPublishing.providers"] = $tpProvider;
-        $urls["trustedPublishing.url"] = PUBLISH_PATH;
+        $trusted.audience = $tpAudience;
+        $trusted.providers = [$tpProvider];
+        $trusted.url = PUBLISH_PATH;
     }
     if ($authOn) {
         $urls["provider"] = $providerName;
         $urls["flow"] = $authFlow;
-        $urls["deviceUrl"] = AUTH_DEVICE_PATH;
+        if ($authFlow == "authcode") {
+            $urls["authorizeUrl"] = $authAuthorize;
+            $urls["clientId"] = $cfg.identityClientId;
+            $urls["scopes"] = $authScopes;
+        } else {
+            $urls["deviceUrl"] = AUTH_DEVICE_PATH;
+        }
         $urls["tokenUrl"] = AUTH_TOKEN_PATH;
         $urls["refreshUrl"] = AUTH_REFRESH_PATH;
     }
-    def reply as view.Reply init view.discovery($base, $cfg.canonicalUrl, $urls);
+    def reply as view.Reply init view.discovery($base, $cfg.canonicalUrl, $urls, $trusted);
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
@@ -740,10 +768,13 @@ func apiAuthToken(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiAuthRefresh(ctx as web.Context) {
+    def body as string init requestText($ctx);
+    # 8.5: the provider is asked before the lock, as in `apiAuthToken`.
+    def grant as string init authview.checkGrant($auth, store.open($dbPath), $body);
     def held as store.Lock init lockedStore();
     defer store.unlock($held);
     def db as flatdb.DB init store.open($dbPath);
-    answerAuth($ctx, "refreshed", authview.refresh($auth, $db, requestText($ctx), token.now()));
+    answerAuth($ctx, "refreshed", authview.refresh($auth, $db, $body, token.now(), $grant));
 }
 
 # publishRequestProblem is why a publish request cannot be sent to the forge,
@@ -1190,7 +1221,7 @@ func apiHealth(ctx as web.Context) {
  */
 func apiListDecks(ctx as web.Context) {
     def db as flatdb.DB init sharedStore();
-    def reply as view.Reply init view.listDecks($db);
+    def reply as view.Reply init view.listDecks($db, pageOf($ctx));
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
