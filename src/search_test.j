@@ -130,3 +130,26 @@ func testHitCarriesLatestAndCount() {
 func testNoMatchIsEmpty() {
     testing.assertEqual(len(find(seeded(), "nothing-matches-this")), 0);
 }
+
+func testAnIndexEntryCarriesTheNewestKeywords() {
+    def v as store.DeckVersion init ver("3.0.0");
+    $v.keywords = ["net", "cli"];
+    def db as flatdb.DB init store.putVersion(seeded(), "@acme/net", "", $v);
+    def all as json.Value init index($db);
+    testing.assertEqual(json.length($all, ""), 3);
+    testing.assertEqual(json.asString(json.get($all, "/0/name")), "@acme/net");
+    testing.assertEqual(json.asString(json.get($all, "/0/latest")), "3.0.0");
+    testing.assertEqual(strings.join(keywordsAt($all, 0), ","), "net,cli");
+    testing.assertEqual(len(tagged($all, "cli")), 1);
+    testing.assertEqual(len(under($all, "acme")), 2);
+}
+
+func testEntriesFollowTheSelectionOrder() {
+    def db as flatdb.DB init seeded();
+    $db = store.putVersion($db, "@acme/terminal", "an ansi helper", ver("1.0.0"));
+    def all as json.Value init index($db);
+    def picked as json.Value init entries($all, select($all, "ansi"));
+    testing.assertEqual(json.length($picked, ""), 2);
+    testing.assertEqual(json.asString(json.get($picked, "/0/name")), "@zeta/ansi");
+    testing.assertEqual(json.asString(json.get($picked, "/1/name")), "@acme/terminal");
+}

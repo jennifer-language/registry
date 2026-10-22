@@ -25,12 +25,14 @@ use convert;
 use strings;
 use httpd;
 use path;
+use task;
 import "flatdb.j" as flatdb;
 import "web.j" as web;
 import "webapi.j" as webapi;
 import "../src/store.j" as store;
 import "../src/apiview.j" as view;
 import "../src/webview.j" as webview;
+import "../src/search.j" as search;
 import "../src/authview.j" as authview;
 import "../src/identity.j" as identity;
 import "../src/identity/github.j" as githubIdentity;
@@ -46,6 +48,7 @@ import "../src/forge/gitea.j" as giteaForge;
 import "../src/publishview.j" as publishview;
 import "../src/trustpub.j" as trustpub;
 import "../src/citoken.j" as citoken;
+import "../src/forgecred.j" as forgecred;
 import "../src/config.j" as config;
 import "../src/stats.j" as stats;
 import "../src/deckname.j" as deckname;
@@ -76,16 +79,40 @@ if (fs.exists($configPath)) {
 # unrecognised JVC_* setting is a silent no-op rather than a mystery, and the
 # list doubles as the documentation of what can be overridden.
 def envNames as list of string init [
-    "REGISTRY_URL", "REGISTRY_CLIENT_IP_HEADER", "REGISTRY_POLICY", "REGISTRY_ADDR",
-    "REGISTRY_DB", "REGISTRY_LOG",
-    "REGISTRY_LOG_LEVEL", "REGISTRY_LOG_FORMAT",
-    "REGISTRY_LOG_REQUESTS", "REGISTRY_IDENTITY", "REGISTRY_IDENTITY_BASEURL",
-    "REGISTRY_IDENTITY_CLIENTID", "REGISTRY_IDENTITY_SECRET", "REGISTRY_IDENTITY_SCOPES",
-    "REGISTRY_TOKEN_KEY", "REGISTRY_FORGE", "REGISTRY_FORGE_BASEURL", "REGISTRY_FORGE_TOKEN",
-    "REGISTRY_FORGE_HOST", "REGISTRY_TRUSTPUB_AUDIENCE", "REGISTRY_TRUSTPUB_PROVIDER",
-    "REGISTRY_TRUSTPUB_ISSUER", "REGISTRY_TLS", "REGISTRY_TLS_ADDR", "REGISTRY_TLS_DOMAINS",
-    "REGISTRY_TLS_EMAIL", "REGISTRY_TLS_CERTDIR", "REGISTRY_TLS_RENEW_BEFORE_DAYS",
-    "REGISTRY_ACME_DIRECTORY", "REGISTRY_ACME_CHALLENGEDIR", "REGISTRY_ACME_AGREE_TOS"
+    "REGISTRY_URL",
+    "REGISTRY_CLIENT_IP_HEADER",
+    "REGISTRY_POLICY",
+    "REGISTRY_ADDR",
+    "REGISTRY_DB",
+    "REGISTRY_LOG",
+    "REGISTRY_LOG_LEVEL",
+    "REGISTRY_LOG_FORMAT",
+    "REGISTRY_LOG_REQUESTS",
+    "REGISTRY_IDENTITY",
+    "REGISTRY_IDENTITY_BASEURL",
+    "REGISTRY_IDENTITY_CLIENTID",
+    "REGISTRY_IDENTITY_SECRET",
+    "REGISTRY_IDENTITY_SCOPES",
+    "REGISTRY_TOKEN_KEY",
+    "REGISTRY_FORGE",
+    "REGISTRY_FORGE_BASEURL",
+    "REGISTRY_FORGE_TOKEN",
+    "REGISTRY_FORGE_HOST",
+    "REGISTRY_SOURCE_AUTHORITY",
+    "REGISTRY_MAX_IN_FLIGHT",
+    "REGISTRY_RESPOND_TIMEOUT",
+    "REGISTRY_TRUSTPUB_AUDIENCE",
+    "REGISTRY_TRUSTPUB_PROVIDER",
+    "REGISTRY_TRUSTPUB_ISSUER",
+    "REGISTRY_TLS",
+    "REGISTRY_TLS_ADDR",
+    "REGISTRY_TLS_DOMAINS",
+    "REGISTRY_TLS_EMAIL",
+    "REGISTRY_TLS_CERTDIR",
+    "REGISTRY_TLS_RENEW_BEFORE_DAYS",
+    "REGISTRY_ACME_DIRECTORY",
+    "REGISTRY_ACME_CHALLENGEDIR",
+    "REGISTRY_ACME_AGREE_TOS"
 ];
 def read as config.EnvRead init config.readEnv($envNames);
 for (def old in $read.deprecated) {
@@ -122,8 +149,7 @@ def addr as string init $cfg.addr;
 # Everything below is read-only after this point: handlers run concurrently, and
 # a handler that wrote one of these would race with every other handler. Reading
 # them is safe, which is all a handler needs.
-def logSink as audit.Sink init audit.open($cfg.logLevel, $cfg.logFormat,
-    $cfg.logFile, true);
+def logSink as audit.Sink init audit.open($cfg.logLevel, $cfg.logFormat, $cfg.logFile, true);
 if (not ($logSink.fileError == "")) {
     io.eprintf("warning: not logging to %s (%s)\n", $cfg.logFile, $logSink.fileError);
 }
@@ -150,8 +176,7 @@ try {
 } catch (err) {
     io.eprintf("warning: %s is not writable (%s)\n", $dataDir, $err.message);
     io.eprintf("  the registry will serve what it has and refuse every write.\n");
-    io.eprintf("  this container runs as a fixed uid; the volume behind %s must\n",
-        $dataDir);
+    io.eprintf("  this container runs as a fixed uid; the volume behind %s must\n", $dataDir);
     io.eprintf("  belong to it. `docker run --rm --entrypoint /bin/sh <image> -c id`\n");
     io.eprintf("  prints the uid to chown to, or build with UID / GID to match.\n");
 }
@@ -202,15 +227,9 @@ def const REFRESH_TTL as int init 1209600;
 # module under src/identity/ and one arm here.
 func selectProvider(name as string) {
     match ($name) {
-        when "gitlab" {
-            return gitlabIdentity.provider();
-        }
-        when "gitea", "forgejo" {
-            return giteaIdentity.provider();
-        }
-        when "oidc" {
-            return oidcIdentity.provider();
-        }
+        when "gitlab" { return gitlabIdentity.provider(); }
+        when "gitea", "forgejo" { return giteaIdentity.provider(); }
+        when "oidc" { return oidcIdentity.provider(); }
     }
     return githubIdentity.provider();
 }
@@ -228,7 +247,9 @@ def auth as authview.Config init authview.Config{
     },
     signingKey: convert.bytesFromString($cfg.tokenKey, "utf-8"),
     tokenTtl: TOKEN_TTL,
-    refreshTtl: REFRESH_TTL
+    refreshTtl: REFRESH_TTL,
+    # Kept only where it is a credential the forge accepts (7.1 route A).
+    keepForgeToken: config.sourceAuthorityOf($cfg) == "login"
 };
 def authOn as bool init authview.enabled($auth);
 
@@ -237,12 +258,8 @@ def authOn as bool init authview.enabled($auth);
 # coincide on github.com (specification 12.1), so they are configured separately.
 func selectForge(name as string) {
     match ($name) {
-        when "gitlab" {
-            return gitlabForge.forge();
-        }
-        when "gitea", "forgejo" {
-            return giteaForge.forge();
-        }
+        when "gitlab" { return gitlabForge.forge(); }
+        when "gitea", "forgejo" { return giteaForge.forge(); }
     }
     return githubForge.forge();
 }
@@ -252,12 +269,8 @@ func selectForge(name as string) {
 # only place the deployment's answer to "who may claim a scope" is chosen.
 func selectPolicy(name as string) {
     match ($name) {
-        when "operator" {
-            return operatorPolicy.policy();
-        }
-        when "firstcome" {
-            return firstcomePolicy.policy();
-        }
+        when "operator" { return operatorPolicy.policy(); }
+        when "firstcome" { return firstcomePolicy.policy(); }
     }
     return derivedPolicy.policy();
 }
@@ -273,6 +286,11 @@ def forgeConfig as forge.Config init forge.Config{
     apiToken: $cfg.forgeToken,
     host: $cfg.forgeHost
 };
+
+# How a publish proves push access to its repository (7.1 route A): `login` asks
+# with the caller's own sealed provider token, `service` with the registry's
+# forge token. `config.problem` has already refused a setting that cannot work.
+def sourceAuthority as string init config.sourceAuthorityOf($cfg);
 
 # Trusted publishing (8.9). Gated on an audience being configured: without one
 # every check in `trustpub.check` would have nothing to compare against, and an
@@ -294,8 +312,11 @@ if ($tpOn) {
     try {
         $tpKeys = trustpub.fetchJwks($tpIssuer);
     } catch (err) {
-        io.printf("warning: could not fetch the key set for %s (%s); " +
-            "trusted publishing is off\n", $tpIssuer, $err.message);
+        io.printf(
+            "warning: could not fetch the key set for %s (%s); " +
+                "trusted publishing is off\n",
+            $tpIssuer,
+            $err.message);
         $tpOn = false;
     }
 }
@@ -310,8 +331,10 @@ if ($authOn) {
     try {
         $authFlow = $auth.provider.flow($auth.providerConfig);
     } catch (err) {
-        io.printf("warning: could not ask %s which flow it offers (%s); advertising device\n",
-            $providerName, $err.message);
+        io.printf(
+            "warning: could not ask %s which flow it offers (%s); advertising device\n",
+            $providerName,
+            $err.message);
     }
 }
 
@@ -382,10 +405,9 @@ func nowSeconds() {
 # counter and is picked up by the next flush.
 func flushCounts() {
     def now as int init nowSeconds();
-    def hours as list of string init [stats.hourKey($now),
-        stats.hourKey($now - 3600)];
+    def hours as list of string init [stats.hourKey($now), stats.hourKey($now - 3600)];
     def pending as map of string to int init {};
-    def db as flatdb.DB init store.open($dbPath);
+    def db as flatdb.DB init sharedStore();
     for (def name in store.listDecks($db)) {
         for (def hour in $hours) {
             def key as string init hitKey($name, $hour);
@@ -405,12 +427,18 @@ func flushCounts() {
     defer store.unlock($held);
     def out as flatdb.DB init store.open($dbPath);
     for (def key in $pending) {
-        def name as string init strings.substring($key, 0,
+        def name as string init strings.substring(
+            $key,
+            0,
             len($key) - len(stats.hourKey($now)) - 1);
-        def hour as string init strings.substring($key,
-            len($key) - len(stats.hourKey($now)), len($key));
-        $out = store.putStats($out, $name, stats.record(
-            store.getStats($out, $name), $hour, $pending[$key], $now));
+        def hour as string init strings.substring(
+            $key,
+            len($key) - len(stats.hourKey($now)),
+            len($key));
+        $out = store.putStats(
+            $out,
+            $name,
+            stats.record(store.getStats($out, $name), $hour, $pending[$key], $now));
         kv.incr($hits, $key, 0 - $pending[$key]);
     }
     store.save($out);
@@ -438,7 +466,7 @@ func counterValue(key as string) {
  */
 func apiIndex(ctx as web.Context) {
     if (webapi.wants($ctx) == "html") {
-        def db as flatdb.DB init store.open($dbPath);
+        def db as flatdb.DB init sharedStore();
         def page as webview.Page init webview.home($db);
         web.html($ctx, $page.status, $page.body);
         return;
@@ -449,18 +477,18 @@ func apiIndex(ctx as web.Context) {
 
 /**
  * GET /search?q= - deck search, as a page for a browser and as JSON for an API
- * client. Both run the same `search.find`, so the two cannot disagree.
+ * client. Both run `search.select` over the same shared index, so the two
+ * cannot disagree; the page shows the result a page at a time.
  * @param ctx {web.Context} the request context
  */
 func apiSearch(ctx as web.Context) {
-    def db as flatdb.DB init store.open($dbPath);
     def query as string init web.query($ctx, "q");
     if (webapi.wants($ctx) == "html") {
-        def page as webview.Page init webview.results($db, $query);
+        def page as webview.Page init webview.results(sharedIndex(), $query, pageOf($ctx));
         web.html($ctx, $page.status, $page.body);
         return;
     }
-    def reply as view.Reply init view.search($db, $query);
+    def reply as view.Reply init view.search(sharedIndex(), $query);
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
@@ -472,19 +500,24 @@ func apiSearch(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func siteDeck(ctx as web.Context) {
-    def db as flatdb.DB init store.open($dbPath);
+    def db as flatdb.DB init sharedStore();
     def name as string init "@" + web.param($ctx, "scope") + "/" + web.param($ctx, "deck");
     def page as webview.Page init webview.deck($db, $name, nowSeconds());
     web.html($ctx, $page.status, $page.body);
 }
 
+# pageOf reads a listing's `?page=` parameter.
+func pageOf(ctx as web.Context) {
+    return webview.pageNumber(web.query($ctx, "page"));
+}
+
 /**
- * GET /browse - every deck. This was the landing page until the landing page
- * stopped being a list.
+ * GET /browse?page= - every deck, a page at a time. This was the landing page
+ * until the landing page stopped being a list.
  * @param ctx {web.Context} the request context
  */
 func siteBrowse(ctx as web.Context) {
-    def page as webview.Page init webview.browse(store.open($dbPath));
+    def page as webview.Page init webview.browse(sharedIndex(), pageOf($ctx));
     web.html($ctx, $page.status, $page.body);
 }
 
@@ -493,27 +526,27 @@ func siteBrowse(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func siteTags(ctx as web.Context) {
-    def page as webview.Page init webview.tags(store.open($dbPath));
+    def page as webview.Page init webview.tags(sharedIndex());
     web.html($ctx, $page.status, $page.body);
 }
 
 /**
- * GET /tag/:name - the decks carrying one tag.
+ * GET /tag/:name?page= - the decks carrying one tag.
  * @param ctx {web.Context} the request context
  */
 func siteTag(ctx as web.Context) {
-    def page as webview.Page init webview.tag(store.open($dbPath),
-        web.param($ctx, "name"));
+    def name as string init web.param($ctx, "name");
+    def page as webview.Page init webview.tag(sharedIndex(), $name, pageOf($ctx));
     web.html($ctx, $page.status, $page.body);
 }
 
 /**
- * GET /scope/:name - who holds a scope, and what is published under it.
+ * GET /scope/:name?page= - who holds a scope, and what is published under it.
  * @param ctx {web.Context} the request context
  */
 func siteScope(ctx as web.Context) {
-    def page as webview.Page init webview.scope(store.open($dbPath),
-        web.param($ctx, "name"));
+    def name as string init web.param($ctx, "name");
+    def page as webview.Page init webview.scope(sharedStore(), sharedIndex(), $name, pageOf($ctx));
     web.html($ctx, $page.status, $page.body);
 }
 
@@ -525,8 +558,7 @@ func siteScope(ctx as web.Context) {
  */
 func siteReference(ctx as web.Context) {
     if (not fs.isDir(REFERENCE_ROOT)) {
-        def page as webview.Page init webview.sectionMissing("Admin manual",
-            REFERENCE_ROOT, "");
+        def page as webview.Page init webview.sectionMissing("Admin manual", REFERENCE_ROOT, "");
         web.html($ctx, $page.status, $page.body);
         return;
     }
@@ -540,8 +572,10 @@ func siteReference(ctx as web.Context) {
  */
 func siteManual(ctx as web.Context) {
     if (not fs.isDir(MANUAL_ROOT)) {
-        def page as webview.Page init
-            webview.sectionMissing("User manual", MANUAL_ROOT, MANUAL_CONFIG);
+        def page as webview.Page init webview.sectionMissing(
+            "User manual",
+            MANUAL_ROOT,
+            MANUAL_CONFIG);
         web.html($ctx, $page.status, $page.body);
         return;
     }
@@ -555,8 +589,10 @@ func siteManual(ctx as web.Context) {
  */
 func siteSpecs(ctx as web.Context) {
     if (not fs.isDir(SPECS_ROOT)) {
-        def page as webview.Page init
-            webview.sectionMissing("Specifications", SPECS_ROOT, SPECS_CONFIG);
+        def page as webview.Page init webview.sectionMissing(
+            "Specifications",
+            SPECS_ROOT,
+            SPECS_CONFIG);
         web.html($ctx, $page.status, $page.body);
         return;
     }
@@ -589,14 +625,124 @@ func apiDiscovery(ctx as web.Context) {
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
+# The parsed registry every read shares. A `json.Value` is immutable and
+# `kv.setValue` stores it without copying, so one parse serves every concurrent
+# reader; parsing per request held one copy per request in flight, which is what
+# `maxInFlight` used to be sized against.
+def shared as kv.Store init kv.open();
+
+# How long one parsed copy may be served before it is parsed again, even when the
+# file looks unchanged. The file is recognised by its mtime and size, which two
+# writes within one mtime tick that leave the same size could both share; this
+# bounds how long such a write can go unseen.
+def const SHARED_TTL_SECONDS as int init 30;
+
+# sharedStore is the registry as of now, parsed once per change of the file and
+# shared by every reader. For reads only: a write re-opens the file under the
+# lock (`store.open`), because a copy read before the lock may already be behind.
+# The copy carries an empty version, so `flatdb.save` refuses it outright if one
+# ever reaches a write path by mistake.
+#
+# The file is stat'ed before it is read, so a copy is never older than the key
+# it is filed under; a write landing between the two only makes it newer. A
+# missing file is the empty registry and is not cached.
+func sharedStore() {
+    if (not fs.exists($dbPath)) {
+        return store.open($dbPath);
+    }
+    def key as string init "db " + fileVersion();
+    if (kv.has($shared, $key) or awaitParse($key)) {
+        try {
+            return flatdb.DB{path: $dbPath, data: kv.getValue($shared, $key), version: ""};
+        } catch (err) { # lint-disable: L103
+            # expired between the two calls; parse it again below
+        }
+    }
+    def db as flatdb.DB init store.open($dbPath);
+    keepShared("current db", $key, $db.data);
+    return flatdb.DB{path: $dbPath, data: $db.data, version: ""};
+}
+
+# sharedIndex is the deck index (`search.index`) of the registry as of now, built
+# once per change of the file and shared like the store it is built from. Every
+# listing and search reads it: building it sorts every deck's versions, which
+# at 5,000 decks was most of a second per request.
+#
+# Filed under the version of the file it was asked for. `sharedStore` may hand
+# back a newer copy than that, which only makes the index newer than its key.
+func sharedIndex() {
+    if (not fs.exists($dbPath)) {
+        return search.index(store.open($dbPath));
+    }
+    def key as string init "index " + fileVersion();
+    if (kv.has($shared, $key) or awaitParse($key)) {
+        try {
+            return kv.getValue($shared, $key);
+        } catch (err) { # lint-disable: L103
+            # expired between the two calls; build it again below
+        }
+    }
+    def index as json.Value init search.index(sharedStore());
+    keepShared("current index", $key, $index);
+    return $index;
+}
+
+# fileVersion names the registry file's current version by its mtime and size.
+func fileVersion() {
+    def st as fs.Stat init fs.stat($dbPath);
+    return convert.toString($st.mtimeNanos) + ":" + convert.toString($st.size);
+}
+
+# keepShared files a freshly built value for every reader, ends the wait of any
+# reader `awaitParse` held back for it, and drops the value it replaces from the
+# same `slot`: only the newest is worth keeping, and an older one would
+# otherwise sit in memory until its TTL ran out.
+func keepShared(slot as string, key as string, value as json.Value) {
+    kv.setValue($shared, $key, $value, SHARED_TTL_SECONDS);
+    kv.delete($shared, "parsing " + $key);
+    def previous as string init kv.get($shared, $slot);
+    if (not ($previous == "" or $previous == $key)) {
+        kv.delete($shared, $previous);
+    }
+    kv.set($shared, $slot, $key, 0);
+}
+
+# How long a reader waits for another reader's parse (or index build) before
+# doing it itself.
+def const PARSE_WAIT_MS as int init 5000;
+def const PARSE_POLL_MS as int init 20;
+
+# awaitParse makes one reader the parser of a new version of the file (or the
+# builder of its index) and the rest wait for its copy. Every write changes the
+# file, the counter flush among them, and the burst of readers that follows each
+# would otherwise parse a copy apiece: measured, that was most of the peak
+# memory under load. Returns true when the copy is there to share, false when
+# this reader is to build it: it won the marker, or the builder took too long (a
+# reader that threw mid-build leaves its marker to expire, so nobody waits for
+# good).
+func awaitParse(key as string) {
+    if (kv.add($shared, "parsing " + $key, "1", 10)) {
+        return false;
+    }
+    def waited as int init 0;
+    while ($waited < PARSE_WAIT_MS) {
+        time.sleep(time.fromMilliseconds(PARSE_POLL_MS));
+        $waited = $waited + PARSE_POLL_MS;
+        if (kv.has($shared, $key)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 # lockedStore takes the registry's write lock. Every handler that writes goes
 # through it, and each **must** `defer store.unlock` on what it gets back.
 #
-# The read has to happen inside the lock as well as the write. `flatdb` has no
-# locking of its own: two handlers that each open, edit, and save would lose one
-# of the two edits, and nothing in the write path would notice. Requests are
-# served concurrently, each in its own worker, so that is the ordinary case
-# rather than a rare race.
+# The read has to happen inside the lock as well as the write: `flatdb.save` does
+# not lock, so two handlers that each open, edit, and save would lose one of the
+# two edits. Requests are served concurrently, each in its own worker, so that is
+# the ordinary case rather than a rare race. Hence `store.open` under the lock,
+# never `sharedStore`.
 func lockedStore() {
     return store.lock($dbPath);
 }
@@ -621,8 +767,9 @@ func answerAuth(ctx as web.Context, stage as string, out as authview.AuthReply) 
             $names[] = json.asString($out.body, "/orgs/" + convert.toString($i));
         }
         def orgs as string init strings.join($names, ",");
-        audit.write($logSink, audit.tokenIssued($stage, $who,
-            json.asString($out.body, "/login"), $orgs));
+        audit.write(
+            $logSink,
+            audit.tokenIssued($stage, $who, json.asString($out.body, "/login"), $orgs));
     } elseif ($out.status == 200) {
         audit.write($logSink, audit.loginStarted($providerName));
     } else {
@@ -647,9 +794,9 @@ func requestText(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiAuthDevice(ctx as web.Context) {
-    def held as store.Lock init lockedStore();
-    defer store.unlock($held);
-    def db as flatdb.DB init store.open($dbPath);
+    # Writes nothing, so it takes no lock: holding one across the provider call
+    # would stall every write on the server behind a slow provider.
+    def db as flatdb.DB init sharedStore();
     answerAuth($ctx, "device", authview.device($auth, $db));
 }
 
@@ -658,10 +805,17 @@ func apiAuthDevice(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiAuthToken(ctx as web.Context) {
+    # The provider round trips happen first and unlocked; the lock covers only
+    # recording the refresh token, the same split `apiPublish` makes.
+    def got as authview.Login init authview.login($auth, requestText($ctx));
+    if (not $got.ok) {
+        answerAuth($ctx, "issued", $got.reply);
+        return;
+    }
     def held as store.Lock init lockedStore();
     defer store.unlock($held);
     def db as flatdb.DB init store.open($dbPath);
-    answerAuth($ctx, "issued", authview.token($auth, $db, requestText($ctx), token.now()));
+    answerAuth($ctx, "issued", authview.issueLogin($auth, $db, $got, token.now()));
 }
 
 /**
@@ -675,6 +829,27 @@ func apiAuthRefresh(ctx as web.Context) {
     answerAuth($ctx, "refreshed", authview.refresh($auth, $db, requestText($ctx), token.now()));
 }
 
+# publishRequestProblem is why a publish request cannot be sent to the forge,
+# or "". The adapters build every API call from their own base URL and the URL's
+# path, while the URL itself is what gets recorded and handed to clients - so a
+# URL whose host no forge here claims would be read from one place and installed
+# from another: GitHub's content, served under an attacker's host. The tag is
+# placed into those API paths as well, so it must not be able to redirect them.
+func publishRequestProblem(repository as string, tag as string) {
+    def urlProblem as string init forge.repositoryProblem($repository);
+    if (not ($urlProblem == "")) {
+        return $urlProblem;
+    }
+    if (not $theForge.handles($forgeConfig, $repository)) {
+        return "this registry does not publish from " + forge.hostOf($repository);
+    }
+    def originComplaint as string init forge.originProblem($repository, $forgeConfig.baseUrl);
+    if (not ($originComplaint == "")) {
+        return $originComplaint;
+    }
+    return forge.tagProblem($tag);
+}
+
 # sourceFrom assembles what publishview needs, which is where every network call
 # in a publish happens: resolve the tag to a commit, read `deck.toml` **at that
 # commit**, and ask the forge what repository this URL actually is. The manifest
@@ -682,6 +857,24 @@ func apiAuthRefresh(ctx as web.Context) {
 # scope check a check on a fact rather than on a claim.
 func sourceFrom(repository as string, tag as string) {
     def commit as string init $theForge.resolveTag($forgeConfig, $repository, $tag);
+    # The commit is the forge's answer, and it is about to be placed into the
+    # URLs of every read below. Anything but a full SHA stops here, carried out
+    # for `checkSource` to refuse as a 400, before it addresses anything.
+    if (not store.isCommit($commit)) {
+        return publishview.Source{
+            repository: $repository,
+            tag: $tag,
+            commit: $commit,
+            repoId: "",
+            repoOwnerId: "",
+            repoOwner: "",
+            manifestText: "",
+            readmeText: "",
+            commitShadowed: false,
+            entryPresent: false,
+            authority: forge.unknown("not asked: the tag did not resolve to a commit")
+        };
+    }
     # Asked before the manifest is read, and carried as a fact for `checkSource`
     # to judge: every forge reads `?ref=` as a name before an object, so a branch
     # or tag called `<commit>` would answer the reads below in the commit's
@@ -689,8 +882,7 @@ func sourceFrom(repository as string, tag as string) {
     # which lands here as a 502 - the right answer for a check that could not be
     # made.
     def shadowed as bool init $theForge.refExists($forgeConfig, $repository, $commit);
-    def text as string init $theForge.readFile($forgeConfig, $repository, $commit,
-        "deck.toml");
+    def text as string init $theForge.readFile($forgeConfig, $repository, $commit, "deck.toml");
     def r as forge.Repo init $theForge.repo($forgeConfig, $repository);
     # A README is optional, so a repository without one publishes normally. It is
     # read at the same commit as the manifest, which is what makes the page show
@@ -701,6 +893,20 @@ func sourceFrom(repository as string, tag as string) {
     } catch (err) {
         $readme = "";
     }
+    # The entry module the manifest's name implies (6.1), asked about without
+    # being downloaded. A manifest that does not parse names no file, and its
+    # parse error is what the publish then reports.
+    def entry as string init publishview.entryPathFor($text);
+    def entryPresent as bool init false;
+    if (not ($entry == "")) {
+        $entryPresent = $theForge.fileExists($forgeConfig, $repository, $commit, $entry);
+    }
+    # Asked again now the reads are done: a ref named after the commit, created
+    # between the first question and the reads, would have answered them in the
+    # commit's place. A shadow at either end refuses.
+    if (not $shadowed) {
+        $shadowed = $theForge.refExists($forgeConfig, $repository, $commit);
+    }
     return publishview.Source{
         repository: $repository,
         tag: $tag,
@@ -710,8 +916,67 @@ func sourceFrom(repository as string, tag as string) {
         repoOwner: $r.owner,
         manifestText: $text,
         readmeText: $readme,
-        commitShadowed: $shadowed
+        commitShadowed: $shadowed,
+        entryPresent: $entryPresent,
+        authority: forge.unknown("not asked yet")
     };
+}
+
+# authorityFor asks the forge whether the account behind a publish may push to
+# the repository it names (7.1 route A). That account is the caller for a bearer
+# token and `ciPrincipal` for a CI token; trusted publishing is not asked, since
+# its token already proves the repository. Never throws: a check that cannot be
+# made is `unknown`, and publishview refuses unknown.
+func authorityFor(
+    mode as string,
+    db as flatdb.DB,
+    who as identity.Subject,
+    ciRec as citoken.Token,
+    src as publishview.Source) {
+    if ($mode == "trusted") {
+        return forge.unknown("not asked: trusted publishing proves the repository");
+    }
+    def principal as identity.Subject init $who;
+    if ($mode == "ci") {
+        $principal = publishview.ciPrincipal(
+            $db,
+            $ciRec,
+            publishview.deckNameOf($src.manifestText));
+    }
+    try {
+        return askForge($db, $principal, $src.repository);
+    } catch (err) {
+        return forge.unknown("the forge could not be asked: " + $err.message);
+    }
+}
+
+# askForge puts the question with whichever credential this deployment uses: the
+# account's own provider token where identity and forge are one service, or the
+# registry's forge token about the account's username where they are two (12.5).
+func askForge(db as flatdb.DB, principal as identity.Subject, repository as string) {
+    if ($principal.id == "") {
+        return forge.unknown("there is no account behind this publish whose access " +
+            "could be checked; a CI token for an organisation scope needs one");
+    }
+    if (not ($principal.provider == $providerName)) {
+        return forge.unknown("the account behind this publish is on " +
+            $principal.provider + ", not on this registry's identity provider");
+    }
+    if ($sourceAuthority == "service") {
+        return $theForge.permissionFor($forgeConfig, $repository, $principal.login);
+    }
+    def sealed as string init store.getForgeToken($db, convert.toInt($principal.id));
+    if ($sealed == "") {
+        return forge.unknown("no forge credential is on record for this account; " +
+            "log in again so the registry can ask the forge");
+    }
+    def credential as string init "";
+    try {
+        $credential = forgecred.unseal($auth.signingKey, $sealed);
+    } catch (err) {
+        return forge.unknown("the stored forge credential cannot be read; log in again");
+    }
+    return $theForge.permission($forgeConfig, $repository, $credential);
 }
 
 # callerOf turns an Authorization header into an identity, or into an empty
@@ -721,7 +986,11 @@ func sourceFrom(repository as string, tag as string) {
 # path goes through here so that mapping happens once.
 func callerOf(ctx as web.Context) {
     def nobody as identity.Subject init identity.Subject{
-        provider: "", id: "", login: "", orgs: {}, orgsCheckedAt: ""
+        provider: "",
+        id: "",
+        login: "",
+        orgs: {},
+        orgsCheckedAt: ""
     };
     try {
         # `authenticate` returns a `token.Identity` - what the registry's own
@@ -730,7 +999,8 @@ func callerOf(ctx as web.Context) {
         # this is the only place that knows which provider issued the subject:
         # the token records an account id, not where the account lives, since a
         # deployment serves exactly one identity provider.
-        def held as token.Identity init authview.authenticate($auth,
+        def held as token.Identity init authview.authenticate(
+            $auth,
             web.header($ctx, "Authorization"));
         return identity.Subject{
             provider: $providerName,
@@ -753,6 +1023,14 @@ func answerPublish(ctx as web.Context, out as publishview.PublishReply) {
     webapi.sendJson($ctx, $out.status, $out.body);
 }
 
+# fieldOf reads a string member of a request body, or "" when it is absent.
+func fieldOf(body as json.Value, pointer as string) {
+    if (not json.has($body, $pointer)) {
+        return "";
+    }
+    return json.asString($body, $pointer);
+}
+
 /**
  * POST /publish - publish a version from a repository and a tag.
  *
@@ -771,15 +1049,9 @@ func apiPublish(ctx as web.Context) {
         webapi.fail($ctx, 400, "the request body is not JSON");
         return;
     }
-    def repository as string init "";
-    if (json.has($body, "/repository")) {
-        $repository = json.asString($body, "/repository");
-    }
-    def tag as string init "";
-    if (json.has($body, "/tag")) {
-        $tag = json.asString($body, "/tag");
-    }
-    def db as flatdb.DB init store.open($dbPath);
+    def repository as string init fieldOf($body, "/repository");
+    def tag as string init fieldOf($body, "/tag");
+    def db as flatdb.DB init sharedStore();
 
     # THE CREDENTIAL IS CHECKED BEFORE THE FORGE IS TOUCHED. Reading a repository
     # is an outbound request to a URL the caller chose, so doing it first would
@@ -799,8 +1071,10 @@ func apiPublish(ctx as web.Context) {
             return;
         }
         try {
-            $claims = trustpub.verified(json.asString($body, "/identityToken"),
-                $tpKeys, $tpProvider);
+            $claims = trustpub.verified(
+                json.asString($body, "/identityToken"),
+                $tpKeys,
+                $tpProvider);
         } catch (err) {
             webapi.fail($ctx, 401, "the identity token did not verify: " + $err.message);
             return;
@@ -818,8 +1092,7 @@ func apiPublish(ctx as web.Context) {
             }
         } else {
             if (not $authOn) {
-                webapi.fail($ctx, 501,
-                    "this registry accepts no logins, so it accepts no writes");
+                webapi.fail($ctx, 501, "this registry accepts no logins, so it accepts no writes");
                 return;
             }
             $who = callerOf($ctx);
@@ -830,20 +1103,41 @@ func apiPublish(ctx as web.Context) {
         }
     }
 
+    def requestComplaint as string init publishRequestProblem($repository, $tag);
+    if (not ($requestComplaint == "")) {
+        webapi.fail($ctx, 400, $requestComplaint);
+        return;
+    }
+
     def src as publishview.Source;
     try {
         $src = sourceFrom($repository, $tag);
     } catch (err) {
-        webapi.fail($ctx, 502, "could not read " + $repository + " at " + $tag +
-            ": " + $err.message);
+        webapi.fail(
+            $ctx,
+            502,
+            "could not read " + $repository + " at " + $tag +
+                ": " + $err.message);
         return;
     }
+    # Source authority (7.1 route A) is one more question for the forge, so it is
+    # asked here too, before the lock; publishview judges the answer under it.
+    $src.authority = authorityFor($mode, $db, $who, $ciRec, $src);
     # The lock is taken **after** the forge call, not before. Reading a repository
     # is a network round trip to a host the caller chose; holding the registry's
     # only write lock across it would let one slow forge serialise every publish
     # on the server, and a slow enough one would push other writers past their
     # wait. The credential was already established above from local state, so
     # nothing that decides *authorisation* happens outside the lock.
+    #
+    # A forge slow enough to outlast the respond timeout means the engine has
+    # already answered `503`. Recording the version anyway would publish
+    # something the caller was told failed, so stop here; a retry starts over.
+    if (not web.isOpen($ctx)) {
+        def why as string init "the forge outlasted the respond timeout; the client got 503";
+        audit.write($logSink, audit.publishRefused($why, 503));
+        return;
+    }
     def held as store.Lock init lockedStore();
     defer store.unlock($held);
     # Re-read under the lock: the copy opened above was read without it, and
@@ -854,21 +1148,18 @@ func apiPublish(ctx as web.Context) {
     def now as string init convert.toString(token.now());
     match ($mode) {
         when "trusted" {
-            answerPublish($ctx, publishview.byTrustedPublisher($db, $claims,
-                $tpAudience, $tpIssuer, $src, $now));
+            answerPublish(
+                $ctx,
+                publishview.byTrustedPublisher($db, $claims, $tpAudience, $tpIssuer, $src, $now));
         }
-        when "ci" {
-            answerPublish($ctx, publishview.byCiToken($db, $ciRec, $src, $now));
-        }
-        when "token" {
-            answerPublish($ctx, publishview.byToken($db, $who, $src, $now));
-        }
+        when "ci" { answerPublish($ctx, publishview.byCiToken($db, $ciRec, $src, $now)); }
+        when "token" { answerPublish($ctx, publishview.byToken($db, $who, $src, $now)); }
     }
 }
 
 # yankBody reads the two fields both yank routes take.
 func yankArgs(ctx as web.Context) {
-    def out as map of string to string init { "name": "", "version": "" };
+    def out as map of string to string init {"name": "", "version": ""};
     try {
         def body as json.Value init json.decode(requestText($ctx));
         if (json.has($body, "/name")) {
@@ -899,8 +1190,7 @@ func answerYank(ctx as web.Context, yanked as bool) {
     def held as store.Lock init lockedStore();
     defer store.unlock($held);
     def db as flatdb.DB init store.open($dbPath);
-    answerPublish($ctx, publishview.setYanked($db, $who, $args["name"],
-        $args["version"], $yanked));
+    answerPublish($ctx, publishview.setYanked($db, $who, $args["name"], $args["version"], $yanked));
 }
 
 /**
@@ -954,9 +1244,15 @@ func apiClaim(ctx as web.Context) {
     }
     def held as store.Lock init lockedStore();
     defer store.unlock($held);
-    answerScope($ctx, scopeview.claim(store.open($dbPath), $claimPolicy, $who,
-        bodyField($ctx, "scope"), reserved.defaults(),
-        convert.toString(token.now())));
+    answerScope(
+        $ctx,
+        scopeview.claim(
+            store.open($dbPath),
+            $claimPolicy,
+            $who,
+            bodyField($ctx, "scope"),
+            reserved.defaults(),
+            convert.toString(token.now())));
 }
 
 /**
@@ -973,10 +1269,15 @@ func apiOwners(ctx as web.Context) {
     }
     def held as store.Lock init lockedStore();
     defer store.unlock($held);
-    answerScope($ctx, scopeview.owners(store.open($dbPath), $who,
-        bodyField($ctx, "scope"), bodyField($ctx, "subject"),
-        not (bodyField($ctx, "action") == "remove"),
-        convert.toString(token.now())));
+    answerScope(
+        $ctx,
+        scopeview.owners(
+            store.open($dbPath),
+            $who,
+            bodyField($ctx, "scope"),
+            bodyField($ctx, "subject"),
+            not (bodyField($ctx, "action") == "remove"),
+            convert.toString(token.now())));
 }
 
 /**
@@ -985,7 +1286,7 @@ func apiOwners(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiScopes(ctx as web.Context) {
-    def out as scopeview.ScopeReply init scopeview.listScopes(store.open($dbPath));
+    def out as scopeview.ScopeReply init scopeview.listScopes(sharedStore());
     webapi.sendJson($ctx, $out.status, $out.body);
 }
 
@@ -1003,7 +1304,7 @@ func apiHealth(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiListDecks(ctx as web.Context) {
-    def db as flatdb.DB init store.open($dbPath);
+    def db as flatdb.DB init sharedStore();
     def reply as view.Reply init view.listDecks($db);
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
@@ -1014,7 +1315,7 @@ func apiListDecks(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiGetDeck(ctx as web.Context) {
-    def db as flatdb.DB init store.open($dbPath);
+    def db as flatdb.DB init sharedStore();
     def name as string init web.param($ctx, "name");
     def reply as view.Reply init view.getDeck($db, $name);
     if ($reply.status == 200) {
@@ -1031,7 +1332,7 @@ func apiGetDeck(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiGetDeckByQuery(ctx as web.Context) {
-    def db as flatdb.DB init store.open($dbPath);
+    def db as flatdb.DB init sharedStore();
     def name as string init web.query($ctx, "name");
     def reply as view.Reply init view.getDeck($db, $name);
     if ($reply.status == 200) {
@@ -1047,7 +1348,7 @@ func apiGetDeckByQuery(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiGetVersion(ctx as web.Context) {
-    def db as flatdb.DB init store.open($dbPath);
+    def db as flatdb.DB init sharedStore();
     def name as string init web.param($ctx, "name");
     def reply as view.Reply init view.getVersion($db, $name, web.param($ctx, "version"));
     webapi.sendJson($ctx, $reply.status, $reply.body);
@@ -1059,7 +1360,7 @@ func apiGetVersion(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiResolve(ctx as web.Context) {
-    def db as flatdb.DB init store.open($dbPath);
+    def db as flatdb.DB init sharedStore();
     def name as string init web.query($ctx, "name");
     def reply as view.Reply init view.resolve($db, $name, web.query($ctx, "constraint"));
     if ($reply.status == 200) {
@@ -1075,7 +1376,7 @@ func apiResolve(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiResolveGraph(ctx as web.Context) {
-    def db as flatdb.DB init store.open($dbPath);
+    def db as flatdb.DB init sharedStore();
     def reply as view.Reply init view.resolveGraph($db, web.query($ctx, "roots"));
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
@@ -1192,7 +1493,9 @@ func forwardedFor(ctx as web.Context) {
 }
 
 func accessLog(ctx as web.Context) {
-    def ev as audit.Event init audit.requestSeen(web.method($ctx), web.path($ctx),
+    def ev as audit.Event init audit.requestSeen(
+        web.method($ctx),
+        web.path($ctx),
         audit.clientOf(forwardedFor($ctx), web.remoteAddr($ctx)));
     if ($logRequests) {
         # Promoted out of debug on request, so an access log does not drag every
@@ -1200,6 +1503,27 @@ func accessLog(ctx as web.Context) {
         $ev.level = audit.INFO;
     }
     audit.write($logSink, $ev);
+    return true;
+}
+
+# notModified answers a repeat read of a page or listing with `304` when the
+# database has not changed, before anything parses it (`view.isConditional`,
+# `view.cacheTag`). `Vary: Accept` goes on every response, since one URL serves a
+# browser HTML and a client JSON, and a shared cache must not swap them.
+func notModified(ctx as web.Context) {
+    web.setHeader($ctx, "Vary", "Accept");
+    if (not view.isConditional(web.method($ctx), web.path($ctx))) {
+        return true;
+    }
+    def st as fs.Stat;
+    try {
+        $st = fs.stat($dbPath);
+    } catch (err) {
+        return true;
+    }
+    if (web.etag($ctx, view.cacheTag($st.size, $st.mtimeNanos, token.now(), webapi.wants($ctx)))) {
+        return false;
+    }
     return true;
 }
 
@@ -1264,8 +1588,34 @@ func siteNotFound(ctx as web.Context) {
     webapi.notFound($ctx, "no such endpoint: " + web.path($ctx));
 }
 
+# The policy every page and reply carries but the three books, computed once:
+# it names the theme script by its hash (`webview.contentSecurityPolicy`).
+def pagePolicy as string init webview.contentSecurityPolicy();
+
+# securityHeaders sets the response headers that cost nothing and close whole
+# classes of mistake: no MIME sniffing, no framing (clickjacking), no full URL in
+# the Referer sent to a deck's repository, and the Content-Security-Policy, which
+# leaves an escaping slip in a page with no script to run. The books under
+# /manual, /reference and /specs are grimoire's output with grimoire's own
+# scripts, so they get everything but the policy.
+func securityHeaders(ctx as web.Context) {
+    web.setHeader($ctx, "X-Content-Type-Options", "nosniff");
+    web.setHeader($ctx, "X-Frame-Options", "DENY");
+    web.setHeader($ctx, "Referrer-Policy", "strict-origin-when-cross-origin");
+    def p as string init web.path($ctx);
+    for (def book in ["/manual/", "/reference/", "/specs/"]) {
+        if (strings.startsWith($p, $book)) {
+            return true;
+        }
+    }
+    web.setHeader($ctx, "Content-Security-Policy", $pagePolicy);
+    return true;
+}
+
 def app as web.App init web.new();
 $app = web.before($app, accessLog);
+$app = web.before($app, securityHeaders);
+$app = web.before($app, notModified);
 $app = web.notFound($app, siteNotFound);
 $app = webapi.install($api, $app, apiGuard);
 
@@ -1304,8 +1654,9 @@ def counter as task of int init spawn {
         try {
             flushCounts();
         } catch (err) { # lint-disable: L103
-            audit.write($logSink, audit.event("warn",
-                "could not flush resolution counts", {"error": $err.message}));
+            audit.write(
+                $logSink,
+                audit.event("warn", "could not flush resolution counts", {"error": $err.message}));
         }
     }
     return 0;
@@ -1319,12 +1670,38 @@ def counter as task of int init spawn {
 # the certificate is obtained after it is up. Doing it the other way round
 # deadlocks on the first run: the CA cannot reach a server that is waiting for a
 # certificate before it starts.
-io.printf("jvc deck repository listening on %s (db: %s, log: %s)\n",
-    config.displayUrl("http", $addr), $dbPath, audit.describe($logSink));
+io.printf(
+    "jvc deck repository listening on %s (db: %s, log: %s)\n",
+    config.displayUrl("http", $addr),
+    $dbPath,
+    audit.describe($logSink));
 audit.write($logSink, audit.serverStarted($addr, $dbPath, $providerName, $authOn));
 
+# What the server takes on at once. Reads share one parsed copy of the database
+# (`sharedStore`), but a large page is still built per request: twenty concurrent
+# `/browse` over five thousand decks peaked near 0.7 GB. The engine holds a
+# request beyond the limit instead of taking the host down, which is why the
+# limit is a setting (`maxInFlight`): the right value depends on the database's
+# size and the host's memory. Request bodies here are small JSON objects.
+def const MAX_BODY_BYTES as int init 65536;
+# How long a body may take to arrive before the engine answers `408`. The engine
+# reads it before the request takes a place, so a slow body cannot stall others,
+# but it still holds a connection and a buffer; at 64 KB, ten seconds asks for
+# no more than 6.5 KB/s. The engine's own default is 60 s.
+def const BODY_TIMEOUT_MS as int init 10000;
+# The respond timeout is when the engine answers `503` itself. It has to sit above
+# the slowest legitimate request, which is a publish waiting on its forge calls;
+# `apiPublish` checks `web.isOpen` before writing, so a publish the client was
+# already told failed is not then recorded.
+def limits as httpd.Options init httpd.Options{
+    maxBodyBytes: MAX_BODY_BYTES,
+    maxInFlight: $cfg.maxInFlight,
+    respondTimeoutMs: $cfg.respondTimeoutSeconds * 1000,
+    bodyTimeoutMs: BODY_TIMEOUT_MS
+};
+
 if (not $cfg.tls.enabled) {
-    web.run($app, $addr);
+    web.serveOn($app, httpd.listenWith($addr, $limits));
     exit 0;
 }
 
@@ -1332,30 +1709,43 @@ if (config.isStaging($cfg.tls.directory)) {
     io.printf("note: using the ACME staging directory; certificates will not be trusted\n");
 }
 
-def plain as task of int init spawn { web.run($app, $addr); return 0; };
+def plain as task of int init spawn {
+    web.serveOn($app, httpd.listenWith($addr, $limits));
+    return 0;
+};
 
 def bundle as certs.Bundle;
 try {
     $bundle = certs.ensure($cfg.tls, token.now());
 } catch (err) {
-    io.eprintf("could not obtain a certificate for %s: %s\n",
-        strings.join($cfg.tls.domains, ", "), $err.message);
-    audit.write($logSink, audit.certificateFailed(strings.join($cfg.tls.domains, ", "),
-        $err.message));
+    io.eprintf(
+        "could not obtain a certificate for %s: %s\n",
+        strings.join($cfg.tls.domains, ", "),
+        $err.message);
+    audit.write(
+        $logSink,
+        audit.certificateFailed(strings.join($cfg.tls.domains, ", "), $err.message));
     # The plain listener is already serving and stays up: losing HTTPS is bad,
     # losing the registry entirely because a CA was unreachable is worse.
     io.eprintf("continuing on plain HTTP only\n");
-    web.run($app, $addr);
+    # Wait on the listener that is already serving. Starting a second one on the
+    # same address, as this used to, fails to bind and ends the process - the
+    # opposite of what the message above promises.
+    task.wait($plain);
     exit 1;
 }
 
-audit.write($logSink, audit.certificateReady(strings.join($cfg.tls.domains, ", "),
-    $bundle.issuedAt));
-io.printf("jvc deck repository listening on %s (%s)\n",
+audit.write(
+    $logSink,
+    audit.certificateReady(strings.join($cfg.tls.domains, ", "), $bundle.issuedAt));
+io.printf(
+    "jvc deck repository listening on %s (%s)\n",
     config.displayUrl("https", $cfg.tls.addr),
     strings.join($cfg.tls.domains, ", "));
 
-def tlsServer as httpd.Server init httpd.listenTLS($cfg.tls.addr,
+def tlsServer as httpd.Server init httpd.listenTLSWith(
+    $cfg.tls.addr,
     convert.bytesFromString($bundle.cert, "utf-8"),
-    convert.bytesFromString($bundle.key, "utf-8"));
+    convert.bytesFromString($bundle.key, "utf-8"),
+    $limits);
 web.serveOn($app, $tlsServer);

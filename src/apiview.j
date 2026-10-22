@@ -21,10 +21,18 @@
 use json;
 use strings;
 use convert;
+use maps;
 import "flatdb.j" as flatdb;
 import "./store.j" as store;
 import "./search.j" as search;
 import "./deckcatalog.j" as deckcatalog;
+import "./constraint.j" as constraint;
+import "./deckname.j" as deckname;
+
+# The most roots one `/resolve-graph` request may name. A real project lists a
+# handful of direct dependencies; the bound is there so one anonymous request
+# cannot ask for the whole registry.
+export def const MAX_GRAPH_ROOTS as int init 64;
 
 # ptrEscape encodes a name as one JSON Pointer token ("~"->"~0", "/"->"~1") so a
 # scoped root key like "@jennifer/routeros" reads as a single key.
@@ -50,7 +58,7 @@ def const SERVICE_VERSION as string init "0.1.0";
 # saying so is more useful to a client implementer than a version number that
 # looks settled. The specification and the server share the number from 1.0.0
 # onward, so "which spec does this registry implement" has one answer.
-export def const SPEC_VERSION as string init "0.3.0";
+export def const SPEC_VERSION as string init "0.1.0";
 
 /**
  * An HTTP response as pure data: a status code and a JSON body.
@@ -66,7 +74,7 @@ export def struct Reply {
 func errorReply(status as int, message as string) {
     def body as json.Value init json.map();
     $body = json.set($body, "/error", $message);
-    return Reply{ status: $status, body: $body };
+    return Reply{status: $status, body: $body};
 }
 
 # stringList builds a JSON array from a Jennifer list of string.
@@ -97,7 +105,7 @@ export func index() {
     $body = json.set($body, "/version", SERVICE_VERSION);
     $body = json.set($body, "/description", "deck repository for jennifer-lang");
     $body = json.set($body, "/endpoints", stringList($endpoints));
-    return Reply{ status: 200, body: $body };
+    return Reply{status: 200, body: $body};
 }
 
 /**
@@ -139,21 +147,23 @@ export func index() {
  *     accepts no logins
  * @return {Reply} a 200 reply with the discovery document
  */
-export func discovery(base as json.Value, canonicalUrl as string,
-        authUrls as map of string to string) {
+export func discovery(
+    base as json.Value,
+    canonicalUrl as string,
+    authUrls as map of string to string) {
     def body as json.Value init $base;
     if (not (strings.trim($canonicalUrl) == "")) {
         $body = json.set($body, "/url", strings.trim($canonicalUrl));
     }
     if (len($authUrls) == 0) {
-        return Reply{ status: 200, body: $body };
+        return Reply{status: 200, body: $body};
     }
     def auth as json.Value init json.map();
     for (def name in $authUrls) {
         $auth = json.set($auth, "/" + $name, $authUrls[$name]);
     }
     $body = json.set($body, "/auth", $auth);
-    return Reply{ status: 200, body: $body };
+    return Reply{status: 200, body: $body};
 }
 
 /**
@@ -163,7 +173,7 @@ export func discovery(base as json.Value, canonicalUrl as string,
 export func health() {
     def body as json.Value init json.map();
     $body = json.set($body, "/status", "ok");
-    return Reply{ status: 200, body: $body };
+    return Reply{status: 200, body: $body};
 }
 
 /**
@@ -174,34 +184,39 @@ export func health() {
 export func listDecks(db as flatdb.DB) {
     def body as json.Value init json.map();
     $body = json.set($body, "/decks", stringList(store.listDecks($db)));
-    return Reply{ status: 200, body: $body };
+    return Reply{status: 200, body: $body};
 }
 
 /**
  * The search response: decks whose name or description matches `query`, best
  * first. An **empty query lists every deck**, so this is also the machine-
- * readable form of the landing page. Always a 200: no match is an empty list,
- * not an error.
- * @param db {flatdb.DB} the registry to read
+ * readable form of the landing page. No match is a 200 with an empty list, not
+ * an error; a query over `search.MAX_QUERY` characters is a 400.
+ *
+ * Each result is the index entry as it stands (`name`, `description`, `latest`,
+ * `versions`, `live`, `keywords`), so answering is a lookup, not a rebuild.
+ * @param index {json.Value} the registry's deck index, from `search.index`
  * @param query {string} the search query ("" for everything)
- * @return {Reply} a 200 reply with `{ query, count, results }`
+ * @return {Reply} a 200 reply with `{ query, count, results }`, or a 400
  */
-export func search(db as flatdb.DB, query as string) {
-    def hits as list of search.Hit init search.find($db, $query);
-    def arr as json.Value init json.list();
-    for (def hit in $hits) {
-        def elem as json.Value init json.map();
-        $elem = json.set($elem, "/name", $hit.name);
-        $elem = json.set($elem, "/description", $hit.description);
-        $elem = json.set($elem, "/latest", $hit.latest);
-        $elem = json.set($elem, "/versions", $hit.versions);
-        $arr = json.append($arr, "", $elem);
+export func search(index as json.Value, query as string) {
+    if (len($query) > search.MAX_QUERY) {
+        return errorReply(
+            400,
+            "query longer than " + convert.toString(search.MAX_QUERY) +
+                " characters");
+    }
+    def found as list of int init search.select($index, $query);
+    # everything, in index order: the index itself is the answer, uncopied
+    def results as json.Value init $index;
+    if (not (strings.trim($query) == "")) {
+        $results = search.entries($index, $found);
     }
     def body as json.Value init json.map();
     $body = json.set($body, "/query", $query);
-    $body = json.set($body, "/count", len($hits));
-    $body = json.set($body, "/results", $arr);
-    return Reply{ status: 200, body: $body };
+    $body = json.set($body, "/count", len($found));
+    $body = json.set($body, "/results", $results);
+    return Reply{status: 200, body: $body};
 }
 
 /**
@@ -218,7 +233,7 @@ export func getDeck(db as flatdb.DB, name as string) {
     if (not store.hasDeck($db, $name)) {
         return errorReply(404, "no such deck: " + $name);
     }
-    return Reply{ status: 200, body: store.getDeckJson($db, $name) };
+    return Reply{status: 200, body: store.getDeckJson($db, $name)};
 }
 
 /**
@@ -235,7 +250,7 @@ export func getVersion(db as flatdb.DB, name as string, version as string) {
     if (not store.hasVersion($db, $name, $version)) {
         return errorReply(404, "no such version: " + $name + "@" + $version);
     }
-    return Reply{ status: 200, body: store.getVersionJson($db, $name, $version) };
+    return Reply{status: 200, body: store.getVersionJson($db, $name, $version)};
 }
 
 /**
@@ -259,13 +274,18 @@ export func resolve(db as flatdb.DB, name as string, constraintExpr as string) {
     if ($expr == "") {
         $expr = "*";
     }
+    # A constraint outside the grammar matches nothing, so answering 404 would
+    # read as "no such version" when the request itself is what is wrong.
+    if (not constraint.isValidConstraint($expr)) {
+        return errorReply(400, "not a valid version constraint: " + $expr);
+    }
     def r as store.Resolution init store.resolve($db, $name, $expr);
     if (not $r.found) {
         def miss as json.Value init json.map();
         $miss = json.set($miss, "/found", false);
         $miss = json.set($miss, "/name", $name);
         $miss = json.set($miss, "/error", "no version of " + $name + " satisfies " + $expr);
-        return Reply{ status: 404, body: $miss };
+        return Reply{status: 404, body: $miss};
     }
     def body as json.Value init json.map();
     $body = json.set($body, "/found", true);
@@ -277,7 +297,7 @@ export func resolve(db as flatdb.DB, name as string, constraintExpr as string) {
     $body = json.set($body, "/commit", $r.commit);
     $body = json.set($body, "/checksum", $r.checksum);
     $body = json.set($body, "/description", $r.description);
-    return Reply{ status: 200, body: $body };
+    return Reply{status: 200, body: $body};
 }
 
 /**
@@ -301,12 +321,16 @@ export func resolveGraph(db as flatdb.DB, rootsJson as string) {
     } catch (err) {
         return errorReply(400, "invalid 'roots' JSON object");
     }
+    def problem as string init rootsProblem($roots);
+    if (not ($problem == "")) {
+        return errorReply(400, $problem);
+    }
     def g as deckcatalog.GraphResult init deckcatalog.resolveGraph($db, $roots);
     def body as json.Value init json.map();
     if (not $g.ok) {
         $body = json.set($body, "/ok", false);
         $body = json.set($body, "/error", $g.error);
-        return Reply{ status: 200, body: $body };
+        return Reply{status: 200, body: $body};
     }
     $body = json.set($body, "/ok", true);
     def arr as json.Value init json.list();
@@ -333,7 +357,39 @@ export func resolveGraph(db as flatdb.DB, rootsJson as string) {
         $arr = json.append($arr, "", $elem);
     }
     $body = json.set($body, "/resolved", $arr);
-    return Reply{ status: 200, body: $body };
+    return Reply{status: 200, body: $body};
+}
+
+/**
+ * Why a set of resolution roots cannot be resolved as asked, or "". Pure.
+ *
+ * Names fold, so two spellings of one deck are one root asked for twice, which
+ * would resolve as two decks at two versions; a constraint outside the grammar
+ * matches nothing. Both are the request's fault and get a `400`, not a failed
+ * resolution.
+ * @param roots {map of string to string} deck name to constraint, as sent
+ * @return {string} the complaint, or ""
+ */
+export func rootsProblem(roots as map of string to string) {
+    if (len($roots) > MAX_GRAPH_ROOTS) {
+        return "too many roots: at most " + convert.toString(MAX_GRAPH_ROOTS) +
+            " may be resolved in one request";
+    }
+    def seen as map of string to bool init {};
+    for (def name in $roots) {
+        def folded as string init deckname.fold($name);
+        if (not deckname.isValid($folded)) {
+            return "not a valid deck name: " + $name;
+        }
+        if (maps.has($seen, $folded)) {
+            return $name + " is named twice, under two spellings";
+        }
+        $seen[$folded] = true;
+        if (not constraint.isValidConstraint($roots[$name])) {
+            return "not a valid version constraint for " + $name + ": " + $roots[$name];
+        }
+    }
+    return "";
 }
 
 /**
@@ -364,6 +420,11 @@ export func versionOfPath(path as string) {
             return 0;
         }
     }
+    # A major this long is no version anybody serves, and would not fit in an
+    # int; answering with one that is never supported keeps it a 400, not a 500.
+    if (len($digits) > 9) {
+        return 999999999;
+    }
     return convert.toInt($digits);
 }
 
@@ -382,11 +443,11 @@ export func versionOfPath(path as string) {
 export func unsupportedVersion(path as string, supported as list of int) {
     def asked as int init versionOfPath($path);
     if ($asked == 0) {
-        return Reply{ status: 0, body: json.map() };
+        return Reply{status: 0, body: json.map()};
     }
     for (def v in $supported) {
         if ($v == $asked) {
-            return Reply{ status: 0, body: json.map() };
+            return Reply{status: 0, body: json.map()};
         }
     }
     def body as json.Value init json.map();
@@ -396,5 +457,62 @@ export func unsupportedVersion(path as string, supported as list of int) {
         $majors = json.append($majors, "", $v);
     }
     $body = json.set($body, "/apis", $majors);
-    return Reply{ status: 400, body: $body };
+    return Reply{status: 400, body: $body};
 }
+
+/**
+ * Whether a request may be answered `304` from a tag of the database alone,
+ * before anything reads it (see `cacheTag`). Pure.
+ *
+ * A repeat visit answered from a tag costs nothing: not even a look at the
+ * shared parsed copy, let alone building the page again. Only pages and
+ * listings that are a function of the database qualify. The three lookups
+ * that count towards a deck's figures (`GET /deck`, `GET /decks/:name`,
+ * `GET /resolve`) are left out, since a `304` would skip the count; so are
+ * writes, the documentation books (served with their own validators), and
+ * everything else.
+ * @param method {string} the request method
+ * @param path {string} the request path, with or without the `/v1` prefix
+ * @return {bool} true when a matching tag may be answered with `304`
+ */
+export func isConditional(method as string, path as string) {
+    if (not ($method == "GET" or $method == "HEAD")) {
+        return false;
+    }
+    def p as string init $path;
+    if (strings.startsWith($p, "/v1/")) {
+        $p = strings.substring($p, 3, len($p));
+    }
+    for (def exact in ["/", "/browse", "/tags", "/search", "/decks", "/scopes", "/resolve-graph"]) {
+        if ($p == $exact) {
+            return true;
+        }
+    }
+    for (def prefix in ["/deck/", "/tag/", "/scope/"]) {
+        if (strings.startsWith($p, $prefix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * The validator for a conditional read: the database file's size and change
+ * time, the hour, and which representation was asked for. Pure.
+ *
+ * The file changes on every write, so any edit makes a new tag. The hour is in
+ * it because deck pages show counts over windows that move with the clock, which
+ * may otherwise be served stale from a cache for at most that hour. The
+ * representation is in it because one URL answers a browser with HTML and a
+ * client with JSON.
+ * @param sizeBytes {int} the database file's size
+ * @param mtimeNanos {int} its modification time
+ * @param now {int} the current time (Unix seconds)
+ * @param kind {string} the representation, as `webapi.wants` names it
+ * @return {string} the tag, unquoted
+ */
+export func cacheTag(sizeBytes as int, mtimeNanos as int, now as int, kind as string) {
+    return convert.toString($sizeBytes) + "-" + convert.toString($mtimeNanos) + "-" +
+        convert.toString($now // 3600) + "-" + $kind;
+}
+

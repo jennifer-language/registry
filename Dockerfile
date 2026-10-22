@@ -30,15 +30,13 @@ RUN ["jennifer", "run", "/opt/grimoire/grimoire", "build", "--config", "grimoire
 # Runtime stage: the official interpreter image plus this app. Its module
 # library ships `webapi` / `args` / `html` / `http`, so nothing needs adding.
 #
-# The `dev` tag is deliberate. Every .j file here declares
+# Pinned to a release. Every .j file here declares
 # `pragma-jennifer-version: >=0.25.0`, and so does the bundled `webapi`
-# module; the newest release tag is 0.24.0, which a release build would
-# compare against and refuse. A dev build bypasses the floor. Move to a
-# release tag as soon as one satisfies the pragma.
-#
-# `dev` is a moving tag, so build with --pull to avoid a stale local copy.
+# module, so 0.25.0 is the first release that runs this; until it existed
+# the image used the moving `dev` tag. Raise the pin deliberately, after the
+# suite passes and `jennifer serve bin/serve` boots on the new version.
 ########################################################################
-FROM ghcr.io/jennifer-language/jennifer:dev AS runtime
+FROM ghcr.io/jennifer-language/jennifer:0.25.0 AS runtime
 
 # Who the server runs as. The defaults are the base image's own unprivileged
 # user, which is right for a named volume: Docker initialises one from the
@@ -77,8 +75,16 @@ COPY --from=docs /work/public /app/public
 # immediately after. It runs before VOLUME so an anonymous volume inherits the
 # ownership; the numeric form is used because UID/GID need not name an account
 # that exists in /etc/passwd, which is what lets an arbitrary host id work.
+#
+# Only data/ changes hands. The code and the rendered books stay root's, so a
+# compromised or buggy server process cannot rewrite bin/serve for the next
+# start, or plant a page under public/. COPY keeps the build context's modes,
+# which may well be 750, so they are made readable (and executable where they
+# were) for everybody and writable by root alone.
 USER root
-RUN mkdir -p /app/data && chown -R ${UID}:${GID} /app
+RUN mkdir -p /app/data && \
+    chmod -R a+rX,go-w /app/bin /app/src /app/public && \
+    chown -R ${UID}:${GID} /app/data
 COPY --chmod=0755 bin/entrypoint.sh /entrypoint.sh
 VOLUME ["/app/data"]
 USER ${UID}:${GID}

@@ -181,9 +181,16 @@ func testResolveMissingName() {
 
 func versionReq(v as string, url as string, requires as map of string to string) {
     return store.DeckVersion{
-        version: $v, kind: store.KIND_GIT, url: $url,
-        ref: "v" + $v, commit: "9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f70819293", checksum: "",
-        requires: $requires, engines: {}, capabilities: [], description: "",
+        version: $v,
+        kind: store.KIND_GIT,
+        url: $url,
+        ref: "v" + $v,
+        commit: "9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f70819293",
+        checksum: "",
+        requires: $requires,
+        engines: {},
+        capabilities: [],
+        description: "",
         publishedAt: "0",
         yanked: false,
         license: "",
@@ -251,10 +258,11 @@ func testAnUnservedVersionIsA400NamingTheSupportedOnes() {
 # --- the canonical URL --------------------------------------------------------
 
 func testTheCanonicalUrlIsAdvertisedWhenConfigured() {
-    def reply as Reply init discovery(discoveryBase(),
-        "https://registry.jennifer-lang.dev", noAuth());
-    testing.assertEqual(json.asString($reply.body, "/url"),
-        "https://registry.jennifer-lang.dev");
+    def reply as Reply init discovery(
+        discoveryBase(),
+        "https://registry.jennifer-lang.dev",
+        noAuth());
+    testing.assertEqual(json.asString($reply.body, "/url"), "https://registry.jennifer-lang.dev");
 }
 
 func testAnUndeclaredCanonicalUrlIsOmitted() {
@@ -270,4 +278,101 @@ func testTheCanonicalUrlDoesNotDisturbTheRestOfTheDocument() {
     testing.assertEqual(json.asString($reply.body, "/registry"), SERVICE_NAME);
     testing.assertEqual(json.asString($reply.body, "/spec"), SPEC_VERSION);
     testing.assertEqual(json.asInt($reply.body, "/apis/0/version"), 1);
+}
+
+# --- what a resolution request may ask ------------------------------------------
+
+func testAConstraintOutsideTheGrammarIsA400() {
+    # it matches nothing, and a 404 would read as "no such version"
+    def db as flatdb.DB init emptyStore();
+    testing.assertEqual(resolve($db, "alpha", "~>1.2").status, 400);
+    testing.assertEqual(resolve($db, "alpha", "^99999999999999999999").status, 400);
+}
+
+func testRootsUnderTwoSpellingsAreA400() {
+    # names fold, so this is one deck asked for at two versions
+    def reply as Reply init resolveGraph(emptyStore(), '{"@t/d":"^1","@T/D":"^2"}');
+    testing.assertEqual($reply.status, 400);
+    testing.assertContains(json.asString($reply.body, "/error"), "two spellings");
+}
+
+func testABadRootIsA400() {
+    testing.assertEqual(resolveGraph(emptyStore(), '{"not a name!":"*"}').status, 400);
+    testing.assertEqual(resolveGraph(emptyStore(), '{"@t/d":"^abc"}').status, 400);
+    testing.assertEqual(resolveGraph(emptyStore(), '{"@t/d":5}').status, 400);
+}
+
+func testTheNumberOfRootsIsBounded() {
+    def roots as map of string to string init {};
+    for (def i in 0..(MAX_GRAPH_ROOTS + 1)) {
+        $roots["@t/d" + convert.toString($i)] = "*";
+    }
+    testing.assertContains(rootsProblem($roots), "too many roots");
+}
+
+func testAnOversizedApiVersionIsA400NotA500() {
+    def r as Reply init unsupportedVersion("/v99999999999999999999/decks", [1]);
+    testing.assertEqual($r.status, 400);
+}
+
+# --- conditional reads ----------------------------------------------------------
+
+func testPagesAndListingsMayBeAnsweredFromATag() {
+    for (def p in [
+        "/",
+        "/browse",
+        "/tags",
+        "/tag/net",
+        "/scope/acme",
+        "/deck/acme/tool",
+        "/search",
+        "/v1/decks",
+        "/v1/resolve-graph",
+        "/scopes"
+    ]) {
+        testing.assertTrue(isConditional("GET", $p));
+    }
+    testing.assertTrue(isConditional("HEAD", "/browse"));
+}
+
+func testCountedLookupsAndWritesAreNever() {
+    # a 304 would skip the lookup count
+    for (def p in ["/deck", "/v1/deck", "/decks/ansi", "/v1/resolve", "/resolve"]) {
+        testing.assertFalse(isConditional("GET", $p));
+    }
+    testing.assertFalse(isConditional("POST", "/v1/publish"));
+    testing.assertFalse(isConditional("POST", "/browse"));
+    testing.assertFalse(isConditional("GET", "/manual/index.html"));
+    testing.assertFalse(isConditional("GET", "/health"));
+}
+
+func testTheTagMovesWithTheDatabaseTheHourAndTheRepresentation() {
+    def base as string init cacheTag(100, 5, 7200, "html");
+    testing.assertEqual(cacheTag(100, 5, 7300, "html"), $base);
+    testing.assertNotEqual(cacheTag(101, 5, 7200, "html"), $base);
+    testing.assertNotEqual(cacheTag(100, 6, 7200, "html"), $base);
+    testing.assertNotEqual(cacheTag(100, 5, 10800, "html"), $base);
+    testing.assertNotEqual(cacheTag(100, 5, 7200, "json"), $base);
+}
+
+func testSearchAnswersFromTheIndex() {
+    def reply as Reply init search(search.index(seeded()), "TERM");
+    testing.assertEqual($reply.status, 200);
+    testing.assertEqual(json.asInt(json.get($reply.body, "/count")), 1);
+    testing.assertEqual(json.asString(json.get($reply.body, "/results/0/name")), "ansi");
+    testing.assertEqual(json.asString(json.get($reply.body, "/results/0/latest")), "2.0.0");
+    testing.assertEqual(json.asInt(json.get($reply.body, "/results/0/versions")), 3);
+    testing.assertTrue(json.asBool(json.get($reply.body, "/results/0/live")));
+}
+
+func testAnEmptySearchListsEverything() {
+    def reply as Reply init search(search.index(seeded()), "");
+    testing.assertEqual(json.asInt(json.get($reply.body, "/count")), 1);
+    def none as Reply init search(search.index(seeded()), "zzz");
+    testing.assertEqual(json.asInt(json.get($none.body, "/count")), 0);
+}
+
+func testAnOverlongSearchIsRefused() {
+    testing.assertEqual(search(search.index(seeded()), strings.repeat("a", 201)).status, 400);
+    testing.assertEqual(search(search.index(seeded()), strings.repeat("a", 200)).status, 200);
 }

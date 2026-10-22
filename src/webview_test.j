@@ -20,8 +20,7 @@ def const NOW as int init 1786994400;
 use strings;
 
 def const COMMIT as string init "9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f70819293";
-def const CHECKSUM as string init
-    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+def const CHECKSUM as string init "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; # lint-disable: L203
 
 func emptyDb() {
     return store.open("/no/such/jvc/webview/missing.json");
@@ -84,18 +83,18 @@ func testHomeIsAWholeDocument() {
 }
 
 func testBrowseListsEveryDeckAndLinksIt() {
-    def page as Page init browse(seeded());
+    def page as Page init browse(search.index(seeded()), 1);
     testing.assertContains($page.body, "@acme/routeros");
     testing.assertContains($page.body, 'href="/deck/acme/routeros"');
 }
 
 func testBrowseShowsTheLatestVersion() {
-    def page as Page init browse(seeded());
+    def page as Page init browse(search.index(seeded()), 1);
     testing.assertContains($page.body, "0.2.0");
 }
 
 func testEmptyRegistrySaysSo() {
-    def page as Page init browse(emptyDb());
+    def page as Page init browse(search.index(emptyDb()), 1);
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "No decks published yet");
 }
@@ -119,26 +118,26 @@ func testHomeStillCountsTheRegistry() {
 # --- search -----------------------------------------------------------------
 
 func testResultsReportTheMatchCount() {
-    def page as Page init results(seeded(), "routeros");
+    def page as Page init results(search.index(seeded()), "routeros", 1);
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "1 result");
     testing.assertContains($page.body, "@acme/routeros");
 }
 
 func testResultsEchoTheQueryIntoTheBox() {
-    def page as Page init results(seeded(), "routeros");
+    def page as Page init results(search.index(seeded()), "routeros", 1);
     testing.assertContains($page.body, 'value="routeros"');
 }
 
 func testNoMatchesStillAnswers200() {
     # an empty result set is not an error: the page explains, and keeps the box
-    def page as Page init results(seeded(), "nothing-here");
+    def page as Page init results(search.index(seeded()), "nothing-here", 1);
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "Nothing matched");
 }
 
 func testAnEmptyQueryListsEverything() {
-    def page as Page init results(seeded(), "");
+    def page as Page init results(search.index(seeded()), "", 1);
     testing.assertContains($page.body, "All decks");
     testing.assertContains($page.body, "@acme/routeros");
 }
@@ -198,16 +197,49 @@ func testDescriptionIsEscaped() {
     # must not survive as one
     def db as flatdb.DB init emptyDb();
     $db = store.putVersion($db, "@acme/x", "<script>alert(1)</script>", gitVer("1.0.0"));
-    def page as Page init browse($db);
+    def page as Page init browse(search.index($db), 1);
     testing.assertFalse(strings.contains($page.body, "<script>alert"));
     testing.assertContains($page.body, "&lt;script&gt;");
 }
 
 func testTheSearchQueryIsEscaped() {
     # the query is echoed into a value attribute and into the heading
-    def page as Page init results(seeded(), '"><script>');
+    def page as Page init results(search.index(seeded()), '"><script>', 1);
     testing.assertFalse(strings.contains($page.body, '"><script>'));
     testing.assertContains($page.body, "&lt;script&gt;");
+}
+
+func testTheSearchQueryCannotLeaveTheValueAttribute() {
+    # no angle bracket needed: a bare quote closes value="..." and the rest
+    # becomes attributes of the input, which ran script on page load
+    def page as Page init results(search.index(seeded()), '" autofocus onfocus=alert(1) x="', 1);
+    testing.assertFalse(strings.contains($page.body, '" autofocus'));
+    testing.assertContains($page.body, "&quot; autofocus");
+    def single as Page init results(search.index(seeded()), "' onfocus=alert(1) '", 1);
+    testing.assertFalse(strings.contains($single.body, "' onfocus"));
+}
+
+func testTheTitleIsEscaped() {
+    # deck and scope pages title themselves with a name taken from the URL
+    def out as string init layout("</title><script>x</script>", "");
+    testing.assertFalse(strings.contains($out, "<script>x"));
+    testing.assertContains($out, "&lt;/title&gt;");
+}
+
+func testTheNotFoundMessageIsEscaped() {
+    # the site-wide 404 echoes the requested path, which is entirely the
+    # visitor's to choose; this was a reflected XSS while callers escaped it
+    def page as Page init notFound('No such page: /x"><svg onload=alert(1)>');
+    testing.assertFalse(strings.contains($page.body, "<svg onload"));
+    testing.assertContains($page.body, "&lt;svg onload=alert(1)&gt;");
+}
+
+func testAnUnknownDeckNameIsEscapedOnce() {
+    # the message is escaped inside `notFound`, so a caller escaping it as well
+    # would show the reader a literal `&lt;`
+    def page as Page init deck(emptyDb(), "@acme/<b>", NOW);
+    testing.assertContains($page.body, "@acme/&lt;b&gt;");
+    testing.assertFalse(strings.contains($page.body, "&amp;lt;"));
 }
 
 # --- the not-built placeholder ----------------------------------------------
@@ -237,7 +269,8 @@ func withReadme(source as string) {
 }
 
 func testAReadmeIsRendered() {
-    def out as string init readmeSection(withReadme("# Title\n\nSome **bold** text.\n"),
+    def out as string init readmeSection(
+        withReadme("# Title\n\nSome **bold** text.\n"),
         "@acme/tool");
     testing.assertContains($out, "<h1>Title</h1>");
     testing.assertContains($out, "<strong>bold</strong>");
@@ -251,33 +284,57 @@ func testADeckWithNoReadmeRendersNothing() {
 }
 
 func testAReadmeCannotInjectScript() {
-    # This is the one that matters. markdown.toHtml passes raw HTML through by
-    # design, and a README is untrusted publisher input, so rendering it verbatim
-    # would run a publisher's script on this origin for every visitor.
+    # This is the one that matters. A README is untrusted publisher input, and
+    # these tests are the whole guarantee that markdown.toHtml escapes raw HTML:
+    # rendering it verbatim would run a publisher's script for every visitor.
     def out as string init readmeSection(
-        withReadme("# Hi\n\n<script>alert(1)</script>\n"), "@acme/tool");
+        withReadme("# Hi\n\n<script>alert(1)</script>\n"),
+        "@acme/tool");
     testing.assertFalse(strings.contains($out, "<script>"));
     testing.assertContains($out, "&lt;script&gt;");
 }
 
 func testAReadmeCannotInjectAnEventHandler() {
     def out as string init readmeSection(
-        withReadme("<img src=x onerror=alert(1)>\n"), "@acme/tool");
+        withReadme("<img src=x onerror=alert(1)>\n"),
+        "@acme/tool");
     testing.assertFalse(strings.contains($out, "<img"));
     testing.assertContains($out, "&lt;img");
 }
 
 func testAReadmeCannotBreakOutOfTheContainer() {
     def out as string init readmeSection(
-        withReadme("</div><script>alert(1)</script><div>\n"), "@acme/tool");
+        withReadme("</div><script>alert(1)</script><div>\n"),
+        "@acme/tool");
     testing.assertFalse(strings.contains($out, "</div><script>"));
 }
 
-func testEscapingDoesNotBreakMarkdown() {
-    # the safety measure must not cost the feature: none of markdown's syntax
-    # characters are HTML special characters, so every construct survives
-    def out as string init readmeSection(withReadme(
-        "# H\n\n- one\n- two\n\n`code`\n\n[link](https://example.com)\n"), "@acme/tool");
+func testAReadmeLinkCannotRunScript() {
+    # a link is markup the renderer does produce, so its target is what has to
+    # be refused, whatever the case of the scheme and however it is spelt
+    def out as string init readmeSection(
+        withReadme("[a](javascript:alert(1)) [b](JaVaScRiPt:alert(1)) [c](data:text/html,x)\n"),
+        "@acme/tool");
+    testing.assertFalse(strings.contains(strings.lower($out), "javascript:"));
+    testing.assertFalse(strings.contains($out, "data:"));
+}
+
+func testAReadmeShowsItsTextExactlyOnce() {
+    # escaping before rendering escaped twice, so a code block read `&lt;` and a
+    # quote was not a quote; what the publisher wrote is what the reader sees
+    def out as string init readmeSection(
+        withReadme("```\nif (a < b && c) x\n```\n\n> quoted\n"),
+        "@acme/tool");
+    testing.assertContains($out, "a &lt; b &amp;&amp; c");
+    testing.assertFalse(strings.contains($out, "&amp;lt;"));
+    testing.assertContains($out, "<blockquote>");
+}
+
+func testRenderingKeepsMarkdownIntact() {
+    # the safety measure must not cost the feature
+    def out as string init readmeSection(
+        withReadme("# H\n\n- one\n- two\n\n`code`\n\n[link](https://example.com)\n"),
+        "@acme/tool");
     testing.assertContains($out, "<li>one</li>");
     testing.assertContains($out, "<code>code</code>");
     testing.assertContains($out, 'href="https://example.com"');
@@ -301,8 +358,7 @@ func testTheMenuLinksToTheDiscoveryDocument() {
     # thing on the site that answers "what does this registry serve, right now".
     # Last entry, so the order stays Decks / Manual / Reference / API.
     def page as Page init home(emptyDb());
-    testing.assertContains($page.body,
-        '<a href="/.well-known/jennifer-registry">API</a>');
+    testing.assertContains($page.body, '<a href="/.well-known/jennifer-registry">API</a>');
     def nav as int init strings.indexOf($page.body, "<nav>");
     testing.assertTrue(strings.indexOf($page.body, "/.well-known/") > $nav);
     testing.assertTrue(strings.indexOf($page.body, "/.well-known/") >
@@ -322,7 +378,7 @@ func testTheMenuIsOnEveryPage() {
 func testTheSwitchIsOnEveryPage() {
     testing.assertContains(home(emptyDb()).body, 'class="theme"');
     testing.assertContains(notFound("gone").body, 'class="theme"');
-    testing.assertContains(results(emptyDb(), "x").body, 'class="theme"');
+    testing.assertContains(results(search.index(emptyDb()), "x", 1).body, 'class="theme"');
 }
 
 func testTheScriptRunsBeforeTheBodyPaints() {
@@ -360,11 +416,20 @@ func testTheSwitchIsLabelledForScreenReaders() {
 # tagged builds a version carrying keywords.
 func tagged(v as string, words as list of string) {
     return store.DeckVersion{
-        version: $v, kind: store.KIND_GIT,
-        url: "https://github.com/acme/deck-x.git", ref: "v" + $v,
-        commit: COMMIT, checksum: "", requires: {}, engines: {},
-        capabilities: [], description: "", publishedAt: "0", yanked: false,
-        license: "", keywords: $words
+        version: $v,
+        kind: store.KIND_GIT,
+        url: "https://github.com/acme/deck-x.git",
+        ref: "v" + $v,
+        commit: COMMIT,
+        checksum: "",
+        requires: {},
+        engines: {},
+        capabilities: [],
+        description: "",
+        publishedAt: "0",
+        yanked: false,
+        license: "",
+        keywords: $words
     };
 }
 
@@ -376,38 +441,38 @@ func taggedDb() {
 }
 
 func testTheTagIndexCountsDecksPerTag() {
-    def page as Page init tags(taggedDb());
+    def page as Page init tags(search.index(taggedDb()));
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "/tag/cli");
     testing.assertContains($page.body, "/tag/net");
 }
 
 func testAnEmptyRegistryHasNoTags() {
-    testing.assertContains(tags(emptyDb()).body, "No tags in use");
+    testing.assertContains(tags(search.index(emptyDb())).body, "No tags in use");
 }
 
 func testATagPageListsTheDecksCarryingIt() {
-    def page as Page init tag(taggedDb(), "cli");
+    def page as Page init tag(search.index(taggedDb()), "cli", 1);
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "@acme/one");
     testing.assertContains($page.body, "@acme/two");
 }
 
 func testATagPageExcludesDecksWithoutIt() {
-    def page as Page init tag(taggedDb(), "net");
+    def page as Page init tag(search.index(taggedDb()), "net", 1);
     testing.assertContains($page.body, "@acme/one");
     testing.assertFalse(strings.contains($page.body, "@acme/two"));
 }
 
 func testAnUnusedTagIs404() {
-    testing.assertEqual(tag(taggedDb(), "nothing").status, 404);
+    testing.assertEqual(tag(search.index(taggedDb()), "nothing", 1).status, 404);
 }
 
 func testARefusedTagIsNotEchoedBack() {
     # a refused tag can never have been stored, so the page must not render the
     # string at all rather than reflecting whatever was in the URL
     def refused as string init decodeAllFromKeywords();
-    def page as Page init tag(taggedDb(), $refused);
+    def page as Page init tag(search.index(taggedDb()), $refused, 1);
     testing.assertEqual($page.status, 404);
     testing.assertFalse(strings.contains($page.body, $refused));
 }
@@ -418,7 +483,7 @@ func decodeAllFromKeywords() {
 }
 
 func testAMalformedTagIs404RatherThanReflected() {
-    def page as Page init tag(taggedDb(), "<script>x</script>");
+    def page as Page init tag(search.index(taggedDb()), "<script>x</script>", 1);
     testing.assertEqual($page.status, 404);
     testing.assertFalse(strings.contains($page.body, "<script>x"));
 }
@@ -433,8 +498,8 @@ func testTagsAreReadFromTheNewestVersionOnly() {
     def db as flatdb.DB init emptyDb();
     $db = store.putVersion($db, "@acme/one", "d", tagged("1.0.0", ["old"]));
     $db = store.putVersion($db, "@acme/one", "", tagged("2.0.0", ["new"]));
-    testing.assertEqual(tag($db, "old").status, 404);
-    testing.assertEqual(tag($db, "new").status, 200);
+    testing.assertEqual(tag(search.index($db), "old", 1).status, 404);
+    testing.assertEqual(tag(search.index($db), "new", 1).status, 200);
 }
 
 # --- scope, source, counts ---------------------------------------------------
@@ -442,8 +507,7 @@ func testTagsAreReadFromTheNewestVersionOnly() {
 func testADeckPageLinksItsRepository() {
     # the clone URL ends .git; the link must be the browsable form
     def page as Page init deck(seeded(), "@acme/routeros", NOW);
-    testing.assertContains($page.body,
-        'href="https://github.com/acme/deck-routeros"');
+    testing.assertContains($page.body, 'href="https://github.com/acme/deck-routeros"');
     # and reads without the scheme
     testing.assertContains($page.body, ">github.com/acme/deck-routeros<");
 }
@@ -461,25 +525,27 @@ func testADeckPageNamesTheScopeItIsPublishedUnder() {
 }
 
 func testAScopePageListsTheScopesDecks() {
-    def page as Page init scope(taggedDb(), "acme");
+    def page as Page init scope(taggedDb(), search.index(taggedDb()), "acme", 1);
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "@acme/one");
     testing.assertContains($page.body, "@acme/two");
 }
 
 func testAnUnknownScopeIs404() {
-    testing.assertEqual(scope(taggedDb(), "nobody").status, 404);
+    testing.assertEqual(scope(taggedDb(), search.index(taggedDb()), "nobody", 1).status, 404);
 }
 
 func testADeckWithNoLookupsShowsNoCounts() {
     # six zeroes on a day-old deck reads as failure; absence reads as new
-    testing.assertFalse(strings.contains(
-        deck(seeded(), "@acme/routeros", NOW).body, "Resolutions"));
+    def p as Page init deck(seeded(), "@acme/routeros", NOW);
+    testing.assertFalse(strings.contains($p.body, "Resolutions"));
 }
 
 func testCountsAppearOnceSomethingHasBeenCounted() {
     def db as flatdb.DB init seeded();
-    $db = store.putStats($db, "@acme/routeros",
+    $db = store.putStats(
+        $db,
+        "@acme/routeros",
         stats.record(json.map(), stats.hourKey(NOW), 3, NOW));
     def page as Page init deck($db, "@acme/routeros", NOW);
     testing.assertContains($page.body, "Resolutions");
@@ -548,9 +614,75 @@ func testYankingAnOlderVersionDoesNotRaiseABanner() {
 func testAListingMarksADeckWithNothingInstallable() {
     def db as flatdb.DB init yankedDb();
     $db = store.setYanked($db, "@acme/routeros", "0.1.0", true);
-    testing.assertContains(browse($db).body, "all versions yanked");
+    testing.assertContains(browse(search.index($db), 1).body, "all versions yanked");
 }
 
 func testAListingShowsTheNewestLiveVersionAsLatest() {
-    testing.assertContains(browse(yankedDb()).body, "0.1.0");
+    testing.assertContains(browse(search.index(yankedDb()), 1).body, "0.1.0");
+}
+
+# manyDecks returns a registry of `n` decks, @acme/d000 upwards.
+func manyDecks(n as int) {
+    def db as flatdb.DB init emptyDb();
+    for (def i in 0..$n) {
+        def name as string init "@acme/d" + strings.repeat("0", 3 - len(convert.toString($i))) +
+            convert.toString($i);
+        $db = store.putVersion($db, $name, "router helper", gitVer("1.0.0"));
+    }
+    return $db;
+}
+
+func testBrowseShowsOnePageAtATime() {
+    def index as json.Value init search.index(manyDecks(250));
+    def first as string init browse($index, 1).body;
+    testing.assertContains($first, "All decks (250)");
+    testing.assertContains($first, "@acme/d099");
+    testing.assertFalse(strings.contains($first, "@acme/d100"));
+    testing.assertContains($first, "Page 1 of 3");
+    testing.assertContains($first, 'href="/browse?page=2"');
+    testing.assertFalse(strings.contains($first, 'rel="prev"'));
+    def last as string init browse($index, 3).body;
+    testing.assertContains($last, "@acme/d249");
+    testing.assertContains($last, 'href="/browse?page=2"');
+    testing.assertFalse(strings.contains($last, 'rel="next"'));
+}
+
+func testAPagePastTheEndShowsTheLast() {
+    def index as json.Value init search.index(manyDecks(150));
+    testing.assertContains(browse($index, 99).body, "Page 2 of 2");
+}
+
+func testASmallListingHasNoPager() {
+    testing.assertFalse(strings.contains(browse(search.index(seeded()), 1).body, 'class="pager"'));
+}
+
+func testSearchPagesKeepTheQueryEscaped() {
+    def db as flatdb.DB init manyDecks(150);
+    $db = store.putVersion($db, "@acme/zz", '"><b>router</b>', gitVer("1.0.0"));
+    def body as string init results(search.index($db), 'router"<x>', 1).body;
+    testing.assertFalse(strings.contains($body, '"<x>'));
+    def page as Page init results(search.index($db), "router", 2);
+    testing.assertContains($page.body, 'href="/search?q=router&amp;page=1"');
+}
+
+func testThePageParameterIsForgiving() {
+    testing.assertEqual(pageNumber(""), 1);
+    testing.assertEqual(pageNumber("3"), 3);
+    testing.assertEqual(pageNumber("0"), 1);
+    testing.assertEqual(pageNumber("-2"), 1);
+    testing.assertEqual(pageNumber("2x"), 1);
+    testing.assertEqual(pageNumber("99999999999999999999"), 1);
+}
+
+func testThePolicyAdmitsOnlyTheThemeScript() {
+    def policy as string init contentSecurityPolicy();
+    def digest as bytes init hash.compute(convert.bytesFromString(THEME_SCRIPT, "utf-8"), "sha256");
+    testing.assertContains(
+        $policy,
+        "script-src 'sha256-" + encoding.toText($digest, "base64") + "'");
+    testing.assertFalse(strings.contains($policy, "script-src 'unsafe-inline'"));
+    testing.assertContains($policy, "frame-ancestors 'none'");
+    # an inline handler would need unsafe-inline, so there must be none
+    testing.assertFalse(strings.contains(home(emptyDb()).body, "onclick"));
+    testing.assertContains(home(emptyDb()).body, "<script>" + THEME_SCRIPT + "</script>");
 }

@@ -12,8 +12,8 @@
  * deck page. There is no form that writes anything, no session, and no account
  * UI - publishing is a CLI action. Keep it that way.
  *
- * Every interpolated value goes through `html.escape`, because deck names and
- * descriptions are operator input and end up inside markup.
+ * Every interpolated value goes through `esc`, because deck names and
+ * descriptions are publisher input and end up inside markup, attributes included.
  * @module webview
  * @example
  * import "./webview.j" as webview;
@@ -26,6 +26,8 @@ use convert;
 use json;
 use lists;
 use maps;
+use hash;
+use encoding;
 import "flatdb.j" as flatdb;
 import "html.j" as html;
 import "markdown.j" as markdown;
@@ -34,6 +36,7 @@ import "./search.j" as search;
 import "./deckname.j" as deckname;
 import "./stats.j" as stats;
 import "./keywords.j" as keywords;
+import "uri.j" as uri;
 
 /**
  * An HTML response as pure data: a status code and a rendered body.
@@ -44,6 +47,33 @@ export def struct Page {
     status as int,
     body as string
 };
+
+/**
+ * The Content-Security-Policy for every page this module renders. No script
+ * runs but the theme switch, admitted by its hash, so a value that escapes its
+ * escaping still cannot execute; nothing loads from elsewhere but images, which
+ * a README may show from https; and no other site may frame a page.
+ *
+ * Styles stay `unsafe-inline`: the stylesheet is inline by design (one request
+ * per page), and a style cannot run code.
+ * @return {string} the header value
+ */
+export func contentSecurityPolicy() {
+    def digest as bytes init hash.compute(convert.bytesFromString(THEME_SCRIPT, "utf-8"), "sha256");
+    return "default-src 'none'; script-src 'sha256-" + encoding.toText($digest, "base64") +
+        "'; style-src 'unsafe-inline'; img-src 'self' https: data:; " +
+        "form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+}
+
+# esc escapes text for any place on a page, element content and quoted attribute
+# values alike, which is why it must cover both quotes. `html.escape` does since
+# 0.24.0-dev+167; before that it covered only `& < >`, and a search for
+# `" autofocus onfocus=...` came back inside the search box's `value` attribute
+# as live markup. Pages still call this one name, so the escaper stays one
+# choice in one place, and `webview_test.j` asserts the quotes are covered.
+func esc(s as string) {
+    return html.escape($s);
+}
 
 # The site's stylesheet. Inline, so a page is one request and nothing is fetched
 # from anywhere: no CDN, no font download, no build step. Colours are custom
@@ -69,6 +99,11 @@ export def struct Page {
 # `light` and `dark` are the only stored values. Clearing the choice is not
 # offered, because "follow my system" is what an unstamped page already does and
 # a third state in a two-state control is a puzzle rather than a feature.
+#
+# The button is wired from here, by a listener on the document, rather than by an
+# `onclick` attribute: the Content-Security-Policy admits this one script by its
+# hash, and an inline handler would need `unsafe-inline`, which admits any
+# script an injection manages to place in a page.
 def const THEME_SCRIPT as string init '
 (function () {
   var root = document.documentElement;
@@ -84,6 +119,9 @@ def const THEME_SCRIPT as string init '
     root.dataset.theme = dark ? "light" : "dark";
     try { localStorage.setItem("jvc-theme", root.dataset.theme); } catch (e) {}
   };
+  document.addEventListener("click", function (e) {
+    if (e.target.closest && e.target.closest("button.theme")) { window.jvcTheme(); }
+  });
 })();
 ';
 
@@ -292,20 +330,23 @@ tr.is-yanked td:first-child { text-decoration: line-through; }
   list-style: none; padding: 0; margin: 0.5rem 0 0; display: grid;
   grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 0.15rem;
 }
+.pager { margin: 1rem 0; color: var(--muted); }
+.pager a { margin: 0 0.5rem; }
 ';
 
-# layout wraps a page body in the site chrome. `title` is escaped by the caller
-# only when it holds a deck name; everything passed here is already escaped or
-# is trusted markup built by this module.
+# layout wraps a page body in the site chrome. `title` is plain text and is
+# escaped here, since it routinely carries a deck or scope name; `body` is markup
+# this module built, with everything untrusted in it already escaped.
 func layout(title as string, body as string) {
     return '<!doctype html>
 <html lang="en" class="no-js">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>' + $title + '</title>
+<title>' + esc($title) + '</title>
 <style>' + STYLE + '</style>
-<script>' + THEME_SCRIPT + '</script>
+<script>' + THEME_SCRIPT +
+        '</script>
 </head>
 <body>
 <header><div class="wrap">
@@ -317,7 +358,7 @@ func layout(title as string, body as string) {
 <a href="/reference/">Admin manual</a>
 <a href="/specs/">Specs</a>
 <a href="/.well-known/jennifer-registry">API</a>
-<button type="button" class="theme" onclick="jvcTheme()"
+<button type="button" class="theme"
   aria-label="Switch between light and dark">
 <span class="to-light"><svg viewBox="0 0 24 24" aria-hidden="true">
 <circle cx="12" cy="12" r="4.2"/>
@@ -328,7 +369,8 @@ l-1.5-1.5M18.1 5.9l1.5-1.5M4.4 19.6l1.5-1.5"/></svg>Light</span>
 </button>
 </nav>
 </div></header>
-<div class="wrap">' + $body + '
+<div class="wrap">' + $body +
+        '
 <footer>The registry indexes; it does not host. Deck code stays in its own
 repository, pinned to the commit it was published from.</footer>
 </div>
@@ -340,7 +382,7 @@ repository, pinned to the commit it was published from.</footer>
 func searchForm(query as string) {
     return '<form class="search" action="/search" method="get">
 <input type="search" name="q" placeholder="Search decks" aria-label="Search decks"
- value="' + html.escape($query) + '">
+ value="' + esc($query) + '">
 <button type="submit">Search</button>
 </form>';
 }
@@ -356,15 +398,15 @@ func deckUrl(name as string) {
 
 # hitItem renders one search result as a list item.
 func hitItem(hit as search.Hit) {
-    def safe as string init html.escape($hit.name);
+    def safe as string init esc($hit.name);
     def url as string init deckUrl($hit.name);
     def title as string init '<span class="deckname">' + $safe + '</span>';
     if (not ($url == "")) {
-        $title = '<a class="deckname" href="' + $url + '">' + $safe + '</a>';
+        $title = '<a class="deckname" href="' + esc($url) + '">' + $safe + '</a>';
     }
     def out as string init '<li><div class="row">' + $title;
     if (not ($hit.latest == "")) {
-        $out = $out + '<span class="pill">' + html.escape($hit.latest) + '</span>';
+        $out = $out + '<span class="pill">' + esc($hit.latest) + '</span>';
     }
     $out = $out + '<span class="pill">' + convert.toString($hit.versions) + ' version';
     if (not ($hit.versions == 1)) {
@@ -375,7 +417,7 @@ func hitItem(hit as search.Hit) {
         $out = $out + ' <span class="pill yanked">all versions yanked</span>';
     }
     if (not ($hit.description == "")) {
-        $out = $out + '<p class="desc">' + html.escape($hit.description) + '</p>';
+        $out = $out + '<p class="desc">' + esc($hit.description) + '</p>';
     }
     return $out + '</li>';
 }
@@ -385,11 +427,13 @@ func hitList(hits as list of search.Hit, emptyMessage as string) {
     if (len($hits) == 0) {
         return '<div class="empty">' + $emptyMessage + '</div>';
     }
-    def out as string init '<ul class="decks">';
+    # Joined once at the end: adding each item to a growing string re-copies all
+    # of it, which made a listing of thousands of decks quadratic in its size.
+    def items as list of string init [];
     for (def hit in $hits) {
-        $out = $out + hitItem($hit);
+        $items[] = hitItem($hit);
     }
-    return $out + '</ul>';
+    return '<ul class="decks">' + strings.join($items, "") + '</ul>';
 }
 
 /**
@@ -421,48 +465,133 @@ export func home(db as flatdb.DB) {
         '<div class="fact"><dt>For clients</dt><dd><a href="/.well-known/' +
         'jennifer-registry">The API</a>, and what this server promises</dd></div>' +
         '</ul>';
-    return Page{ status: 200, body: layout("Jennifer registry", $body) };
+    return Page{status: 200, body: layout("Jennifer registry", $body)};
 }
 
 /**
- * The browse page: every deck, which is what the landing page used to be.
+ * How many decks one page of a listing shows. Every listing is paged: a page of
+ * all 5,000 decks of a large registry was 1.2 MB, and rendering it took about
+ * 80 MB per request in flight.
+ */
+export def const PAGE_SIZE as int init 100;
+
+/**
+ * Turn a `page` query parameter into a page number: 1 for anything that is not
+ * a small positive number, so a malformed link shows the first page rather than
+ * an error. Past the last page is clamped where the listing is known.
+ * @param raw {string} the parameter as given ("" when absent)
+ * @return {int} the page, 1-based
+ */
+export func pageNumber(raw as string) {
+    if (len($raw) == 0 or len($raw) > 6) {
+        return 1;
+    }
+    for (def ch in strings.chars($raw)) {
+        if ($ch < "0" or $ch > "9") {
+            return 1;
+        }
+    }
+    def n as int init convert.toInt($raw);
+    if ($n < 1) {
+        return 1;
+    }
+    return $n;
+}
+
+# lastPage is how many pages a listing of `total` entries has; at least one, so
+# an empty listing is page 1 of 1.
+func lastPage(total as int) {
+    if ($total == 0) {
+        return 1;
+    }
+    return convert.toInt(($total + PAGE_SIZE - 1) / PAGE_SIZE);
+}
+
+# pageOf renders one page of a selection from the index, clamped to the
+# listing, with links to its neighbours. `base` is the listing's URL up to and
+# including the separator the page parameter follows ("/browse?" or
+# "/search?q=x&amp;"), already escaped; `empty` is what an empty one says.
+func pageOf(
+    index as json.Value,
+    positions as list of int,
+    page as int,
+    base as string,
+    empty as string) {
+    def total as int init len($positions);
+    def last as int init lastPage($total);
+    def shown as int init $page;
+    if ($shown > $last) {
+        $shown = $last;
+    }
+    def out as string init hitList(
+        search.hits($index, $positions, ($shown - 1) * PAGE_SIZE, PAGE_SIZE),
+        $empty);
+    if ($last == 1) {
+        return $out;
+    }
+    def nav as string init '<nav class="pager">';
+    if ($shown > 1) {
+        $nav = $nav + '<a rel="prev" href="' + $base + 'page=' +
+            convert.toString($shown - 1) + '">Previous</a> ';
+    }
+    $nav = $nav + 'Page ' + convert.toString($shown) + ' of ' + convert.toString($last);
+    if ($shown < $last) {
+        $nav = $nav + ' <a rel="next" href="' + $base + 'page=' +
+            convert.toString($shown + 1) + '">Next</a>';
+    }
+    return $out + $nav + '</nav>';
+}
+
+/**
+ * The browse page: every deck, a page at a time, which is what the landing page
+ * used to be.
  *
  * Kept as its own page rather than deleted, because "show me everything" is a
  * real request - it is just not the thing to greet somebody with.
- * @param db {flatdb.DB} the registry to read
+ * @param index {json.Value} the registry's deck index, from `search.index`
+ * @param page {int} which page, 1-based; past the last shows the last
  * @return {Page} a 200 page
  */
-export func browse(db as flatdb.DB) {
-    def hits as list of search.Hit init search.find($db, "");
+export func browse(index as json.Value, page as int) {
+    def all as list of int init search.select($index, "");
+    def listing as string init pageOf($index, $all, $page, "/browse?", "No decks published yet.");
     def body as string init '<h1>Browse</h1>
 <p class="lede">Every deck published here.</p>' + searchForm("") +
-        '<h2>All decks (' + convert.toString(len($hits)) + ')</h2>' +
-        hitList($hits, "No decks published yet.");
-    return Page{ status: 200, body: layout("Browse", $body) };
+        '<h2>All decks (' + convert.toString(len($all)) + ')</h2>' + $listing;
+    return Page{status: 200, body: layout("Browse", $body)};
 }
 
 /**
  * The search results page. An empty query lists everything, which is what the
  * landing page shows, so a submitted empty box is not an error.
- * @param db {flatdb.DB} the registry to read
+ * @param index {json.Value} the registry's deck index, from `search.index`
  * @param query {string} the search query
- * @return {Page} a 200 page
+ * @param page {int} which page of results, 1-based
+ * @return {Page} a 200 page, or a 400 for a query over `search.MAX_QUERY`
  */
-export func results(db as flatdb.DB, query as string) {
-    def hits as list of search.Hit init search.find($db, $query);
+export func results(index as json.Value, query as string, page as int) {
+    if (len($query) > search.MAX_QUERY) {
+        def body as string init '<h1>Search</h1>' + searchForm("") +
+            '<p class="lede">A search can be at most ' +
+            convert.toString(search.MAX_QUERY) + ' characters long.</p>';
+        return Page{status: 400, body: layout("Search decks", $body)};
+    }
+    def found as list of int init search.select($index, $query);
+    def count as int init len($found);
     def q as string init strings.trim($query);
     def heading as string init "All decks";
     if (not ($q == "")) {
-        $heading = convert.toString(len($hits)) + " result";
-        if (not (len($hits) == 1)) {
+        $heading = convert.toString($count) + " result";
+        if (not ($count == 1)) {
             $heading = $heading + "s";
         }
-        $heading = $heading + ' for <code>' + html.escape($q) + '</code>';
+        $heading = $heading + ' for <code>' + esc($q) + '</code>';
     }
+    def base as string init "/search?q=" + esc(uri.encodeForm($q)) + "&amp;";
+    def none as string init 'Nothing matched <code>' + esc($q) + '</code>.';
     def body as string init '<h1>Search</h1>' + searchForm($q) +
-        '<h2>' + $heading + '</h2>' +
-        hitList($hits, 'Nothing matched <code>' + html.escape($q) + '</code>.');
-    return Page{ status: 200, body: layout("Search decks", $body) };
+        '<h2>' + $heading + '</h2>' + pageOf($index, $found, $page, $base, $none);
+    return Page{status: 200, body: layout("Search decks", $body)};
 }
 
 # pinCell renders the integrity pin for a version, which depends on its kind.
@@ -471,12 +600,12 @@ func pinCell(v as store.DeckVersion) {
         if ($v.commit == "") {
             return '<span class="muted">no commit recorded</span>';
         }
-        return '<code>' + html.escape(strings.substring($v.commit, 0, 12)) + '</code>';
+        return '<code>' + esc(strings.substring($v.commit, 0, 12)) + '</code>';
     }
     if ($v.checksum == "") {
         return '<span class="muted">no checksum recorded</span>';
     }
-    return '<code>' + html.escape(strings.substring($v.checksum, 0, 19)) + '...</code>';
+    return '<code>' + esc(strings.substring($v.checksum, 0, 19)) + '...</code>';
 }
 
 # mapCell renders a name -> constraint table as inline code, or a dash.
@@ -489,8 +618,8 @@ func mapCell(entries as map of string to string) {
         if (not ($out == "")) {
             $out = $out + " ";
         }
-        $out = $out + '<code>' + html.escape($key) + " " +
-            html.escape($entries[$key]) + '</code>';
+        $out = $out + '<code>' + esc($key) + " " +
+            esc($entries[$key]) + '</code>';
     }
     return $out;
 }
@@ -505,7 +634,7 @@ func listCell(items as list of string) {
         if (not ($out == "")) {
             $out = $out + " ";
         }
-        $out = $out + '<code>' + html.escape($item) + '</code>';
+        $out = $out + '<code>' + esc($item) + '</code>';
     }
     return $out;
 }
@@ -522,9 +651,9 @@ func versionRows(db as flatdb.DB, name as string) {
             $rowClass = ' class="is-yanked"';
         }
         $out = $out + '<tr' + $rowClass + '><td class="mono">' +
-            html.escape($v.version) + '</td>' +
+            esc($v.version) + '</td>' +
             '<td>' + $status + '</td>' +
-            '<td class="mono">' + html.escape($v.kind) + '</td>' +
+            '<td class="mono">' + esc($v.kind) + '</td>' +
             '<td>' + pinCell($v) + '</td>' +
             '<td>' + mapCell($v.requires) + '</td>' +
             '<td>' + mapCell($v.engines) + '</td>' +
@@ -544,9 +673,9 @@ func versionRows(db as flatdb.DB, name as string) {
  */
 export func deck(db as flatdb.DB, name as string, now as int) {
     if (not store.hasDeck($db, $name)) {
-        return notFound("No deck named " + html.escape($name) + " is published here.");
+        return notFound("No deck named " + $name + " is published here.");
     }
-    def safe as string init html.escape($name);
+    def safe as string init esc($name);
     def all as list of string init store.listVersionsDescending($db, $name);
     # Live versions drive everything a reader might act on. The full list still
     # drives the table, because a yanked version is not hidden - it is labelled.
@@ -554,12 +683,12 @@ export func deck(db as flatdb.DB, name as string, now as int) {
     def body as string init '<h1><span class="deckname">' + $safe + '</span></h1>';
     def description as string init store.deckDescription($db, $name);
     if (not ($description == "")) {
-        $body = $body + '<p class="lede">' + html.escape($description) + '</p>';
+        $body = $body + '<p class="lede">' + esc($description) + '</p>';
     }
     $body = $body + tagRow($db, $name) + yankNotice($all, $live);
     if (len($live) > 0) {
         $body = $body + '<h2>Depend on it</h2><pre><code>[decks]
-"' + $safe + '" = "^' + html.escape($live[0]) + '"</code></pre>';
+"' + $safe + '" = "^' + esc($live[0]) + '"</code></pre>';
     }
     $body = $body + '<h2>Versions</h2>';
     if (len($all) == 0) {
@@ -577,10 +706,9 @@ export func deck(db as flatdb.DB, name as string, now as int) {
         $shown = $all;
     }
     if (len($shown) > 0) {
-        def latest as store.DeckVersion init store.getVersionRecord($db, $name,
-            $shown[0]);
+        def latest as store.DeckVersion init store.getVersionRecord($db, $name, $shown[0]);
         if (not ($latest.license == "")) {
-            $body = $body + '<h2>License</h2><p>' + html.escape($latest.license) + '</p>';
+            $body = $body + '<h2>License</h2><p>' + esc($latest.license) + '</p>';
         }
         $body = $body + factsSection($db, $name, $latest);
     }
@@ -588,7 +716,7 @@ export func deck(db as flatdb.DB, name as string, now as int) {
     $body = $body + readmeSection($db, $name);
     $body = $body + '<p class="muted" style="margin-top:2rem">' +
         '<a href="/deck?name=' + $safe + '">This deck as JSON</a></p>';
-    return Page{ status: 200, body: layout($name, $body) };
+    return Page{status: 200, body: layout($name, $body)};
 }
 
 # yankNotice warns when the versions a reader would reach for are withdrawn.
@@ -619,8 +747,8 @@ func yankNotice(all as list of string, live as list of string) {
         return "";
     }
     return '<p class="notice">The newest version, <code>' +
-        html.escape($all[0]) + '</code>, has been <strong>yanked</strong>. The ' +
-        'newest installable version is <code>' + html.escape($live[0]) +
+        esc($all[0]) + '</code>, has been <strong>yanked</strong>. The ' +
+        'newest installable version is <code>' + esc($live[0]) +
         '</code>, which is what the snippet below pins.</p>';
 }
 
@@ -632,8 +760,8 @@ func tagRow(db as flatdb.DB, name as string) {
     }
     def out as string init '<p class="cloud">';
     for (def one in $tags) {
-        $out = $out + '<a class="tag" href="/tag/' + html.escape($one) + '">' +
-            html.escape($one) + '</a>';
+        $out = $out + '<a class="tag" href="/tag/' + esc($one) + '">' +
+            esc($one) + '</a>';
     }
     return $out + '</p>';
 }
@@ -699,7 +827,7 @@ export func statsSection(db as flatdb.DB, name as string, now as int) {
 export func repoLink(url as string) {
     def out as string init strings.trim($url);
     if (not (strings.startsWith($out, "https://") or
-            strings.startsWith($out, "http://"))) {
+        strings.startsWith($out, "http://"))) {
         return "";
     }
     if (strings.endsWith($out, ".git")) {
@@ -732,14 +860,14 @@ func factsSection(db as flatdb.DB, name as string, latest as store.DeckVersion) 
     def items as string init "";
     def link as string init repoLink($latest.url);
     if (not ($link == "")) {
-        def safeLink as string init html.escape($link);
+        def safeLink as string init esc($link);
         $items = $items + '<div class="fact"><dt>Source</dt><dd><a href="' +
             $safeLink + '" rel="noopener noreferrer">' +
-            html.escape(repoLabel($link)) + '</a></dd></div>';
+            esc(repoLabel($link)) + '</a></dd></div>';
     }
     if (not ($latest.ref == "")) {
         $items = $items + '<div class="fact"><dt>Released from</dt><dd><code>' +
-            html.escape($latest.ref) + '</code></dd></div>';
+            esc($latest.ref) + '</code></dd></div>';
     }
     $items = $items + ownerFact($db, $name);
     if ($items == "") {
@@ -760,7 +888,7 @@ func ownerFact(db as flatdb.DB, name as string) {
     if ($scope == "") {
         return "";
     }
-    def safeScope as string init html.escape($scope);
+    def safeScope as string init esc($scope);
     def link as string init '<a href="/scope/' + $safeScope + '">@' + $safeScope +
         '</a>';
     if (not store.hasNamespace($db, $scope)) {
@@ -769,7 +897,7 @@ func ownerFact(db as flatdb.DB, name as string) {
     def ns as store.Namespace init store.getNamespace($db, $scope);
     def who as string init $link;
     if (not ($ns.login == "")) {
-        $who = $who + ' <span class="pill">' + html.escape($ns.login) + '</span>';
+        $who = $who + ' <span class="pill">' + esc($ns.login) + '</span>';
     }
     if ($ns.kind == store.SCOPE_ORG) {
         $who = $who + ' <span class="pill">organisation</span>';
@@ -785,16 +913,17 @@ func ownerFact(db as flatdb.DB, name as string) {
 /**
  * A deck's rendered README, or "" when it has none.
  *
- * **The source is escaped before it is rendered.** `markdown.toHtml` escapes raw
- * HTML itself as of 0.24.0-dev+29, so this is now belt and braces rather than
- * the only thing standing between a publisher and script on this origin - but it
- * stays. The floor this project declares is `>=0.25.0`, which does not by itself
- * guarantee a build new enough to have that default, and the cost of keeping it
- * is nothing: escaping first turns `<script>` into visible text while leaving
- * every markdown construct intact, because none of markdown's syntax characters
- * are HTML special characters, and the renderer does not re-escape what we
- * escaped. If you ever need raw HTML honoured, `markdown.toHtmlWith` opts into
- * it explicitly - which is exactly what a README must never get.
+ * A README is untrusted publisher input, and it is rendered with
+ * `markdown.toHtml` alone, which is **safe by default**: raw HTML in the source
+ * is escaped, and a link whose scheme is not http, https or mailto becomes `#`.
+ * Never render one with `markdown.toHtmlWith`, which opts raw HTML back in.
+ *
+ * It used to be escaped with `html.escape` first, as a guard for interpreters
+ * older than that default. That guard cost more than it bought: the renderer
+ * escapes text again, so a code block showing `a < b` reached the reader as
+ * `a &lt; b`, and quotes and alerts (`>`) stopped being markup. The tests now
+ * carry the guarantee instead - an interpreter without safe defaults fails them
+ * rather than serving a publisher's script.
  *
  * Exported so the escaping has a test of its own rather than being reachable
  * only through a whole page.
@@ -808,7 +937,7 @@ export func readmeSection(db as flatdb.DB, name as string) {
         return "";
     }
     return '<h2>Readme</h2><div class="readme">' +
-        markdown.toHtml(html.escape($source)) + '</div>';
+        markdown.toHtml($source) + '</div>';
 }
 
 /**
@@ -824,37 +953,28 @@ export func readmeSection(db as flatdb.DB, name as string) {
  * reserved names are registered to nobody on purpose (`reserved.j`), so the page
  * says the name is held rather than pretending somebody holds it.
  * @param db {flatdb.DB} the registry to read
+ * @param index {json.Value} the registry's deck index, from `search.index`
  * @param name {string} the scope, with or without its leading "@"
+ * @param page {int} which page of its decks, 1-based
  * @return {Page} the scope page at 200, or a 404 page
  */
-export func scope(db as flatdb.DB, name as string) {
+export func scope(db as flatdb.DB, index as json.Value, name as string, page as int) {
     def folded as string init deckname.fold(strings.trim($name));
     if (strings.startsWith($folded, "@")) {
         $folded = strings.substring($folded, 1, len($folded));
     }
-    def decks as list of search.Hit init decksUnder($db, $folded);
-    if (not store.hasNamespace($db, $folded) and len($decks) == 0) {
-        return notFound("No scope named @" + html.escape($folded) +
-            " is registered here.");
+    def decks as list of int init search.under($index, $folded);
+    def count as int init len($decks);
+    if (not store.hasNamespace($db, $folded) and $count == 0) {
+        return notFound("No scope named @" + $folded + " is registered here.");
     }
-    def safe as string init html.escape($folded);
+    def safe as string init esc($folded);
     def body as string init '<h1><span class="deckname">@' + $safe +
         '</span></h1>' + scopeFacts($db, $folded);
-    $body = $body + '<h2>Decks (' + convert.toString(len($decks)) + ')</h2>';
-    $body = $body + hitList($decks, "Nothing is published under this scope yet.");
-    return Page{ status: 200, body: layout("@" + $folded, $body) };
-}
-
-# decksUnder lists the decks whose scope is this one, as search hits so the
-# listing here is the same component the landing page and search results use.
-func decksUnder(db as flatdb.DB, folded as string) {
-    def out as list of search.Hit init [];
-    for (def hit in search.find($db, "")) {
-        if (deckname.scopeOf($hit.name) == $folded) {
-            $out[] = $hit;
-        }
-    }
-    return $out;
+    $body = $body + '<h2>Decks (' + convert.toString($count) + ')</h2>';
+    def none as string init "Nothing is published under this scope yet.";
+    $body = $body + pageOf($index, $decks, $page, "/scope/" + $safe + "?", $none);
+    return Page{status: 200, body: layout("@" + $folded, $body)};
 }
 
 # scopeFacts renders who holds a scope. Logins only, never subject ids.
@@ -871,7 +991,7 @@ func scopeFacts(db as flatdb.DB, folded as string) {
         $items = $items + '<div class="fact"><dt>Status</dt><dd>Reserved by ' +
             'this registry</dd></div>';
     } else {
-        def owner as string init html.escape($ns.login);
+        def owner as string init esc($ns.login);
         if ($ns.login == "") {
             $owner = '<span class="muted">an account with no recorded login</span>';
         }
@@ -891,20 +1011,24 @@ func scopeFacts(db as flatdb.DB, folded as string) {
     }
     if (not ($ns.provider == "")) {
         $items = $items + '<div class="fact"><dt>Identity provider</dt><dd>' +
-            html.escape($ns.provider) + '</dd></div>';
+            esc($ns.provider) + '</dd></div>';
     }
     return '<dl class="facts">' + $items + '</dl>';
 }
 
 /**
  * A 404 page carrying a human explanation.
- * @param message {string} the explanation, already escaped
+ *
+ * The message is plain text and is escaped here, not by the caller: it routinely
+ * carries the requested path or name, and a contract of "arrives escaped" was
+ * forgotten once already, which made every HTML 404 a reflected XSS.
+ * @param message {string} the explanation, as plain text
  * @return {Page} a 404 page
  */
 export func notFound(message as string) {
-    def body as string init '<h1>Not found</h1><p class="lede">' + $message + '</p>' +
-        searchForm("");
-    return Page{ status: 404, body: layout("Not found", $body) };
+    def body as string init '<h1>Not found</h1><p class="lede">' + esc($message) +
+        '</p>' + searchForm("");
+    return Page{status: 404, body: layout("Not found", $body)};
 }
 
 /**
@@ -919,15 +1043,17 @@ export func notFound(message as string) {
 export func sectionMissing(title as string, root as string, config as string) {
     def flag as string init "";
     if (not ($config == "")) {
-        $flag = " --config " + html.escape($config);
+        $flag = " --config " + esc($config);
     }
-    def body as string init '<h1>' + html.escape($title) + ' not built</h1>
-<p class="lede">The site serves this section from <code>' + html.escape($root) +
+    def body as string init '<h1>' + esc($title) +
+        ' not built</h1>
+<p class="lede">The site serves this section from <code>' + esc($root) +
         '/</code>, which this deployment does not have yet. Build it with:</p>
 <pre><code>docker run --rm --user "$(id -u):$(id -g)" \\
-    -v "$PWD:/work" ghcr.io/jennifer-language/grimoire build' + $flag + '</code></pre>
+    -v "$PWD:/work" ghcr.io/jennifer-language/grimoire build' + $flag +
+        '</code></pre>
 <p class="muted">The Markdown sources are in the repository either way.</p>';
-    return Page{ status: 404, body: layout($title + " not built", $body) };
+    return Page{status: 404, body: layout($title + " not built", $body)};
 }
 
 /**
@@ -942,17 +1068,22 @@ export func sectionMissing(title as string, root as string, config as string) {
  * The cloud is sized by count, in five steps rather than continuously: a linear
  * scale makes one popular tag enormous and everything else unreadable, and five
  * buckets keep the smallest tag legible while still showing the shape.
- * @param db {flatdb.DB} the registry to read
+ * @param index {json.Value} the registry's deck index, from `search.index`
  * @return {Page} a 200 page
  */
-export func tags(db as flatdb.DB) {
-    def counts as map of string to int init tagCounts($db);
+export func tags(index as json.Value) {
+    def counts as map of string to int init tagCounts($index);
     def names as list of string init lists.sort(maps.keys($counts));
     if (len($names) == 0) {
-        return Page{ status: 200, body: layout("Tags", '<h1>Tags</h1>' +
-            '<p class="lede">Decks can carry up to ' +
-            convert.toString(keywords.LIMIT) + ' keywords. None do yet.</p>' +
-            '<div class="empty">No tags in use.</div>') };
+        return Page{
+            status: 200,
+            body: layout(
+                "Tags",
+                '<h1>Tags</h1>' +
+                    '<p class="lede">Decks can carry up to ' +
+                    convert.toString(keywords.LIMIT) + ' keywords. None do yet.</p>' +
+                    '<div class="empty">No tags in use.</div>')
+        };
     }
     def most as int init 1;
     for (def name in $names) {
@@ -965,14 +1096,17 @@ export func tags(db as flatdb.DB) {
         'carries up to ' + convert.toString(keywords.LIMIT) + '.</p>';
     $body = $body + '<h2>Cloud</h2><p class="cloud">';
     for (def name in $names) {
-        $body = $body + tagLink($name, $counts[$name],
+        $body = $body +
+            tagLink(
+            $name,
+            $counts[$name],
             'cloud-' + convert.toString(cloudStep($counts[$name], $most)));
     }
     $body = $body + '</p><h2>All tags</h2><ul class="taglist">';
     for (def name in $names) {
         $body = $body + '<li>' + tagLink($name, $counts[$name], "") + '</li>';
     }
-    return Page{ status: 200, body: layout("Tags", $body + '</ul>') };
+    return Page{status: 200, body: layout("Tags", $body + '</ul>')};
 }
 
 # cloudStep buckets a count into 1..5 for the cloud's font size.
@@ -992,7 +1126,7 @@ func cloudStep(count as int, most as int) {
 
 # tagLink renders one tag, with the number of decks carrying it.
 func tagLink(name as string, count as int, extra as string) {
-    def safe as string init html.escape($name);
+    def safe as string init esc($name);
     def classes as string init "tag";
     if (not ($extra == "")) {
         $classes = $classes + " " + $extra;
@@ -1006,10 +1140,10 @@ func tagLink(name as string, count as int, extra as string) {
 # Read from each deck's **newest** version, because a tag describes what a deck
 # is now: a keyword dropped two releases ago should stop grouping the deck, and
 # summing every version would count a long-lived deck once per release.
-func tagCounts(db as flatdb.DB) {
+func tagCounts(index as json.Value) {
     def out as map of string to int init {};
-    for (def name in store.listDecks($db)) {
-        for (def tag in latestKeywords($db, $name)) {
+    for (def i in lists.range(0, json.length($index, ""))) {
+        for (def tag in search.keywordsAt($index, $i)) {
             if (maps.has($out, $tag)) {
                 $out[$tag] = $out[$tag] + 1;
             } else {
@@ -1030,12 +1164,13 @@ func latestKeywords(db as flatdb.DB, name as string) {
 }
 
 /**
- * One tag's page: every deck carrying it.
- * @param db {flatdb.DB} the registry to read
+ * One tag's page: every deck carrying it, a page at a time.
+ * @param index {json.Value} the registry's deck index, from `search.index`
  * @param name {string} the tag
+ * @param page {int} which page, 1-based
  * @return {Page} the tag page at 200, or a 404 page
  */
-export func tag(db as flatdb.DB, name as string) {
+export func tag(index as json.Value, name as string, page as int) {
     def folded as string init keywords.fold($name);
     # A refused or malformed tag can never have been stored, so there is nothing
     # to look up and nothing to render: answering 404 keeps the registry from
@@ -1043,18 +1178,14 @@ export func tag(db as flatdb.DB, name as string) {
     if (not keywords.isWellFormed($folded) or keywords.isBlocked($folded)) {
         return notFound("That is not a tag used here.");
     }
-    def hits as list of search.Hit init [];
-    for (def hit in search.find($db, "")) {
-        if (lists.contains(latestKeywords($db, $hit.name), $folded)) {
-            $hits[] = $hit;
-        }
+    def found as list of int init search.tagged($index, $folded);
+    if (len($found) == 0) {
+        return notFound("No decks are tagged " + $folded + ".");
     }
-    if (len($hits) == 0) {
-        return notFound("No decks are tagged " + html.escape($folded) + ".");
-    }
-    def safe as string init html.escape($folded);
+    def safe as string init esc($folded);
     def body as string init '<h1>' + $safe + '</h1><p class="lede">' +
-        convert.toString(len($hits)) + ' deck(s) tagged <code>' + $safe +
-        '</code>. <a href="/tags">All tags</a></p>' + hitList($hits, "");
-    return Page{ status: 200, body: layout($folded, $body) };
+        convert.toString(len($found)) + ' deck(s) tagged <code>' + $safe +
+        '</code>. <a href="/tags">All tags</a></p>' +
+        pageOf($index, $found, $page, "/tag/" + $safe + "?", "");
+    return Page{status: 200, body: layout($folded, $body)};
 }
