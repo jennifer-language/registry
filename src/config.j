@@ -28,6 +28,7 @@ use os;
 use fs;
 use io;
 use strings;
+use lists;
 use convert;
 use maps;
 
@@ -97,6 +98,8 @@ export def struct Tls {
  * @field forgeHost {string} the hostname whose URLs this forge claims
  * @field maxInFlight {int} how many requests are worked on at once; reads share
  *     one parsed copy, but each large page is built per request, so this bounds memory
+ * @field orgMaxAgeHours {int} how old a login's organisation memberships may be
+ *     before a refresh is refused (8.7); 0 turns the check off
  * @field respondTimeoutSeconds {int} how long a request may take before the
  *     engine answers `503` itself; above the slowest publish (forge calls)
  * @field sourceAuthority {string} how a publish proves push access to its
@@ -130,6 +133,7 @@ export def struct Config {
     sourceAuthority as string,
     maxInFlight as int,
     respondTimeoutSeconds as int,
+    orgMaxAgeHours as int,
     trustpubAudience as string,
     trustpubProvider as string,
     trustpubIssuer as string,
@@ -166,6 +170,7 @@ export func defaults() {
         sourceAuthority: "",
         maxInFlight: 32,
         respondTimeoutSeconds: 120,
+        orgMaxAgeHours: 168,
         trustpubAudience: "",
         trustpubProvider: "github-actions",
         trustpubIssuer: "",
@@ -271,6 +276,7 @@ export func applyToml(base as Config, text as string) {
     $out.identityClientId = str($doc, "/identity/clientId", $out.identityClientId);
     $out.identitySecret = str($doc, "/identity/secret", $out.identitySecret);
     $out.identityScopes = str($doc, "/identity/scopes", $out.identityScopes);
+    $out.orgMaxAgeHours = count($doc, "/identity/orgMaxAge", $out.orgMaxAgeHours);
     $out.tokenKey = str($doc, "/tokenKey", $out.tokenKey);
     $out.policy = str($doc, "/policy", $out.policy);
     $out.forge = str($doc, "/forge/provider", $out.forge);
@@ -396,6 +402,7 @@ export func applyEnv(base as Config, env as map of string to string) {
         "REGISTRY_TLS_RENEW_BEFORE_DAYS",
         $out.tls.renewBeforeDays);
     $out.maxInFlight = envInt($env, "REGISTRY_MAX_IN_FLIGHT", $out.maxInFlight);
+    $out.orgMaxAgeHours = envInt($env, "REGISTRY_ORG_MAX_AGE", $out.orgMaxAgeHours);
     $out.respondTimeoutSeconds = envInt(
         $env,
         "REGISTRY_RESPOND_TIMEOUT",
@@ -434,6 +441,12 @@ export func legacyNameOf(name as string) {
     return LEGACY_PREFIX + strings.substring($name, len(PREFIX), len($name));
 }
 
+# The provider, forge and policy names `bin/serve` can wire. An unknown name is
+# refused at boot rather than served as the default.
+def const IDENTITIES as list of string init ["github", "gitlab", "gitea", "forgejo", "oidc"];
+def const FORGES as list of string init ["github", "gitlab", "gitea", "forgejo"];
+def const POLICIES as list of string init ["derived", "operator", "firstcome"];
+
 /**
  * The shortest `tokenKey` accepted, in characters.
  */
@@ -446,8 +459,23 @@ export def const MIN_TOKEN_KEY as int init 32;
  * @return {string} the complaint, or "" when the configuration is usable
  */
 export func problem(cfg as Config) {
+    if (not lists.contains(IDENTITIES, $cfg.identity)) {
+        return "unknown identity provider \"" + $cfg.identity + "\"; expected one of " +
+            strings.join(IDENTITIES, ", ");
+    }
+    if (not lists.contains(FORGES, $cfg.forge)) {
+        return "unknown forge \"" + $cfg.forge + "\"; expected one of " +
+            strings.join(FORGES, ", ");
+    }
+    if (not lists.contains(POLICIES, $cfg.policy)) {
+        return "unknown policy \"" + $cfg.policy + "\"; expected one of " +
+            strings.join(POLICIES, ", ");
+    }
     if ($cfg.maxInFlight < 1) {
         return "maxInFlight must be at least 1";
+    }
+    if ($cfg.orgMaxAgeHours < 0) {
+        return "identity.orgMaxAge must be 0 (off) or a number of hours";
     }
     if ($cfg.respondTimeoutSeconds < 1) {
         return "respondTimeout must be at least 1 second";

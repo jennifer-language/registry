@@ -223,6 +223,36 @@ func testAnUnknownSourceAuthorityIsRefused() {
     testing.assertContains(problem($c), "`login` or `service`");
 }
 
+func testTheOrganisationWindowReadsFileAndEnvironment() {
+    testing.assertEqual(defaults().orgMaxAgeHours, 168);
+    def file as Config init applyToml(defaults(), '[identity]
+orgMaxAge = 24
+');
+    testing.assertEqual($file.orgMaxAgeHours, 24);
+    def env as map of string to string init {"REGISTRY_ORG_MAX_AGE": "0"};
+    testing.assertEqual(applyEnv($file, $env).orgMaxAgeHours, 0);
+    def c as Config init defaults();
+    $c.orgMaxAgeHours = -1;
+    testing.assertContains(problem($c), "orgMaxAge");
+}
+
+func testUnknownProviderForgeAndPolicyNamesAreRefused() {
+    # serve would otherwise wire the github module for any unknown name
+    def c as Config init defaults();
+    $c.identity = "gihtub";
+    testing.assertContains(problem($c), "unknown identity provider \"gihtub\"");
+    $c = defaults();
+    $c.forge = "bitbucket";
+    testing.assertContains(problem($c), "unknown forge");
+    $c = defaults();
+    $c.policy = "official";
+    testing.assertContains(problem($c), "unknown policy");
+    $c = defaults();
+    $c.identity = "forgejo";
+    $c.forge = "forgejo";
+    testing.assertEqual(problem($c), "");
+}
+
 func testSourceAuthorityReadsFileAndEnvironment() {
     def file as Config init applyToml(defaults(), '[forge]
 sourceAuthority = "service"
