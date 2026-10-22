@@ -377,6 +377,18 @@ func testRemoveWholeDeck() {
     testing.assertFalse(store.hasDeck($r.db, "@acme/ansi"));
 }
 
+func testRemoveAndListFoldTheName() {
+    # names fold wherever they enter, so a mixed-case name finds the deck
+    def db as flatdb.DB init registered();
+    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "https://x/u1")).db;
+    def listed as AdminResult init dispatch($db, ["deckadmin", "list", "@ACME/Ansi"]);
+    testing.assertTrue($listed.ok);
+    testing.assertContains($listed.message, "1.0.0");
+    def r as AdminResult init dispatch($db, ["deckadmin", "remove", "@Acme/ANSI"]);
+    testing.assertTrue($r.changed);
+    testing.assertFalse(store.hasDeck($r.db, "@acme/ansi"));
+}
+
 func testRemoveMissingFails() {
     def r as AdminResult init dispatch(registered(), ["deckadmin", "remove", "@acme/ghost"]);
     testing.assertFalse($r.ok);

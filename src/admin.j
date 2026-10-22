@@ -62,7 +62,7 @@ func ownershipCommands(p as args.Parser) {
         $ns,
         "org",
         "",
-        "the owner is an organisation: authorise by live membership (8.7)");
+        "the owner is an organisation: authorise by the memberships captured at login (8.7)");
     $out = args.command(
         $out,
         "register-namespace",
@@ -335,7 +335,7 @@ export func parser() {
     $p = args.command($p, "untrust", "remove a deck's trusted publisher", $tpr);
 
     def rv as args.Parser init args.parser("revoke", "invalidate an identity's tokens");
-    $rv = args.positional($rv, "accountId", "the numeric GitHub account id");
+    $rv = args.positional($rv, "accountId", "the numeric account id at the identity provider");
     $p = args.command($p, "revoke", "invalidate an identity's refresh tokens", $rv);
     return $p;
 }
@@ -529,7 +529,7 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
  * @return {AdminResult} the result: the (edited) store, flags, and a message
  */
 export func cmdRemove(db as flatdb.DB, r as args.Result, now as string) {
-    def name as string init args.asString($r, "deck");
+    def name as string init deckname.fold(args.asString($r, "deck"));
     def version as string init args.asString($r, "version");
     if ($version == "") {
         if (not store.hasDeck($db, $name)) {
@@ -980,7 +980,9 @@ export func cmdPublishers(db as flatdb.DB, r as args.Result, now as string) {
         }
         def line as string init "  " + $b.deck + " <- " + $label +
             " (" + $b.provider + ", id " + $b.repositoryId + ", " + $b.refPattern + ")";
-        if ($b.pending) {
+        if (trustpub.pendingExpired($b, convert.toInt($now))) {
+            $line = $line + " [pending, expired]";
+        } elseif ($b.pending) {
             $line = $line + " [pending]";
         }
         $lines[] = $line;
@@ -1138,7 +1140,7 @@ export func cmdNamespaces(db as flatdb.DB, r as args.Result, now as string) {
  * @return {AdminResult} a read-only result carrying the listing
  */
 export func cmdList(db as flatdb.DB, r as args.Result, now as string) {
-    def name as string init args.asString($r, "deck");
+    def name as string init deckname.fold(args.asString($r, "deck"));
     if ($name == "") {
         def decks as list of string init store.listDecks($db);
         if (len($decks) == 0) {
