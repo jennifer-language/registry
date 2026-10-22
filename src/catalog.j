@@ -5,17 +5,29 @@
 /**
  * The candidate catalog: the published deck versions a resolution may choose
  * from, held as plain values with no idea where they came from. It is the seam
- * that lets one resolver serve two callers - the CLI fills a catalog from a
- * repository over HTTP (and, later, from a git URL), while the server fills one
- * straight from its `flatdb` store - so `resolver` never talks to a transport.
+ * that keeps `resolver` from ever talking to a transport: the CLI fills a
+ * catalog from a repository over HTTP (`registry`) and from git tags
+ * (`gitsource`), both in one catalog, and a third source would be one more
+ * filler rather than a change to the resolver.
+ *
+ * The registry (`../app-registry`) fills its catalogs from its own store, but
+ * with its own copy of this module and of `resolver`, `constraint` and
+ * `deckname`, not with these files; its copies are currently behind.
  *
  * A catalog is a flat list of `Candidate`s (one per published deck version)
  * rather than a nested map, because Jennifer maps hold a single value type and a
- * map of name to list-of-struct is clumsier than a scan. Catalogs hold tens of
- * entries, so the linear lookups here are not worth indexing.
+ * map of name to list-of-struct is clumsier than a scan. The lookups here are
+ * linear; the resolver reads a catalog into its own index once per resolution
+ * rather than calling them in a loop.
  *
- * Every function is pure and value-semantic: `add` returns a fresh catalog and
- * never mutates its argument.
+ * A (name, version) pair is held once: adding one the catalog already has is
+ * a no-op, so the first source to announce a version wins, and every reader
+ * (`get`, `requires`, the resolver) sees the same candidate for it.
+ *
+ * Every function is pure and value-semantic: `add` and `addAll` return a fresh
+ * catalog and never mutate their argument. Growing a catalog one `add` at a
+ * time copies it on every call, so a caller holding a batch passes the whole
+ * batch to `addAll`, which copies once.
  * @module catalog
  * @example
  * import "./catalog.j" as catalog;
@@ -45,6 +57,8 @@ use maps;
  * @field requires {map of string to string} this version's own deps (deck -> constraint)
  * @field engines {map of string to string} the engines that can run it (engine -> range)
  * @field capabilities {list of string} host capabilities its code needs (net / exec / sql)
+ * @field yanked {bool} whether the registry has withdrawn this version (5)
+ * @field registry {string} the repository this version came from ("" for a git deck)
  */
 export def struct Candidate {
     name as string,
@@ -57,7 +71,9 @@ export def struct Candidate {
     description as string,
     requires as map of string to string,
     engines as map of string to string,
-    capabilities as list of string
+    capabilities as list of string,
+    yanked as bool,
+    registry as string
 };
 
 /**
@@ -74,7 +90,7 @@ export def struct Catalog {
  */
 export func empty() {
     def none as list of Candidate init [];
-    return Catalog{ entries: $none };
+    return Catalog{entries: $none};
 }
 
 /**
@@ -101,28 +117,72 @@ export func candidate(name as string, version as string) {
         description: "",
         requires: $noReqs,
         engines: $noEngines,
-        capabilities: $noCaps
+        capabilities: $noCaps,
+        yanked: false,
+        registry: ""
     };
 }
 
+# entryKey is the identity of a candidate within a catalog. A deck name holds
+# no "@" after its first character and a version holds none at all, so the
+# join is unambiguous.
+func entryKey(name as string, version as string) {
+    return $name + "@" + $version;
+}
+
 /**
- * Return a fresh catalog with one more candidate appended. A repeated
- * (name, version) is added again rather than merged; sources are expected not to
- * announce the same version twice.
+ * Return a fresh catalog with one more candidate appended. A (name, version)
+ * the catalog already holds is ignored, so the first one added wins; that is
+ * the one `get` returned anyway, and ignoring the repeat keeps every reader in
+ * agreement about which candidate a version means.
+ *
+ * Each call copies the catalog. To add many candidates use `addAll`, which
+ * copies once: a loop of `add` calls is quadratic in the catalog's size.
  * @param cat {Catalog} the catalog to extend
  * @param cand {Candidate} the candidate to add
  * @return {Catalog} a fresh catalog including cand
  */
 export func add(cat as Catalog, cand as Candidate) {
+    if (hasVersion($cat, $cand.name, $cand.version)) {
+        return $cat;
+    }
     def out as list of Candidate init $cat.entries;
     $out[] = $cand;
-    return Catalog{ entries: $out };
+    return Catalog{entries: $out};
 }
 
 /**
- * Report whether the catalog knows any version of a deck. This is the test the
- * resolver uses to decide whether a deck is genuinely absent or merely not
- * fetched yet.
+ * Return a fresh catalog with a whole batch of candidates appended, in order,
+ * copying the catalog once rather than once per candidate. As with `add`, a
+ * (name, version) already present (in the catalog or earlier in the batch) is
+ * ignored, so the first one wins.
+ * @param cat {Catalog} the catalog to extend
+ * @param candidates {list of Candidate} the candidates to add, in order
+ * @return {Catalog} a fresh catalog including every new candidate
+ */
+export func addAll(cat as Catalog, candidates as list of Candidate) {
+    def seen as map of string to bool init {};
+    for (def e in $cat.entries) {
+        $seen[entryKey($e.name, $e.version)] = true;
+    }
+    def out as list of Candidate init $cat.entries;
+    for (def c in $candidates) {
+        def key as string init entryKey($c.name, $c.version);
+        if (not maps.has($seen, $key)) {
+            $seen[$key] = true;
+            $out[] = $c;
+        }
+    }
+    return Catalog{entries: $out};
+}
+
+/**
+ * Report whether the catalog knows any version of a deck, yanked or not. The
+ * name is compared exactly as written, like every lookup here, so a caller
+ * folds it first (`deckname.fold`) to ask about a deck rather than a spelling.
+ * The resolver does not use this: it folds every catalog name into its own
+ * index once and asks that, which is how it tells a deck that is genuinely
+ * absent from one merely not fetched yet.
  * @param cat {Catalog} the catalog to read
  * @param name {string} the deck name
  * @return {bool} true when at least one version of the deck is present
@@ -171,6 +231,25 @@ export func versions(cat as Catalog, name as string) {
 }
 
 /**
+ * List the versions of one deck that a fresh resolution may choose, which is
+ * every known version except the ones the repository has yanked. A yanked
+ * version stays in the catalog because an existing lockfile may pin it, and a
+ * pinned install must keep working; only new choices avoid it.
+ * @param cat {Catalog} the catalog to read
+ * @param name {string} the deck name
+ * @return {list of string} the selectable versions, in catalog order
+ */
+export func selectableVersions(cat as Catalog, name as string) {
+    def out as list of string init [];
+    for (def e in $cat.entries) {
+        if ($e.name == $name and not $e.yanked) {
+            $out[] = $e.version;
+        }
+    }
+    return $out;
+}
+
+/**
  * Report whether one specific deck version is in the catalog.
  * @param cat {Catalog} the catalog to read
  * @param name {string} the deck name
@@ -205,7 +284,9 @@ export func get(cat as Catalog, name as string, version as string) {
     throw Error{
         kind: "catalog",
         message: "no such candidate: " + $name + "@" + $version,
-        file: "", line: 0, col: 0
+        file: "",
+        line: 0,
+        col: 0
     };
 }
 

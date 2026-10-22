@@ -39,8 +39,6 @@ use json;
 use strings;
 use convert;
 use fs;
-use time;
-use uuid;
 import "flatdb.j" as flatdb;
 import "semver.j" as semver;
 import "./constraint.j" as constraint;
@@ -343,48 +341,174 @@ export func listVersions(db as flatdb.DB, name as string) {
     return flatdb.keys($db, versionsPtr($name));
 }
 
-# precedes reports whether version a sorts before b when ordering highest-first.
-# A version that is not valid SemVer sorts last, so a malformed record stays
-# visible rather than being dropped or crashing the comparison.
-func precedes(a as string, b as string) {
-    if (not semver.isValid($a)) {
-        return false;
+# plainCore reads a version that is only MAJOR.MINOR.PATCH (no prerelease, no
+# build, no leading zero, no number too long to hold) as its three numbers, and
+# anything else as none. Nearly every published version has that shape, and
+# comparing three ints costs a fraction of a SemVer parse, which was most of
+# the time every listing took.
+func plainCore(v as string) {
+    def none as list of int init [];
+    def parts as list of string init strings.split($v, ".");
+    if (not (len($parts) == 3)) {
+        return $none;
     }
-    if (not semver.isValid($b)) {
-        return true;
+    def out as list of int init [];
+    for (def part in $parts) {
+        if (len($part) == 0 or len($part) > 18 or
+            (len($part) > 1 and strings.startsWith($part, "0"))) {
+            return $none;
+        }
+        for (def ch in strings.chars($part)) {
+            if ($ch < "0" or $ch > "9") {
+                return $none;
+            }
+        }
+        $out[] = convert.toInt($part);
     }
-    return semver.compare(semver.parse($a), semver.parse($b)) > 0;
+    return $out;
+}
+
+# coreAbove reports whether one plainCore sorts above another.
+func coreAbove(a as list of int, b as list of int) {
+    for (def i in 0..3) {
+        if (not ($a[$i] == $b[$i])) {
+            return $a[$i] > $b[$i];
+        }
+    }
+    return false;
+}
+
+# plainDescending orders versions that are all plainCore, highest first, or
+# returns none when any is not, for the general path to handle.
+func plainDescending(all as list of string) {
+    def none as list of string init [];
+    def out as list of string init [];
+    def cores as list of list of int init [];
+    for (def v in $all) {
+        def core as list of int init plainCore($v);
+        if (len($core) == 0) {
+            return $none;
+        }
+        def nextV as list of string init [];
+        def nextC as list of list of int init [];
+        def placed as bool init false;
+        for (def i in 0..len($cores)) {
+            if (not $placed and coreAbove($core, $cores[$i])) {
+                $nextV[] = $v;
+                $nextC[] = $core;
+                $placed = true;
+            }
+            $nextV[] = $out[$i];
+            $nextC[] = $cores[$i];
+        }
+        if (not $placed) {
+            $nextV[] = $v;
+            $nextC[] = $core;
+        }
+        $out = $nextV;
+        $cores = $nextC;
+    }
+    return $out;
+}
+
+# rankOf is where `p` goes in a list ordered highest first: before the first
+# version it is above, or at the end.
+func rankOf(parsed as list of semver.Version, p as semver.Version) {
+    for (def i in 0..len($parsed)) {
+        if (semver.compare($p, $parsed[$i]) > 0) {
+            return $i;
+        }
+    }
+    return len($parsed);
 }
 
 /**
  * List a deck's published versions, **highest first**, by SemVer precedence
  * rather than document order - so `[0]` is the latest release and a deck page
- * leads with it. A version string that is not valid SemVer sorts last.
+ * leads with it. A version string that is not usable SemVer sorts last, in
+ * document order, so a malformed record stays visible rather than being dropped
+ * or crashing the comparison.
  *
- * An insertion sort: version lists are short, and it keeps the invalid-last
- * rule explicit instead of hidden inside a comparator.
+ * Each version is checked and parsed once, then an insertion sort orders the
+ * parsed values: version lists are short, and parsing inside the comparison
+ * made this the most expensive step of every listing.
  * @param db {flatdb.DB} the store to read
  * @param name {string} the deck name
  * @return {list of string} the version strings, highest first
  */
 export func listVersionsDescending(db as flatdb.DB, name as string) {
-    def out as list of string init [];
-    for (def v in listVersions($db, $name)) {
-        def next as list of string init [];
-        def placed as bool init false;
-        for (def have in $out) {
-            if (not $placed and precedes($v, $have)) {
-                $next[] = $v;
-                $placed = true;
-            }
-            $next[] = $have;
-        }
-        if (not $placed) {
-            $next[] = $v;
-        }
-        $out = $next;
+    def all as list of string init listVersions($db, $name);
+    if (len($all) < 2) {
+        return $all;
     }
-    return $out;
+    def plain as list of string init plainDescending($all);
+    if (len($plain) > 0) {
+        return $plain;
+    }
+    # `isUsableVersion`, not `semver.isValid`: a valid version with a number too
+    # large to hold would throw inside `compare`, and one such record would make
+    # every listing of its deck fail.
+    def usable as list of string init [];
+    def parsed as list of semver.Version init [];
+    def unusable as list of string init [];
+    for (def v in $all) {
+        if (not constraint.isUsableVersion($v)) {
+            $unusable[] = $v;
+            continue;
+        }
+        def p as semver.Version init semver.parse($v);
+        def at as int init rankOf($parsed, $p);
+        def nextV as list of string init [];
+        def nextP as list of semver.Version init [];
+        for (def i in 0..len($parsed)) {
+            if ($i == $at) {
+                $nextV[] = $v;
+                $nextP[] = $p;
+            }
+            $nextV[] = $usable[$i];
+            $nextP[] = $parsed[$i];
+        }
+        if ($at == len($parsed)) {
+            $nextV[] = $v;
+            $nextP[] = $p;
+        }
+        $usable = $nextV;
+        $parsed = $nextP;
+    }
+    for (def v in $unusable) {
+        $usable[] = $v;
+    }
+    return $usable;
+}
+
+/**
+ * The published version that `version` is the same release as, or "". SemVer
+ * ignores build metadata in precedence, so `1.0.0+a` and `1.0.0+b` are one
+ * version; stored as two records, they were two commits behind one number, and
+ * which a client got depended on the order it read them in. Every write path
+ * asks this before adding a version.
+ * @param db {flatdb.DB} the store to read
+ * @param name {string} the deck name
+ * @param version {string} the version about to be written
+ * @return {string} the stored version with the same precedence, or ""
+ */
+export func publishedAs(db as flatdb.DB, name as string, version as string) {
+    def bare as string init withoutBuild($version);
+    for (def v in listVersions($db, $name)) {
+        if (withoutBuild($v) == $bare) {
+            return $v;
+        }
+    }
+    return "";
+}
+
+# withoutBuild drops a version's build metadata (from the first "+").
+func withoutBuild(version as string) {
+    def plus as int init strings.indexOf($version, "+");
+    if ($plus < 0) {
+        return $version;
+    }
+    return strings.substring($version, 0, $plus);
 }
 
 /**
@@ -517,15 +641,48 @@ export func removeVersion(db as flatdb.DB, name as string, version as string) {
 }
 
 /**
- * Remove a whole deck (all its versions), returning a fresh DB. Errors if the
- * deck does not exist (guard with `hasDeck`).
+ * Remove a whole deck (all its versions), and its trusted-publisher binding,
+ * returning a fresh DB. Errors if the deck does not exist (guard with
+ * `hasDeck`).
+ *
+ * The binding goes with it: left behind, it let the bound repository publish
+ * the name again, as a first publish, with nobody having said it still may.
  * @param db {flatdb.DB} the store to edit
  * @param name {string} the deck name
  * @return {flatdb.DB} a fresh store without that deck
  * @throws {Error} when the deck does not exist
  */
 export func removeDeck(db as flatdb.DB, name as string) {
-    return flatdb.remove($db, deckPtr($name));
+    def out as flatdb.DB init flatdb.remove($db, deckPtr($name));
+    if (flatdb.has($out, bindingPtr($name))) {
+        $out = flatdb.remove($out, bindingPtr($name));
+    }
+    return $out;
+}
+
+/**
+ * Drop every credential delegated under a scope: its CI tokens, and the
+ * trusted-publisher bindings of the decks under it. What a scope reassignment
+ * does, since each was authorised by the owner it is being taken from: left in
+ * place, the old owner's pipelines kept publishing under the new owner's name.
+ * @param db {flatdb.DB} the store to edit
+ * @param scope {string} the scope, without its "@"
+ * @return {flatdb.DB} a fresh store without them
+ */
+export func dropDelegations(db as flatdb.DB, scope as string) {
+    def folded as string init deckname.fold($scope);
+    def out as flatdb.DB init $db;
+    for (def print in listCiTokens($db)) {
+        if (deckname.fold(getCiToken($db, $print).scope) == $folded) {
+            $out = flatdb.remove($out, ciTokenPtr($print));
+        }
+    }
+    for (def deck in listBindings($db)) {
+        if (deckname.scopeOf($deck) == $folded) {
+            $out = flatdb.remove($out, bindingPtr($deck));
+        }
+    }
+    return $out;
 }
 
 # notFound builds a Resolution for a deck/constraint that did not resolve.
@@ -716,9 +873,12 @@ export func versionCapabilities(db as flatdb.DB, name as string, version as stri
 # --- namespace registry -----------------------------------------------------
 
 # namespacePtr is the JSON Pointer of a registered namespace record. Folded, for
-# the same reason deck pointers are.
+# the same reason deck pointers are, and escaped like them: unescaped,
+# `acme/subject` pointed inside the `acme` record, so `hasNamespace` said yes to
+# a scope that does not exist. A valid scope has nothing to escape, so the
+# records already stored are where they were.
 func namespacePtr(scope as string) {
-    return "/namespaces/" + deckname.fold($scope);
+    return "/namespaces/" + ptrEscape(deckname.fold($scope));
 }
 
 /**
@@ -847,8 +1007,7 @@ export func getNamespace(db as flatdb.DB, scope as string) {
  * @param subject {string} the caller's stable subject identifier
  * @return {bool} true when that principal owns the scope
  */
-export func ownsNamespace(db as flatdb.DB, scope as string, provider as string,
-        subject as string) {
+export func ownsNamespace(db as flatdb.DB, scope as string, provider as string, subject as string) {
     if ($provider == "" or $subject == "") {
         return false;
     }
@@ -1012,16 +1171,74 @@ export func countRefresh(db as flatdb.DB, accountId as int) {
  * @return {flatdb.DB} a fresh store without that account's tokens
  */
 export func revokeAccount(db as flatdb.DB, accountId as int) {
-    if (not flatdb.has($db, "/refreshTokens")) {
-        return $db;
+    # The sealed forge credential goes with the session: a revoked account must
+    # not leave behind a token the registry could still act with.
+    def out as flatdb.DB init deleteForgeToken($db, $accountId);
+    if (not flatdb.has($out, "/refreshTokens")) {
+        return $out;
     }
-    def out as flatdb.DB init $db;
     for (def key in flatdb.keys($db, "/refreshTokens")) {
         if (getRefresh($db, $key).accountId == $accountId) {
             $out = flatdb.remove($out, refreshPtr($key));
         }
     }
     return $out;
+}
+
+func forgeTokenPtr(accountId as int) {
+    return "/forgeTokens/" + convert.toString($accountId);
+}
+
+/**
+ * Record an account's forge credential, **sealed**, returning a fresh DB.
+ *
+ * Kept only where identity and forge are one service, and only to ask the forge
+ * whether this account may push to a repository it publishes from
+ * (specification 7.1, route A). One per account: a later login replaces it, so
+ * the registry holds the newest credential the provider issued and no history.
+ * @param db {flatdb.DB} the store to edit
+ * @param accountId {int} the numeric account id
+ * @param sealed {string} the credential as `forgecred.seal` produced it
+ * @param storedAt {int} when it was recorded (Unix seconds)
+ * @return {flatdb.DB} a fresh store with the credential recorded
+ */
+export func putForgeToken(db as flatdb.DB, accountId as int, sealed as string, storedAt as int) {
+    def out as flatdb.DB init $db;
+    if (not flatdb.has($out, "/forgeTokens")) {
+        $out = flatdb.set($out, "/forgeTokens", json.map());
+    }
+    def rec as json.Value init json.map();
+    $rec = json.set($rec, "/sealed", $sealed);
+    $rec = json.set($rec, "/storedAt", $storedAt);
+    return flatdb.set($out, forgeTokenPtr($accountId), $rec);
+}
+
+/**
+ * An account's sealed forge credential, or "" when none is on record - an
+ * account that has not logged in since credentials were kept, or one revoked.
+ * @param db {flatdb.DB} the store to read
+ * @param accountId {int} the numeric account id
+ * @return {string} the sealed credential, or ""
+ */
+export func getForgeToken(db as flatdb.DB, accountId as int) {
+    if (not flatdb.has($db, forgeTokenPtr($accountId) + "/sealed")) {
+        return "";
+    }
+    return json.asString(flatdb.get($db, forgeTokenPtr($accountId) + "/sealed"), "");
+}
+
+/**
+ * Forget an account's forge credential, returning a fresh DB. A no-op when there
+ * is none.
+ * @param db {flatdb.DB} the store to edit
+ * @param accountId {int} the numeric account id
+ * @return {flatdb.DB} a fresh store without it
+ */
+export func deleteForgeToken(db as flatdb.DB, accountId as int) {
+    if (not flatdb.has($db, forgeTokenPtr($accountId))) {
+        return $db;
+    }
+    return flatdb.remove($db, forgeTokenPtr($accountId));
 }
 
 /**
@@ -1134,8 +1351,14 @@ export func hasBinding(db as flatdb.DB, deck as string) {
  */
 export func getBinding(db as flatdb.DB, deck as string) {
     def out as trustpub.Binding init trustpub.Binding{
-        provider: "", repositoryId: "", repository: "", workflow: "",
-        refPattern: "", deck: deckname.fold($deck), pending: false, createdAt: ""
+        provider: "",
+        repositoryId: "",
+        repository: "",
+        workflow: "",
+        refPattern: "",
+        deck: deckname.fold($deck),
+        pending: false,
+        createdAt: ""
     };
     if (not flatdb.has($db, bindingPtr($deck))) {
         return $out;
@@ -1210,10 +1433,13 @@ export func setYanked(db as flatdb.DB, name as string, version as string, yanked
  * @return {bool} true when the version is withdrawn
  */
 export func isYanked(db as flatdb.DB, name as string, version as string) {
-    if (not hasVersion($db, $name, $version)) {
+    # The one flag, read where it lives. Building the whole record to read it
+    # cost a third of every listing, since a listing asks this of every version.
+    def ptr as string init versionPtr($name, $version) + "/yanked";
+    if (not flatdb.has($db, $ptr)) {
         return false;
     }
-    return getVersionRecord($db, $name, $version).yanked;
+    return json.asBool(flatdb.get($db, $ptr), "");
 }
 
 /**
@@ -1276,8 +1502,15 @@ export func putCiToken(db as flatdb.DB, t as citoken.Token) {
  */
 export func getCiToken(db as flatdb.DB, fingerprint as string) {
     def out as citoken.Token init citoken.Token{
-        fingerprint: "", name: "", scope: "", deck: "", provider: "",
-        subject: "", createdAt: "", expiresAt: "", lastUsedAt: ""
+        fingerprint: "",
+        name: "",
+        scope: "",
+        deck: "",
+        provider: "",
+        subject: "",
+        createdAt: "",
+        expiresAt: "",
+        lastUsedAt: ""
     };
     if (not flatdb.has($db, ciTokenPtr($fingerprint))) {
         return $out;
@@ -1473,14 +1706,6 @@ export func ownersOf(db as flatdb.DB, scope as string) {
 
 # --- the write lock ----------------------------------------------------------
 
-# How long to wait for a held lock before giving up, and how long a lock may sit
-# untouched before it is assumed abandoned. The stale window is deliberately much
-# larger than any real write: breaking a live lock is worse than waiting, because
-# breaking it reintroduces exactly the lost update the lock exists to prevent.
-def const LOCK_WAIT_MS as int init 5000;
-def const LOCK_RETRY_MS as int init 25;
-def const LOCK_STALE_SECONDS as int init 120;
-
 /**
  * A held write lock. Release it with `unlock`, ideally through `defer` so it is
  * released however the block exits.
@@ -1493,127 +1718,63 @@ export def struct Lock {
 };
 
 # lockPathFor is the lock beside the database, so the two travel together and a
-# bind-mounted data directory carries both.
+# bind-mounted data directory carries both. `flatdb.lock` names it the same way.
 func lockPathFor(dbPath as string) {
     return $dbPath + ".lock";
 }
 
-# holderOf reads a lock's holder label, or "" when it cannot be read.
+# holderOf reads a lock's holder label, or "" when there is no lock to read.
 func holderOf(path as string) {
     try {
-        return fs.readlink($path);
+        return fs.readString($path);
     } catch (err) {
         return "";
     }
 }
 
-# stampOf pulls the acquisition time out of a holder label, or 0. The label is
-# "<uuid> <unix seconds>", so the last space-separated field is the stamp.
-# (`strings.lastIndexOf` does not exist in this interpreter; splitting is the
-# way to reach the final field.)
-func stampOf(holder as string) {
-    def parts as list of string init strings.split($holder, " ");
-    if (len($parts) < 2) {
-        return 0;
-    }
-    try {
-        return convert.toInt($parts[len($parts) - 1]);
-    } catch (err) {
-        return 0;
-    }
-}
-
-# breakIfStale removes a lock that has sat untouched past the stale window,
-# which is how a writer killed mid-write stops wedging the registry. Split out of
-# `lock` only to keep its retry loop flat. The removal races with anybody else
-# doing the same, and that is harmless: the retry that follows re-takes the lock
-# through the same atomic symlink, so there is still exactly one winner.
-func breakIfStale(path as string) {
-    def current as string init holderOf($path);
-    if ($current == "") {
-        return null;
-    }
-    if (time.unix(time.utc()) - stampOf($current) <= LOCK_STALE_SECONDS) {
-        return null;
-    }
-    try {
-        fs.remove($path);
-    } catch (rmErr) { # lint-disable: L103
-        # somebody else broke it first, which is fine
-    }
-    return null;
-}
-
 /**
  * Take the registry's write lock, waiting for it if somebody else holds it.
  *
- * **`flatdb` has no locking of its own.** `flatdb.save` replaces the document
- * crash-atomically, so a reader never sees a torn file - but two writers that
- * each read, edit, and write back will still lose one of the two edits, and
- * nothing in the write path notices. That is the loss this prevents, and it is
- * not a rare race: `deckadmin` run while the server is up, or two publishes
- * arriving together, is enough.
+ * `flatdb.save` replaces the document crash-atomically, so a reader never sees a
+ * torn file - but two writers that each read, edit, and write back will still
+ * lose one of the two edits, and nothing in the write path notices. That is the
+ * loss this prevents, and it is not a rare race: `deckadmin` run while the
+ * server is up, or two publishes arriving together, is enough.
  *
- * The lock is a **symlink**, because creating one is atomic and fails if the
- * name exists, which is the test-and-set this needs; and because its target can
- * carry a readable holder label, so a stuck lock can be diagnosed with
- * `ls -l` rather than guessed at.
- *
- * A lock older than the stale window is assumed abandoned by a killed writer and
- * broken. That window is deliberately long: waiting is cheap, and breaking a
- * lock that is merely slow reintroduces the very loss this exists to stop.
+ * **This is `flatdb.lock`**, an exclusive file beside the database whose
+ * content is the holder label (`cat` it to diagnose a stuck lock). A lock older
+ * than 120 s is taken to be abandoned by a killed writer and broken, one waiter
+ * at a time and only while it still holds the holder judged stale, so a lock a
+ * faster waiter has just re-taken is never removed. A lock that cannot be
+ * created at all (read-only mount, missing directory, wrong uid) fails at once
+ * with the reason, rather than as contention after the wait. The registry kept
+ * its own symlink lock until the library's break was safe (0.24.0-dev+113).
  *
  * **Holding the lock is only half of it.** The document must be *read* inside
  * the lock as well as written, or the read happened before somebody else's write
  * and the edit is computed against a stale copy.
  * @param dbPath {string} the database path this lock guards
  * @return {Lock} the held lock
- * @throws {Error} when the lock could not be taken within the wait
+ * @throws {Error} kind "store" when the lock could not be taken: held past the
+ *   wait, or not creatable at all
  */
 export func lock(dbPath as string) {
-    def path as string init lockPathFor($dbPath);
-    def holder as string init uuid.v4() + " " + convert.toString(time.unix(time.utc()));
-    def waited as int init 0;
-    while ($waited <= LOCK_WAIT_MS) {
-        try {
-            fs.symlink($holder, $path);
-            return Lock{ path: $path, holder: $holder };
-        } catch (err) {
-            # A failed `symlink` means one of two very different things. If
-            # somebody holds the lock, this is contention and waiting is right.
-            # If nothing holds it, the lock could not be *created* - a read-only
-            # mount, a missing directory, the wrong uid - and no amount of
-            # waiting will help. Reporting that as a timeout blames contention
-            # for a permissions problem and costs the caller the wait as well.
-            if (holderOf($path) == "") {
-                throw Error{
-                    kind: "store",
-                    message: "cannot create the registry write lock at " + $path +
-                        ": " + $err.message,
-                    file: "", line: 0, col: 0
-                };
-            }
-            breakIfStale($path);
-        }
-        time.sleep(time.fromMilliseconds(LOCK_RETRY_MS));
-        $waited = $waited + LOCK_RETRY_MS;
+    try {
+        def held as flatdb.Lock init flatdb.lock($dbPath);
+        return Lock{path: $held.path, holder: $held.holder};
+    } catch (err) {
+        throw Error{
+            kind: "store",
+            message: "registry write lock: " + $err.message,
+            file: "",
+            line: 0,
+            col: 0
+        };
     }
-    throw Error{
-        kind: "store",
-        message: "could not take the registry write lock at " + $path +
-            " within " + convert.toString(LOCK_WAIT_MS) + "ms; holder: " +
-            holderOf($path),
-        file: "", line: 0, col: 0
-    };
 }
 
 /**
  * Who currently holds the write lock, or "" when it is free.
- *
- * Note that **`fs.exists` cannot answer this**: the lock is a symlink whose
- * target is a holder label rather than a path, so `exists` follows the link,
- * finds nothing, and reports the lock absent while it is very much held.
- * Reading the link is the test.
  * @param dbPath {string} the database the lock guards
  * @return {string} the holder label, or "" when unlocked
  */
@@ -1628,14 +1789,7 @@ export func lockHolder(dbPath as string) {
  * @param held {Lock} the lock returned by `lock`
  */
 export func unlock(held as Lock) {
-    if (not (holderOf($held.path) == $held.holder)) {
-        return null;
-    }
-    try {
-        fs.remove($held.path);
-    } catch (err) { # lint-disable: L103
-        # already gone; nothing to release
-    }
+    flatdb.unlock(flatdb.Lock{path: $held.path, holder: $held.holder});
     return null;
 }
 

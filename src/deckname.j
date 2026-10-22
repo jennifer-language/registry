@@ -3,8 +3,9 @@
 # pragma-jennifer-version: >=0.25.0
 
 /**
- * Deck-name grammar and decomposition, shared by the CLI and the server. A deck
- * has one of two name forms:
+ * Deck-name grammar and decomposition. The registry (`../app-registry`) holds
+ * its own copy of this module rather than importing it. A deck has one of two
+ * name forms:
  *
  *   - **bare** - a single identifier, e.g. `ansi`, naming a module bundled with
  *     the interpreter or a local file. Not a registry deck;
@@ -48,15 +49,45 @@ use strings;
 def const LOWER as string init "abcdefghijklmnopqrstuvwxyz";
 def const DIGITS as string init "0123456789";
 
+# Every character a name may be written with, before folding: the grammar's
+# classes, their uppercase forms (folding accepts those), and the `@` and `/`
+# of the scoped form. Checked before folding because folding is not ASCII-only.
+def const WRITTEN as string init "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-@/"; # lint-disable: L203
+
 # The longest a single half may be.
 def const MAX_IDENT as int init 64;
 
 # Names Windows reserves for devices. `vendor/con/` cannot be created there, so
-# a half equal to one of these is refused whatever else it satisfies.
+# a half equal to one of these is refused whatever else it satisfies. `com0`
+# and `lpt0` are reserved too, though Microsoft's own list long left them out;
+# the superscript-digit forms (`com` followed by a superscript one, and so on)
+# are reserved as well, but they are outside ASCII and refused before this list
+# is consulted.
 def const RESERVED_DEVICES as list of string init [
-    "con", "prn", "aux", "nul",
-    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
-    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "com0",
+    "com1",
+    "com2",
+    "com3",
+    "com4",
+    "com5",
+    "com6",
+    "com7",
+    "com8",
+    "com9",
+    "lpt0",
+    "lpt1",
+    "lpt2",
+    "lpt3",
+    "lpt4",
+    "lpt5",
+    "lpt6",
+    "lpt7",
+    "lpt8",
+    "lpt9"
 ];
 
 # isLower / isLowerOrDigit test a single character's class.
@@ -199,16 +230,46 @@ export func deckOf(name as string) {
     return strings.substring($folded, $slash + 1, len($folded));
 }
 
+# trimAscii drops the ASCII spaces and tabs around s, and nothing else.
+# `strings.trim` also strips Unicode whitespace (a no-break space, an
+# ideographic space), which would let a name carrying one pass the ASCII check.
+func trimAscii(s as string) {
+    def chars as list of string init strings.chars($s);
+    def lo as int init 0;
+    def hi as int init len($chars);
+    while ($lo < $hi and ($chars[$lo] == " " or $chars[$lo] == "\t")) {
+        $lo = $lo + 1;
+    }
+    while ($hi > $lo and ($chars[$hi - 1] == " " or $chars[$hi - 1] == "\t")) {
+        $hi = $hi - 1;
+    }
+    return strings.join($chars[$lo..$hi], "");
+}
+
 /**
  * Report whether a name is well-formed: a bare deck identifier, or `@scope/deck`
  * with a legal scope half and a legal deck half.
  *
  * The name is **folded first**, so a differently-cased spelling of a legal name
- * is legal. Callers store `fold(name)`, never the name as written.
+ * is legal, and so is one with ASCII spaces or tabs around it, which `fold`
+ * trims. Callers store `fold(name)`, never the name as written.
+ *
+ * Anything outside ASCII is refused **before** folding, wherever it stands,
+ * leading and trailing positions included. `strings.lower` is Unicode-aware, so
+ * the Kelvin sign (U+212A) folds to `k` and a name spelled with it would
+ * otherwise pass as its ASCII twin: harmless, since it is the same record, but
+ * it is input outside the grammar, and the grammar is the contract. The check
+ * used to run on the `strings.trim`-med name, and that trim also strips Unicode
+ * whitespace, so a name ending in a no-break space passed.
  * @param name {string} the deck name
  * @return {bool} true when the name is well-formed
  */
 export func isValid(name as string) {
+    for (def ch in strings.chars(trimAscii($name))) {
+        if (strings.indexOf(WRITTEN, $ch) < 0) {
+            return false;
+        }
+    }
     def folded as string init fold($name);
     if (isScoped($folded)) {
         return isScopeIdent(scopeOf($folded)) and isIdent(deckOf($folded));

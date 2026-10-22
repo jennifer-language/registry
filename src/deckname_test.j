@@ -178,3 +178,49 @@ func testPtrEscape() {
     testing.assertEqual(ptrEscape("@acme/tool"), "@acme~1tool");
     testing.assertEqual(ptrEscape("a~b"), "a~0b");
 }
+
+func testNonAsciiIsRefusedBeforeFolding() {
+    # the Kelvin sign folds to `k`, so it must be caught before the fold
+    testing.assertFalse(isValid("@acme/Key"));
+    testing.assertFalse(isValid("@Kcme/key"));
+    testing.assertFalse(isValid("@acme/café"));
+    testing.assertTrue(isValid("@Acme/Key"));
+}
+
+func testPathSegmentsAreNotNames() {
+    # a name becomes a vendor/ path, so nothing that walks a path may pass
+    testing.assertFalse(isValid("@../src"));
+    testing.assertFalse(isValid("@acme/.."));
+    testing.assertFalse(isValid("@acme/../../x"));
+    testing.assertFalse(isValid("@acme/a/b"));
+    testing.assertFalse(isValid("@./x"));
+}
+
+func testComZeroAndLptZeroAreReserved() {
+    # Windows reserves them too; the list used to stop at the digits one to nine
+    testing.assertTrue(isReservedDevice("com0"));
+    testing.assertTrue(isReservedDevice("lpt0"));
+    testing.assertFalse(isValid("@acme/com0"));
+    testing.assertFalse(isValid("@lpt0/tool"));
+    testing.assertFalse(isValid("LPT0"));
+    testing.assertTrue(isIdent("com00"));
+}
+
+func testNonAsciiAtEitherEndIsRefused() {
+    # the check ran on the strings.trim-med name, and that trim also strips
+    # Unicode whitespace, so these passed
+    testing.assertFalse(isValid("@acme/tool "));
+    testing.assertFalse(isValid(" @acme/tool"));
+    testing.assertFalse(isValid("　@acme/tool"));
+    testing.assertFalse(isValid("@acme/tool "));
+}
+
+func testAsciiSpaceAroundANameIsStillFolded() {
+    # fold trims it, and the folded name is what a caller stores
+    testing.assertTrue(isValid(" @acme/tool"));
+    testing.assertTrue(isValid("@acme/tool\t"));
+    testing.assertFalse(isValid("@acme/ tool"));
+    testing.assertEqual(trimAscii(" \t@a/b \t"), "@a/b");
+    testing.assertEqual(trimAscii(" @a/b"), " @a/b");
+    testing.assertEqual(trimAscii("  "), "");
+}

@@ -114,7 +114,7 @@ func testResolveTransitive() {
     testing.assertTrue($g.ok);
     testing.assertEqual(len($g.resolved), 2);
     testing.assertEqual(findVer($g.resolved, "alpha"), "1.0.0");
-    testing.assertEqual(findVer($g.resolved, "beta"), "1.2.0");   # highest satisfying
+    testing.assertEqual(findVer($g.resolved, "beta"), "1.2.0"); # highest satisfying
 }
 
 func testDiamondUnifiesShared() {
@@ -196,6 +196,42 @@ func testAYankedVersionIsNotACandidate() {
     $db = store.putVersion($db, "ansi", "", ver("1.3.0", $none));
     $db = store.setYanked($db, "ansi", "1.3.0", true);
     def cat as catalog.Catalog init addDeck($db, catalog.empty(), "ansi");
-    testing.assertEqual(len(catalog.versions($cat, "ansi")), 1);
-    testing.assertEqual(catalog.versions($cat, "ansi")[0], "1.0.0");
+    testing.assertEqual(len(catalog.selectableVersions($cat, "ansi")), 1);
+    testing.assertEqual(catalog.selectableVersions($cat, "ansi")[0], "1.0.0");
+    def g as GraphResult init resolveGraph($db, {"ansi": "*"});
+    testing.assertEqual(findVer($g.resolved, "ansi"), "1.0.0");
+}
+
+func testADeckWithEveryVersionYankedIsNotMissing() {
+    # it exists, it has nothing selectable: "no such deck" was the wrong answer
+    def db as flatdb.DB init emptyDb();
+    def none as map of string to string init {};
+    $db = store.putVersion($db, "@acme/gone", "", ver("1.0.0", $none));
+    $db = store.setYanked($db, "@acme/gone", "1.0.0", true);
+    def g as GraphResult init resolveGraph($db, {"@acme/gone": "*"});
+    testing.assertFalse($g.ok);
+    testing.assertEqual(len($g.missing), 0);
+    testing.assertContains($g.error, "no version of @acme/gone");
+}
+
+# --- spellings, size ----------------------------------------------------------
+
+func testARootIsFoldedLikeTheStore() {
+    def none as map of string to string init {};
+    def db as flatdb.DB init store.putVersion(emptyDb(), "@acme/tool", "", ver("1.0.0", $none));
+    def g as GraphResult init resolveGraph($db, {"@ACME/Tool": "^1.0.0"});
+    testing.assertTrue($g.ok);
+}
+
+func testTheGraphAResolutionMayReachIsBounded() {
+    # one anonymous request must not decide how much of the registry is walked
+    def db as flatdb.DB init emptyDb();
+    for (def i in 0..(MAX_GRAPH_DECKS + 1)) {
+        def next as map of string to string init {};
+        $next["@t/c" + convert.toString($i + 1)] = "*";
+        $db = store.putVersion($db, "@t/c" + convert.toString($i), "", ver("1.0.0", $next));
+    }
+    def g as GraphResult init resolveGraph($db, {"@t/c0": "*"});
+    testing.assertFalse($g.ok);
+    testing.assertContains($g.error, "more than");
 }

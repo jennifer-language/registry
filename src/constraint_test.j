@@ -171,17 +171,14 @@ func testReleasesAreUnaffected() {
 # Ordering is not what changed, and must not: SemVer 11 puts a prerelease below
 # the release it precedes and above the one before it.
 func testOrderingIsUnchanged() {
-    testing.assertEqual(best(["0.1.0", "0.2.0-dev", "0.2.0"], ">=0.2.0-dev"),
-        "0.2.0");
-    testing.assertEqual(best(["0.2.0-dev", "0.2.0-rc.1"], ">=0.2.0-dev"),
-        "0.2.0-rc.1");
+    testing.assertEqual(best(["0.1.0", "0.2.0-dev", "0.2.0"], ">=0.2.0-dev"), "0.2.0");
+    testing.assertEqual(best(["0.2.0-dev", "0.2.0-rc.1"], ">=0.2.0-dev"), "0.2.0-rc.1");
 }
 
 # --- the failure message ----------------------------------------------------
 
 func testNewestPrereleasePicksTheHighest() {
-    testing.assertEqual(newestPrerelease(["0.2.0-dev", "0.2.0-rc.1"]),
-        "0.2.0-rc.1");
+    testing.assertEqual(newestPrerelease(["0.2.0-dev", "0.2.0-rc.1"]), "0.2.0-rc.1");
     testing.assertEqual(newestPrerelease(["0.1.0", "0.2.0"]), "");
     testing.assertEqual(newestPrerelease([]), "");
     testing.assertEqual(newestPrerelease(["nonsense"]), "");
@@ -201,4 +198,117 @@ func testThePrereleaseHintNamesTheOptIn() {
 func testNoHintWhenAReleaseExists() {
     testing.assertEqual(prereleaseHint(["0.1.0", "0.2.0-dev"]), "");
     testing.assertEqual(prereleaseHint(["0.1.0"]), "");
+}
+
+# --- the grammar, strictly (2.4) ----------------------------------------------
+
+func testEveryFormInTheGrammarIsValid() {
+    for (def c in [
+        "",
+        "*",
+        "any",
+        "1.2.3",
+        "=1.2.3",
+        "^1.2.3",
+        "^1.2",
+        "^1",
+        "^0",
+        "~1.2.3",
+        "~1",
+        ">=1.0.0",
+        ">1.0.0",
+        "<=2.0.0",
+        "<2.0.0",
+        ">=0.2.0-dev",
+        " ^1.2.3 "
+    ]) {
+        testing.assertTrue(isValidConstraint($c));
+    }
+}
+
+func testWhatTheGrammarDoesNotSayIsInvalid() {
+    for (def c in [
+        "^",
+        "~",
+        "^abc",
+        "^ 1.2.0",
+        "~>1.2",
+        "^1.2.3.4",
+        "^1.2.3-beta",
+        "^v1",
+        ">= 1.0.0",
+        "1.x",
+        ">=1.0.0 <2.0.0",
+        "^1 || ^2",
+        "latest"
+    ]) {
+        testing.assertFalse(isValidConstraint($c));
+    }
+}
+
+func testAnInvalidConstraintMatchesNothing() {
+    # `^abc` used to read as `^0`, and `^ 1.2.0` chose a 0.x release
+    testing.assertFalse(satisfies("0.9.0", "^abc"));
+    testing.assertFalse(satisfies("0.9.0", "^ 1.2.0"));
+    testing.assertFalse(satisfies("1.9.9", "^ 1.2.0"));
+    testing.assertEqual(best(["0.9.0", "1.9.9"], "~>1.2"), "");
+}
+
+func testANumberTooLargeToHoldIsNotUsable() {
+    testing.assertTrue(isUsableVersion("20261014.0.0"));
+    testing.assertTrue(isUsableVersion("1.0.0-20261014123045"));
+    testing.assertTrue(isUsableVersion("999999999999999999.0.0"));
+    testing.assertFalse(isUsableVersion("9999999999999999999.0.0"));
+    testing.assertFalse(isUsableVersion("1.0.0-99999999999999999999"));
+    testing.assertFalse(isUsableVersion("v1.0.0"));
+    # build metadata is never compared, so it is not limited
+    testing.assertTrue(isUsableVersion("1.0.0+99999999999999999999"));
+}
+
+func testHugeNumbersNeverThrow() {
+    # these used to throw from inside a comparison, which made a whole listing fail
+    testing.assertFalse(satisfies("99999999999999999999.0.0", "*"));
+    testing.assertFalse(satisfies("1.0.0", "^9223372036854775807"));
+    testing.assertFalse(satisfies("1.0.0", ">=99999999999999999999.0.0"));
+    testing.assertEqual(best(["1.0.0", "99999999999999999999.0.0"], "*"), "1.0.0");
+}
+
+func testTheFailureHintSkipsUnusableVersions() {
+    # the hint runs when resolution fails, so a version too large to compare
+    # must not turn that failure into a crash
+    testing.assertEqual(newestPrerelease(["1.0.0-1", "99999999999999999999.0.0-1"]), "1.0.0-1");
+    testing.assertEqual(newestPrerelease(["1.0.0-99999999999999999999"]), "");
+    testing.assertEqual(prereleaseHint(["99999999999999999999.0.0"]), "");
+}
+
+func testALeadingZeroInAPartialIsInvalid() {
+    # SemVer forbids a leading zero; `^01.2` used to read as `^1.2`
+    for (def c in ["^01.2", "~00", "^1.02", "~1.2.03", ">=01.0.0", "01.0.0"]) {
+        testing.assertFalse(isValidConstraint($c));
+    }
+    testing.assertFalse(satisfies("1.2.0", "^01.2"));
+    # a lone zero is still a number
+    for (def c in ["^0", "~0.0", "^0.0.0", "^10.20.30"]) {
+        testing.assertTrue(isValidConstraint($c));
+    }
+}
+
+func testHighestIgnoresThePrereleaseRule() {
+    testing.assertEqual(highest(["1.0.0-rc.1"]), "1.0.0-rc.1");
+    testing.assertEqual(highest(["1.0.0-rc.1", "0.9.0", "1.0.0-rc.2"]), "1.0.0-rc.2");
+    testing.assertEqual(highest(["1.0.0", "1.0.0-rc.2"]), "1.0.0");
+    testing.assertEqual(highest(["v1.0.0", "99999999999999999999.0.0", "0.1.0"]), "0.1.0");
+    def none as list of string init [];
+    testing.assertEqual(highest($none), "");
+}
+
+func testOnlyAsciiSpaceAndTabAroundAConstraintAreIgnored() {
+    # strings.trim also stripped Unicode whitespace, so these were valid
+    testing.assertTrue(isValidConstraint("\t^1.0.0 "));
+    testing.assertTrue(satisfies("1.4.0", " ^1.0.0\t"));
+    testing.assertTrue(isValidConstraint("   "));
+    for (def c in [" ^1.0.0", "^1.0.0 ", "　*", ">=1.0.0 ", "\n^1.0.0"]) {
+        testing.assertFalse(isValidConstraint($c));
+        testing.assertFalse(satisfies("1.4.0", $c));
+    }
 }

@@ -152,8 +152,7 @@ func testSaveThenReopen() {
 # --- kind + namespace registry ----------------------------------------------
 
 # A well-formed artifact digest, the pin a tar.gz version carries.
-def const SAMPLE_CHECKSUM as string init
-    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+def const SAMPLE_CHECKSUM as string init "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; # lint-disable: L203
 
 # tarVersion builds a tar.gz-kind DeckVersion for tests.
 func tarVersion(version as string, url as string) {
@@ -209,10 +208,17 @@ func testNamespaceRemove() {
 func testVersionEngines() {
     def db as flatdb.DB init emptyStore();
     def ver as DeckVersion init DeckVersion{
-        version: "1.0.0", kind: KIND_TARGZ, url: "u",
-        ref: "", commit: "", checksum: SAMPLE_CHECKSUM,
-        requires: {}, engines: {"jennifer": "^0.21.0"}, capabilities: [],
-        description: "", publishedAt: "0",
+        version: "1.0.0",
+        kind: KIND_TARGZ,
+        url: "u",
+        ref: "",
+        commit: "",
+        checksum: SAMPLE_CHECKSUM,
+        requires: {},
+        engines: {"jennifer": "^0.21.0"},
+        capabilities: [],
+        description: "",
+        publishedAt: "0",
         yanked: false,
         license: "",
         keywords: []
@@ -229,8 +235,11 @@ func testVersionEngines() {
 # aNamespace builds a Namespace record for tests.
 func aNamespace(scope as string, subject as string, login as string) {
     return Namespace{
-        scope: $scope, provider: "github", subject: $subject,
-        login: $login, registeredAt: "1700000000",
+        scope: $scope,
+        provider: "github",
+        subject: $subject,
+        login: $login,
+        registeredAt: "1700000000",
         kind: SCOPE_USER,
         coOwners: []
     };
@@ -240,8 +249,13 @@ func aNamespace(scope as string, subject as string, login as string) {
 
 # aRefresh builds a Refresh record for tests.
 func aRefresh(accountId as int, expiresAt as int) {
-    return Refresh{ accountId: $accountId, login: "alice", expiresAt: $expiresAt,
-        orgs: {}, orgsCheckedAt: 0 };
+    return Refresh{
+        accountId: $accountId,
+        login: "alice",
+        expiresAt: $expiresAt,
+        orgs: {},
+        orgsCheckedAt: 0
+    };
 }
 
 func testRefreshRoundTrips() {
@@ -261,10 +275,16 @@ func testTheOrganisationsOnARefreshRoundTrip() {
     # losing the map here would silently strip a caller of every organisation
     # scope the moment their first token expired.
     def db as flatdb.DB init emptyStore();
-    $db = putRefresh($db, "bbbb", Refresh{
-        accountId: 42, login: "alice", expiresAt: 1800000000,
-        orgs: {"acme": "7", "viverto": "42"}, orgsCheckedAt: 1700000000
-    });
+    $db = putRefresh(
+        $db,
+        "bbbb",
+        Refresh{
+            accountId: 42,
+            login: "alice",
+            expiresAt: 1800000000,
+            orgs: {"acme": "7", "viverto": "42"},
+            orgsCheckedAt: 1700000000
+        });
     def rec as Refresh init getRefresh($db, "bbbb");
     testing.assertEqual(len($rec.orgs), 2);
     testing.assertEqual($rec.orgs["acme"], "7");
@@ -301,6 +321,27 @@ func testRevokeAccountDropsEveryTokenOfThatAccount() {
     testing.assertFalse(hasRefresh($db, "aaaa"));
     testing.assertFalse(hasRefresh($db, "bbbb"));
     testing.assertTrue(hasRefresh($db, "cccc"));
+}
+
+func testAForgeTokenIsKeptPerAccount() {
+    def db as flatdb.DB init emptyStore();
+    testing.assertEqual(getForgeToken($db, 42), "");
+    $db = putForgeToken($db, 42, "sealed-1", 1700000000);
+    testing.assertEqual(getForgeToken($db, 42), "sealed-1");
+    testing.assertEqual(getForgeToken($db, 99), "");
+    # a later login replaces it: no history of old credentials is kept
+    $db = putForgeToken($db, 42, "sealed-2", 1700000100);
+    testing.assertEqual(getForgeToken($db, 42), "sealed-2");
+}
+
+func testRevokingAnAccountDropsItsForgeToken() {
+    # a revoked account must not leave a credential the registry could act with
+    def db as flatdb.DB init emptyStore();
+    $db = putForgeToken($db, 42, "sealed", 1700000000);
+    $db = putForgeToken($db, 99, "other", 1700000000);
+    $db = revokeAccount($db, 42);
+    testing.assertEqual(getForgeToken($db, 42), "");
+    testing.assertEqual(getForgeToken($db, 99), "other");
 }
 
 func testCountRefreshCountsOnlyThatAccount() {
@@ -478,7 +519,7 @@ func testReleasingSomebodyElsesLockIsANoOp() {
     # a writer whose lock was broken as stale must not then free the lock its
     # replacement is holding
     def held as Lock init lock(lockPath());
-    def impostor as Lock init Lock{ path: $held.path, holder: "someone-else 1" };
+    def impostor as Lock init Lock{path: $held.path, holder: "someone-else 1"};
     unlock($impostor);
     testing.assertEqual(lockHolder(lockPath()), $held.holder);
     unlock($held);
@@ -491,6 +532,27 @@ func testUnlockingTwiceIsHarmless() {
     unlock($held);
     unlock($held);
     testing.assertEqual(lockHolder(lockPath()), "");
+}
+
+func testAnAbandonedLockIsBroken() {
+    freshLock();
+    # a writer killed mid-write leaves its lock behind; past the stale window the
+    # next writer takes over rather than the registry wedging for good
+    fs.writeString(lockPath() + ".lock", "crashed-writer 1");
+    def held as Lock init lock(lockPath());
+    testing.assertEqual(lockHolder(lockPath()), $held.holder);
+    unlock($held);
+}
+
+func testALockThatCannotBeCreatedSaysSo() {
+    # a missing or read-only directory is not contention, and must not read as it
+    def message as string init "";
+    try {
+        lock("/no/such/registry/dir/registry.json");
+    } catch (err) {
+        $message = $err.message;
+    }
+    testing.assertContains($message, "cannot create");
 }
 
 # --- object-id-shaped names ---------------------------------------------------
@@ -538,4 +600,52 @@ func testARealTagIsNotObjectIdLike() {
 
 func testTooLongToBeAnObjectIdIsNotObjectIdLike() {
     testing.assertFalse(isObjectIdLike(SAMPLE_COMMIT + SAMPLE_COMMIT));
+}
+
+func testAVersionTooLargeToCompareSortsLastWithoutThrowing() {
+    # one such record, however it got there, must not make its deck unlistable
+    def db as flatdb.DB init emptyStore();
+    $db = putVersion($db, "ansi", "", sampleVersion("1.0.0", "u"));
+    $db = putVersion($db, "ansi", "", sampleVersion("99999999999999999999.0.0", "u"));
+    $db = putVersion($db, "ansi", "", sampleVersion("2.0.0", "u"));
+    def order as list of string init listVersionsDescending($db, "ansi");
+    testing.assertEqual($order[0], "2.0.0");
+    testing.assertEqual($order[2], "99999999999999999999.0.0");
+}
+
+func testPlainVersionsSortNumerically() {
+    # the fast path compares numbers, so 1.10.0 is above 1.9.0
+    def db as flatdb.DB init emptyStore();
+    for (def v in ["1.9.0", "1.10.0", "0.2.0", "10.0.0"]) {
+        $db = putVersion($db, "ansi", "", sampleVersion($v, "u"));
+    }
+    def order as list of string init listVersionsDescending($db, "ansi");
+    testing.assertEqual(strings.join($order, " "), "10.0.0 1.10.0 1.9.0 0.2.0");
+}
+
+func testAPrereleaseSortsBelowItsRelease() {
+    # one non-plain version sends the whole list down the SemVer path
+    def db as flatdb.DB init emptyStore();
+    for (def v in ["1.0.0-rc.1", "1.0.0", "0.9.0", "1.0.0-beta"]) {
+        $db = putVersion($db, "ansi", "", sampleVersion($v, "u"));
+    }
+    def order as list of string init listVersionsDescending($db, "ansi");
+    testing.assertEqual(strings.join($order, " "), "1.0.0 1.0.0-rc.1 1.0.0-beta 0.9.0");
+}
+
+func testAScopeNameCannotReachInsideAnotherScopesRecord() {
+    def db as flatdb.DB init registerNamespace(
+        emptyStore(),
+        Namespace{
+            scope: "acme",
+            provider: "github",
+            subject: "1",
+            login: "a",
+            registeredAt: "0",
+            kind: SCOPE_USER,
+            coOwners: []
+        });
+    testing.assertTrue(hasNamespace($db, "acme"));
+    testing.assertFalse(hasNamespace($db, "acme/subject"));
+    testing.assertFalse(hasNamespace($db, "acme/provider"));
 }

@@ -38,7 +38,7 @@ func testCandidateDefaults() {
 func testAddIsValueSemantic() {
     def cat as Catalog init empty();
     def grown as Catalog init add($cat, candidate("ansi", "1.0.0"));
-    testing.assertEqual(len($cat.entries), 0);      # the original is untouched
+    testing.assertEqual(len($cat.entries), 0); # the original is untouched
     testing.assertEqual(len($grown.entries), 1);
 }
 
@@ -121,4 +121,50 @@ func testScopedNamesRoundTrip() {
     testing.assertTrue(hasDeck($cat, "@jennifer/routeros"));
     def reqs as map of string to string init requires($cat, "@jennifer/routeros", "0.1.0");
     testing.assertEqual($reqs["@jennifer/net"], "^1.0.0");
+}
+
+func testSelectableVersionsOmitsYankedOnes() {
+    def cat as Catalog init empty();
+    def live as Candidate init candidate("ansi", "1.0.0");
+    def dead as Candidate init candidate("ansi", "1.1.0");
+    $dead.yanked = true;
+    $cat = add(add($cat, $live), $dead);
+    testing.assertEqual(len(versions($cat, "ansi")), 2);
+    def sel as list of string init selectableVersions($cat, "ansi");
+    testing.assertEqual(len($sel), 1);
+    testing.assertEqual($sel[0], "1.0.0");
+}
+
+# --- batches and repeats ----------------------------------------------------
+
+func testAddAllAppendsInOrder() {
+    def cat as Catalog init add(empty(), candidate("ansi", "1.0.0"));
+    def batch as list of Candidate init [
+        candidate("ansi", "1.1.0"),
+        candidate("other", "2.0.0"),
+        candidate("ansi", "1.2.0")
+    ];
+    def grown as Catalog init addAll($cat, $batch);
+    testing.assertEqual(len($cat.entries), 1); # the original is untouched
+    testing.assertEqual(len($grown.entries), 4);
+    def vs as list of string init versions($grown, "ansi");
+    testing.assertEqual(len($vs), 3);
+    testing.assertEqual($vs[2], "1.2.0");
+    testing.assertEqual(names($grown)[1], "other");
+}
+
+func testARepeatedVersionKeepsTheFirst() {
+    def first as Candidate init withReqs("ansi", "1.0.0", {"a": "*"});
+    def second as Candidate init withReqs("ansi", "1.0.0", {"b": "*"});
+    $second.yanked = true;
+    def one as Catalog init add(add(empty(), $first), $second);
+    testing.assertEqual(len($one.entries), 1);
+    testing.assertFalse(get($one, "ansi", "1.0.0").yanked);
+    testing.assertTrue(maps.has(requires($one, "ansi", "1.0.0"), "a"));
+    # the same through a batch, both against the catalog and within the batch
+    def again as Catalog init addAll($one, [$second]);
+    testing.assertEqual(len($again.entries), 1);
+    def batched as Catalog init addAll(empty(), [$first, $second]);
+    testing.assertEqual(len($batched.entries), 1);
+    testing.assertFalse(get($batched, "ansi", "1.0.0").yanked);
 }
