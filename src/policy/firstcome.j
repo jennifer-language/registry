@@ -32,28 +32,10 @@ func anyUnreserved(subject as identity.Subject, scope as string, reserved as lis
     return policy.allow("@" + $scope + " is available");
 }
 
-# stance asks to record an unverifiable source rather than refuse it: the users
-# are trusted, and refusing every forge it cannot query would make it unusable.
-# Nothing consults `sourceStance` yet, so publishes are refused all the same.
-func stance() {
-    return "record";
-}
-
-# anyName applies no narrowing. A local wrapper, because a func value can only
-# be taken from a locally-defined function.
-func anyName(scope as string, deck as string) {
-    return policy.acceptAnyName($scope, $deck);
-}
-
 /**
  * The first-come policy.
  * @return {policy.Policy} a policy allowing any unreserved scope
  */
 export func policy() {
-    return policy.Policy{
-        name: "firstcome",
-        mayClaim: anyUnreserved,
-        nameOk: anyName,
-        sourceStance: stance
-    };
+    return policy.Policy{name: "firstcome", mayClaim: anyUnreserved};
 }

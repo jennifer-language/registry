@@ -23,21 +23,10 @@ func refuse(subject as identity.Subject, scope as string, reserved as list of st
         "ask an operator to grant @" + $scope);
 }
 
-# stance refuses a publish whose source authority could not be established.
-func stance() {
-    return "verify";
-}
-
-# anyName applies no narrowing. A local wrapper, because a func value can only
-# be taken from a locally-defined function.
-func anyName(scope as string, deck as string) {
-    return policy.acceptAnyName($scope, $deck);
-}
-
 /**
  * The operator-only policy.
  * @return {policy.Policy} a policy that refuses every self-claim
  */
 export func policy() {
-    return policy.Policy{name: "operator", mayClaim: refuse, nameOk: anyName, sourceStance: stance};
+    return policy.Policy{name: "operator", mayClaim: refuse};
 }

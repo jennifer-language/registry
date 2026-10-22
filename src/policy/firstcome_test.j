@@ -36,7 +36,3 @@ func testReservedIsStillRefused() {
     testing.assertContains($d.reason, "reserved");
 }
 
-func testStanceRecordsRatherThanRefusing() {
-    # its users are trusted; refusing every unqueryable forge makes it unusable
-    testing.assertEqual(policy().sourceStance(), "record");
-}

@@ -70,26 +70,10 @@ func seenList(subject as identity.Subject) {
     return strings.join(lists.sort(maps.keys($subject.orgs)), ", ");
 }
 
-# stance refuses a publish whose source authority could not be established.
-func stance() {
-    return "verify";
-}
-
-# anyName applies no narrowing. A local wrapper, because a func value can only
-# be taken from a locally-defined function.
-func anyName(scope as string, deck as string) {
-    return policy.acceptAnyName($scope, $deck);
-}
-
 /**
  * The derive-from-username policy.
  * @return {policy.Policy} a policy allowing only a self-named or organisation scope
  */
 export func policy() {
-    return policy.Policy{
-        name: "derived",
-        mayClaim: matchesLogin,
-        nameOk: anyName,
-        sourceStance: stance
-    };
+    return policy.Policy{name: "derived", mayClaim: matchesLogin};
 }

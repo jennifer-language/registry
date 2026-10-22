@@ -43,19 +43,10 @@ export def struct Decision {
  * @field name {string} the policy's name, as configured
  * @field mayClaim {func} `func(identity.Subject, scope, reserved) -> Decision`:
  *     may this subject self-claim this scope? Operator grants skip this.
- * @field nameOk {func} `func(scope, deck) -> Decision`: does this deployment
- *     accept this name? May narrow the grammar, never widen it. Not consulted
- *     by any caller yet.
- * @field sourceStance {func} `func() -> string`: "verify" to refuse a publish
- *     whose source authority cannot be established, "record" to accept it and
- *     mark the source unverified. Not consulted yet: `publishview` refuses an
- *     unestablished source under every policy.
  */
 export def struct Policy {
     name as string,
-    mayClaim as func,
-    nameOk as func,
-    sourceStance as func
+    mayClaim as func
 };
 
 /**
@@ -102,13 +93,3 @@ export func reservedDenial(scope as string) {
     return deny("the scope @" + $scope + " is reserved; ask an operator");
 }
 
-/**
- * The default name check: accept anything the naming grammar accepts. A
- * deployment wanting a narrower namespace supplies its own.
- * @param scope {string} the scope half
- * @param deck {string} the deck half
- * @return {Decision} always allowing
- */
-export func acceptAnyName(scope as string, deck as string) {
-    return allow("no additional naming restriction");
-}

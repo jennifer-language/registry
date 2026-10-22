@@ -46,6 +46,3 @@ func testReservedDenialNamesTheScope() {
     testing.assertContains($d.reason, "operator");
 }
 
-func testAcceptAnyNameAllows() {
-    testing.assertTrue(acceptAnyName("acme", "routeros").allowed);
-}

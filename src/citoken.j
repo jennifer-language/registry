@@ -31,7 +31,6 @@
 
 use strings;
 use convert;
-import "flatdb.j" as flatdb;
 import "./deckname.j" as deckname;
 
 # The prefix every CI token carries, so secret scanners can find a leaked one and
@@ -63,24 +62,6 @@ export def struct Token {
     createdAt as string,
     expiresAt as string,
     lastUsedAt as string
-};
-
-/**
- * A freshly minted token: the record, the store to persist, and the secret, the
- * only time it exists in readable form. Nothing returns one at present:
- * `admin.cmdMintToken` mints into an `AdminResult`.
- * @field ok {bool} whether it was minted
- * @field error {string} why not
- * @field secret {string} the token to show the operator, once
- * @field record {Token} what was stored
- * @field db {flatdb.DB} the resulting store
- */
-export def struct Minted {
-    ok as bool,
-    error as string,
-    secret as string,
-    record as Token,
-    db as flatdb.DB
 };
 
 /**

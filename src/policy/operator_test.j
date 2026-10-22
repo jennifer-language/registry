@@ -34,6 +34,3 @@ func testTheRefusalPointsAtTheOperator() {
     testing.assertContains($d.reason, "@mplx");
 }
 
-func testStanceRefusesAnUnverifiableSource() {
-    testing.assertEqual(policy().sourceStance(), "verify");
-}

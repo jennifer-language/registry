@@ -77,14 +77,6 @@ func testAnIdentityWithNoUsernameDerivesNothing() {
     testing.assertContains($d.reason, "no username");
 }
 
-func testStanceRefusesAnUnverifiableSource() {
-    testing.assertEqual(policy().sourceStance(), "verify");
-}
-
-func testNameIsNotNarrowed() {
-    testing.assertTrue(policy().nameOk("acme", "routeros").allowed);
-}
-
 func testARefusalNamesTheOrganisationsTheTokenCarries() {
     # a member whose provider did not disclose the organisation sees what was seen
     def who as identity.Subject init identity.Subject{
