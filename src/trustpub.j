@@ -111,6 +111,26 @@ func no(reason as string) {
 }
 
 /**
+ * How long a pending binding (8.9 first publish) stays usable, in seconds:
+ * 30 days. An unused one must not hold a deck name indefinitely.
+ */
+export def const PENDING_TTL_SECONDS as int init 2592000;
+
+/**
+ * Whether a pending binding has outlived `PENDING_TTL_SECONDS` unused. A
+ * settled binding never expires.
+ * @param b {Binding} the binding
+ * @param now {int} the current time (Unix seconds)
+ * @return {bool} true when it may no longer be used
+ */
+export func pendingExpired(b as Binding, now as int) {
+    if (not $b.pending or $b.createdAt == "") {
+        return false;
+    }
+    return $now - convert.toInt($b.createdAt) > PENDING_TTL_SECONDS;
+}
+
+/**
  * Is this a provider whose claim shape is known?
  * @param provider {string} the provider name
  * @return {bool} true when claims can be read from it

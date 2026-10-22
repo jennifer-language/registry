@@ -234,7 +234,16 @@ func storeVersion(db as flatdb.DB, m as manifest.Manifest, src as Source, now as
 
 # succeed writes the version and builds the 201.
 func succeed(db as flatdb.DB, m as manifest.Manifest, src as Source, now as string, how as string) {
+    # 6.4: a repository that changed hands keeps its id; compare the owner with
+    # the earlier versions before this one is written.
+    def movedFrom as string init store.ownerChangeOf($db, $m.name, $src.repoId, $src.repoOwnerId);
     def out as flatdb.DB init storeVersion($db, $m, $src, $now);
+    def p as store.Provenance init store.Provenance{
+        repoId: $src.repoId,
+        repoOwnerId: $src.repoOwnerId,
+        repoOwner: $src.repoOwner
+    };
+    $out = store.putProvenance($out, $m.name, $m.version, $p);
     def body as json.Value init json.map();
     $body = json.set($body, "/name", $m.name);
     $body = json.set($body, "/version", $m.version);
@@ -247,8 +256,26 @@ func succeed(db as flatdb.DB, m as manifest.Manifest, src as Source, now as stri
         body: $body,
         db: $out,
         changed: true,
-        event: audit.deckPublishedFrom($m.name, $m.version, $src.commit, $src.repository, $how)
+        event: publishEvent($m, $src, $how, $movedFrom)
     };
+}
+
+# publishEvent is the audit event for a publish, raised to a warning when the
+# repository's owner differs from the one an earlier version recorded (6.4).
+func publishEvent(m as manifest.Manifest, src as Source, how as string, movedFrom as string) {
+    def ev as audit.Event init audit.deckPublishedFrom(
+        $m.name,
+        $m.version,
+        $src.commit,
+        $src.repository,
+        $how);
+    if (not ($movedFrom == "")) {
+        $ev.level = audit.WARN;
+        $ev.message = "deck version published from a repository whose owner changed";
+        $ev.fields["ownerChangedSince"] = $movedFrom;
+        $ev.fields["repoOwnerId"] = $src.repoOwnerId;
+    }
+    return $ev;
 }
 
 /**
@@ -493,6 +520,14 @@ export func byTrustedPublisher(
         return refuse($db, 403, "no trusted publisher is registered for " + $m.name);
     }
     def b as trustpub.Binding init store.getBinding($db, $m.name);
+    if (trustpub.pendingExpired($b, convert.toInt($now))) {
+        return refuse(
+            $db,
+            403,
+            "the pending trusted publisher for " + $m.name + " expired unused after " +
+                convert.toString(trustpub.PENDING_TTL_SECONDS / 86400) +
+                " days; register it again");
+    }
     def v as trustpub.Verdict init trustpub.check($b, $claims, $audience, $issuer);
     if (not $v.allowed) {
         return refuse($db, 403, $v.reason);

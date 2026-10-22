@@ -1385,6 +1385,104 @@ export func isYanked(db as flatdb.DB, name as string, version as string) {
 }
 
 /**
+ * Where a version was published from, as the forge identified it (specification
+ * 6.4, 7.3). Recorded by `POST /publish`; a record written by `deckadmin add`
+ * has none, and every field reads as "".
+ * @field repoId {string} the forge's immutable repository id
+ * @field repoOwnerId {string} the immutable id of the account that owned it
+ * @field repoOwner {string} that account's name at publish, a display label
+ */
+export def struct Provenance {
+    repoId as string,
+    repoOwnerId as string,
+    repoOwner as string
+};
+
+# numericId writes a forge id as a JSON number (section 3 types them `int`), and
+# returns false for anything that is not plain digits, which is then omitted.
+func numericId(s as string) {
+    if ($s == "" or len($s) > 18) {
+        return false;
+    }
+    for (def c in strings.chars($s)) {
+        if (not strings.contains("0123456789", $c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Record a version's provenance. Empty or non-numeric ids are left out.
+ * @param db {flatdb.DB} the store to edit
+ * @param name {string} the deck name
+ * @param version {string} an existing version
+ * @param p {Provenance} what the forge reported at publish
+ * @return {flatdb.DB} a fresh store
+ */
+export func putProvenance(db as flatdb.DB, name as string, version as string, p as Provenance) {
+    def rec as json.Value init getVersionJson($db, $name, $version);
+    if (numericId($p.repoId)) {
+        $rec = json.set($rec, "/repoId", convert.toInt($p.repoId));
+    }
+    if (numericId($p.repoOwnerId)) {
+        $rec = json.set($rec, "/repoOwnerId", convert.toInt($p.repoOwnerId));
+    }
+    if (not ($p.repoOwner == "")) {
+        $rec = json.set($rec, "/repoOwner", $p.repoOwner);
+    }
+    return flatdb.set($db, versionPtr($name, $version), $rec);
+}
+
+# idField reads a numeric id field as text, "" when absent.
+func idField(rec as json.Value, field as string) {
+    if (not json.has($rec, $field)) {
+        return "";
+    }
+    return convert.toString(json.asInt($rec, $field));
+}
+
+/**
+ * A version's provenance; all fields "" when none was recorded.
+ * @param db {flatdb.DB} the store to read
+ * @param name {string} the deck name
+ * @param version {string} the version string
+ * @return {Provenance} the recorded ids and label
+ */
+export func provenanceOf(db as flatdb.DB, name as string, version as string) {
+    def rec as json.Value init getVersionJson($db, $name, $version);
+    return Provenance{
+        repoId: idField($rec, "/repoId"),
+        repoOwnerId: idField($rec, "/repoOwnerId"),
+        repoOwner: recordString($rec, "/repoOwner")
+    };
+}
+
+/**
+ * The newest earlier version published from the same repository under a
+ * different owner (6.4), or "" when there is none. A repository that changed
+ * hands keeps its id, so the owner id is what tells.
+ * @param db {flatdb.DB} the store to read
+ * @param name {string} the deck name
+ * @param repoId {string} the repository the new version comes from
+ * @param ownerId {string} its owner now
+ * @return {string} that earlier version, or ""
+ */
+export func ownerChangeOf(db as flatdb.DB, name as string, repoId as string, ownerId as string) {
+    if ($repoId == "" or $ownerId == "" or not hasDeck($db, $name)) {
+        return "";
+    }
+    for (def v in listVersionsDescending($db, $name)) {
+        def p as Provenance init provenanceOf($db, $name, $v);
+        if ($p.repoId == $repoId and not ($p.repoOwnerId == "") and
+            not ($p.repoOwnerId == $ownerId)) {
+            return $v;
+        }
+    }
+    return "";
+}
+
+/**
  * Every live (not yanked) version of a deck, in stored order: what a resolution
  * chooses from. `listVersions` returns yanked versions too, for deck pages and
  * lockfile-pinned fetches.

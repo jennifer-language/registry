@@ -639,3 +639,15 @@ func testAScopeNameCannotReachInsideAnotherScopesRecord() {
     testing.assertFalse(hasNamespace($db, "acme/subject"));
     testing.assertFalse(hasNamespace($db, "acme/provider"));
 }
+
+func testProvenanceStoresIdsAsNumbersAndSkipsWhatIsNotOne() {
+    def db as flatdb.DB init emptyStore();
+    $db = putVersion($db, "@acme/x", "", sampleVersion("1.0.0", "https://x/y"));
+    def p as Provenance init Provenance{repoId: "123", repoOwnerId: "abc", repoOwner: "acme"};
+    $db = putProvenance($db, "@acme/x", "1.0.0", $p);
+    testing.assertEqual(json.asInt(getVersionJson($db, "@acme/x", "1.0.0"), "/repoId"), 123);
+    def back as Provenance init provenanceOf($db, "@acme/x", "1.0.0");
+    testing.assertEqual($back.repoId, "123");
+    testing.assertEqual($back.repoOwnerId, "");
+    testing.assertEqual($back.repoOwner, "acme");
+}

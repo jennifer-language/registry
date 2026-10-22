@@ -36,6 +36,15 @@ func binding() {
     };
 }
 
+func testOnlyAPendingBindingExpires() {
+    def b as Binding init binding();
+    def late as int init 1700000000 + PENDING_TTL_SECONDS + 1;
+    testing.assertFalse(pendingExpired($b, $late));
+    $b.pending = true;
+    testing.assertFalse(pendingExpired($b, 1700000000 + PENDING_TTL_SECONDS));
+    testing.assertTrue(pendingExpired($b, $late));
+}
+
 # A token GitHub Actions would mint for a tag build of that repository.
 func token() {
     def doc as json.Value init json.map();

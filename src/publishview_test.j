@@ -74,6 +74,31 @@ func source() {
     };
 }
 
+# --- provenance (6.4, 7.3) ----------------------------------------------------
+
+func testAPublishRecordsTheRepositoryAndItsOwner() {
+    def out as PublishReply init byToken(owned(), alice(), source(), NOW);
+    def p as store.Provenance init store.provenanceOf($out.db, "@acme/routeros", "0.1.0");
+    testing.assertEqual($p.repoId, REPO_ID);
+    testing.assertEqual($p.repoOwnerId, "42");
+    testing.assertEqual($p.repoOwner, "acme");
+    testing.assertEqual($out.event.level, audit.INFO);
+}
+
+func testAnOwnerChangeOnTheSameRepositoryIsAWarning() {
+    def first as PublishReply init byToken(owned(), alice(), source(), NOW);
+    def moved as Source init source();
+    $moved.tag = "v0.2.0";
+    $moved.manifestText = strings.replace(manifestText(), '"0.1.0"', '"0.2.0"');
+    $moved.repoOwnerId = "666";
+    $moved.repoOwner = "mallory";
+    def out as PublishReply init byToken($first.db, alice(), $moved, NOW);
+    testing.assertEqual($out.status, 201);
+    testing.assertEqual($out.event.level, audit.WARN);
+    testing.assertEqual($out.event.fields["ownerChangedSince"], "0.1.0");
+    testing.assertEqual(store.ownerChangeOf($out.db, "@acme/routeros", REPO_ID, "42"), "0.2.0");
+}
+
 # --- publishing with a bearer token -------------------------------------------
 
 func testTheOwnerPublishes() {
@@ -255,6 +280,15 @@ func testTheFirstPublishSettlesAPendingBinding() {
     testing.assertTrue(store.getBinding(bound(), "@acme/routeros").pending);
     def out as PublishReply init byTrustedPublisher(bound(), claims(), AUD, ISS, source(), NOW);
     testing.assertFalse(store.getBinding($out.db, "@acme/routeros").pending);
+}
+
+func testAPendingBindingExpiresUnused() {
+    # 8.9: an abandoned pending binding must not hold the name for ever
+    def later as string init convert.toString(
+        convert.toInt(NOW) + trustpub.PENDING_TTL_SECONDS + 1);
+    def out as PublishReply init byTrustedPublisher(bound(), claims(), AUD, ISS, source(), $later);
+    testing.assertEqual($out.status, 403);
+    testing.assertContains(json.asString($out.body, "/error"), "expired unused");
 }
 
 func testADeckWithNoBindingIsRefused() {
