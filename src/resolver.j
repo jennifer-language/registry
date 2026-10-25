@@ -10,18 +10,18 @@
  *
  * Resolution is a fixpoint. Each round rebuilds the per-deck constraint set from
  * the roots plus the requirements of the currently-chosen versions, then picks
- * the highest known version satisfying *all* constraints on each deck. The loop
- * ends when the choice set stops changing, so a diamond (`A -> B`, `A -> C`,
- * `B -> D`, `C -> D`) unifies `D` under both constraints, and a cycle
- * (`A -> B -> A`) terminates once the constraints stabilise rather than
- * recursing forever.
+ * the highest selectable version (not yanked, `catalog.selectableVersions`)
+ * satisfying *all* constraints on each deck. The loop ends when the choice set
+ * stops changing, so a diamond (`A -> B`, `A -> C`, `B -> D`, `C -> D`) unifies
+ * `D` under both constraints, and a cycle (`A -> B -> A`) terminates once the
+ * constraints stabilise rather than recursing forever.
  *
  * **A choice the constraints have overtaken does not fail the graph.** A
  * chosen version that no longer satisfies the constraints now on its deck is
  * *stale*: it is about to be replaced. Its own requirements still steer this
- * round's picks (dropping them let the decks they held down spring back up,
- * and the rounds then cycled), but they are requirements of a version that
- * will not be installed, so they may not end the resolution:
+ * round's picks (dropped, the decks they held down spring back up and the
+ * rounds cycle), but they belong to a version that will not be installed, so
+ * they may not end the resolution:
  *
  *   - **a failure waits until the round is settled**, meaning no choice is
  *     stale and no deck was reached for the first time this round (that deck's
@@ -40,8 +40,8 @@
  * is therefore not found: the resolver either fails on a deck with no version
  * left, or notices it has met the same state twice and reports the
  * alternation, rather than searching. A failure is therefore "this resolver
- * found no solution", not a proof that none exists. Real backtracking (or a
- * SAT-style solver) is what that would take; nothing here pretends otherwise.
+ * found no solution", not a proof that none exists. Finding those would take
+ * backtracking or a SAT-style solver.
  *
  * The resolver is **pure**: it reads a `catalog` of candidates and never
  * fetches. A deck it has never heard of is reported in `GraphResult.missing`
@@ -51,8 +51,8 @@
  *
  * The CLI fills the catalog over HTTP and from git (`cli.resolveRoots`). A
  * caller that cannot supply a missing deck treats `missing` as "no such deck".
- * The registry (`../app-registry`) resolves with its own copy of this module,
- * which is currently behind this one, so a fix here usually wants porting.
+ * The registry (`../app-registry`) resolves with its own copy of this module.
+ * Keep the copies identical, and diff both ways before changing either.
  * @module resolver
  * @example
  * import "./resolver.j" as resolver;
@@ -153,11 +153,9 @@ func bestSatisfyingAll(versions as list of string, constraints as list of string
     return constraint.highest($kept);
 }
 
-# Index is the catalog read once into maps, for the rounds to look things up in.
-# The catalog is a list, so each lookup was a scan, and each call into `catalog`
-# copied the whole list (arguments are values); a deep graph needs as many
-# rounds as it is deep, and every round asked about every deck, which made the
-# cost the depth times the size times the size again.
+# Index is the catalog read once into maps for the rounds to look things up in.
+# Scanning the list per lookup (and copying it per call into `catalog`) made a
+# round cost depth x size squared.
 def struct Index {
     versions as map of string to list of string,
     present as map of string to bool,
@@ -279,9 +277,7 @@ func invalidHint(items as list of string) {
 }
 
 # choiceKey is a set of choices as one comparable string, in a fixed order, so a
-# set seen before is recognised whatever order it was built in.
-# The parts are joined once: growing one string a deck at a time copied it
-# per deck.
+# set seen before is recognised whatever order it was built in. Joined once.
 func choiceKey(chosen as map of string to string) {
     def parts as list of string init [];
     for (def name in lists.sort(maps.keys($chosen))) {
@@ -329,9 +325,8 @@ func needsFetch(names as list of string) {
 
 # buildResolutions turns the chosen name -> version map into the locked candidate
 # list, in the catalog's own deck order (the order each deck first appears) so
-# the output is deterministic. One pass over the entries: asking the catalog for
-# its names and then for each chosen version scanned the whole catalog once per
-# deck. The first entry for a (name, version) is the one taken, as in
+# the output is deterministic, in one pass over the entries. The first entry for
+# a (name, version) is the one taken, as in
 # `catalog.get`, and its name is written folded, as the resolution knew it.
 func buildResolutions(cat as catalog.Catalog, chosen as map of string to string) {
     def order as list of string init [];
@@ -463,11 +458,9 @@ export func resolveGraph(cat as catalog.Catalog, roots as map of string to strin
             $rootReqs,
             $chosen,
             $noSkip);
-        # A chosen version the constraints now exclude is stale: it is about to
-        # be replaced. Each deck's pick still answers to everything on it, stale
-        # requirements included (leaving them out let the decks they hold down
-        # spring back up), but a stale choice keeps the round unsettled, and
-        # only a settled round may fail.
+        # A stale choice's requirements still count (see the module docblock),
+        # but a stale choice keeps the round unsettled, and only a settled round
+        # may fail.
         def stale as map of string to bool init {};
         def keys as map of string to string init {};
         for (def name in $cons) {
@@ -505,8 +498,6 @@ export func resolveGraph(cat as catalog.Catalog, roots as map of string to strin
             }
             # A pick depends only on the deck and its constraint set, which seldom
             # changes between rounds, so each distinct pair is worked out once.
-            # Re-picking every deck every round made a deep graph spend nearly all
-            # its time re-parsing the same versions against the same constraints.
             if (not maps.has($picked, $keys[$name])) {
                 $picked[$keys[$name]] = bestSatisfyingAll($open, $cons[$name]);
             }

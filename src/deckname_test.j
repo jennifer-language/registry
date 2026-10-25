@@ -6,7 +6,7 @@
 #
 #     jennifer test src/deckname_test.j
 #
-# The grammar is specification 2.1: lowercase, folded rather than rejected, with
+# The grammar is server specification 2.1: lowercase, folded rather than rejected, with
 # hyphens in the scope half only and Windows device names refused outright.
 
 use testing;

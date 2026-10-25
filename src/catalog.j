@@ -10,9 +10,9 @@
  * (`gitsource`), both in one catalog, and a third source would be one more
  * filler rather than a change to the resolver.
  *
- * The registry (`../app-registry`) fills its catalogs from its own store, but
- * with its own copy of this module and of `resolver`, `constraint` and
- * `deckname`, not with these files; its copies are currently behind.
+ * The registry (`../app-registry`) fills its catalogs from its own store, with
+ * its own copy of this module and of `resolver`, `constraint` and `deckname`.
+ * Keep the copies identical, and diff both ways before changing either.
  *
  * A catalog is a flat list of `Candidate`s (one per published deck version)
  * rather than a nested map, because Jennifer maps hold a single value type and a
@@ -57,7 +57,7 @@ use maps;
  * @field requires {map of string to string} this version's own deps (deck -> constraint)
  * @field engines {map of string to string} the engines that can run it (engine -> range)
  * @field capabilities {list of string} host capabilities its code needs (net / exec / sql)
- * @field yanked {bool} whether the registry has withdrawn this version (5)
+ * @field yanked {bool} whether the registry has yanked this version (server specification 9)
  * @field registry {string} the repository this version came from ("" for a git deck)
  */
 export def struct Candidate {
@@ -94,10 +94,9 @@ export func empty() {
 }
 
 /**
- * Build a minimal candidate: a name and a version, with every delivery field
- * empty and no requirements or engines. Handy in tests and for callers that only
- * resolve versions; use a `Candidate{...}` literal when the delivery fields
- * matter.
+ * Build a minimal candidate: a name and a version, `kind` `"tar.gz"`, and every
+ * other field empty or false. For tests and for callers that only resolve
+ * versions; use a `Candidate{...}` literal when the delivery fields matter.
  * @param name {string} the deck name
  * @param version {string} the published version
  * @return {Candidate} the candidate
@@ -181,8 +180,7 @@ export func addAll(cat as Catalog, candidates as list of Candidate) {
  * name is compared exactly as written, like every lookup here, so a caller
  * folds it first (`deckname.fold`) to ask about a deck rather than a spelling.
  * The resolver does not use this: it folds every catalog name into its own
- * index once and asks that, which is how it tells a deck that is genuinely
- * absent from one merely not fetched yet.
+ * index once and asks that.
  * @param cat {Catalog} the catalog to read
  * @param name {string} the deck name
  * @return {bool} true when at least one version of the deck is present

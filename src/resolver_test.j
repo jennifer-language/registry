@@ -5,10 +5,10 @@
 # White-box tests for resolver.j: the transitive dependency graph resolver.
 # Run with:
 #
-#     jennifer test cli/resolver_test.j
+#     jennifer test src/resolver_test.j
 #
-# resolver.j imports catalog / constraint, so the overlay reaches them through
-# those aliases and GraphResult / resolveGraph by bare name.
+# The overlay reaches resolver.j's names bare (GraphResult, resolveGraph) and
+# its imports through their aliases (catalog.add, constraint.satisfies).
 
 use testing;
 

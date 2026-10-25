@@ -14,7 +14,7 @@
  *     the `deck.` namespace.
  *
  * **The two halves have different grammars, because they do different jobs**
- * (specification 2.1):
+ * (server specification 2.1):
  *
  *     scope = [a-z][a-z0-9-]{0,62}[a-z0-9]  |  [a-z]
  *     deck  = [a-z][a-z0-9]{0,63}
@@ -257,10 +257,8 @@ func trimAscii(s as string) {
  * Anything outside ASCII is refused **before** folding, wherever it stands,
  * leading and trailing positions included. `strings.lower` is Unicode-aware, so
  * the Kelvin sign (U+212A) folds to `k` and a name spelled with it would
- * otherwise pass as its ASCII twin: harmless, since it is the same record, but
- * it is input outside the grammar, and the grammar is the contract. The check
- * used to run on the `strings.trim`-med name, and that trim also strips Unicode
- * whitespace, so a name ending in a no-break space passed.
+ * otherwise pass as its ASCII twin. The check runs on an ASCII-only trim, since
+ * `strings.trim` also strips Unicode whitespace (a trailing no-break space).
  * @param name {string} the deck name
  * @return {bool} true when the name is well-formed
  */
@@ -307,8 +305,8 @@ export func ptrEscape(token as string) {
 }
 
 /**
- * Return the deck's entrypoint filename: `<deck>.j`, folded - the module the
- * resolver appends for `import "@scope/deck/"`.
+ * Return the deck's entrypoint filename: `<deck>.j`, folded, the module the
+ * interpreter's vendor resolver loads for `import "@scope/deck/"`.
  * @param name {string} the deck name
  * @return {string} the entrypoint filename, e.g. "routeros.j"
  */

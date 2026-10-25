@@ -12,9 +12,8 @@
  *
  * The CLI owns resolution, and this module is one of the four pure ones it
  * resolves with (with `catalog`, `resolver` and `deckname`). The registry
- * (`../app-registry`, split out on 2026-08-15) carries its own copy of each
- * rather than importing these, and its copies are currently behind this
- * repository's, so a change here usually wants porting there.
+ * (`../app-registry`) carries its own copy of each. Keep the copies identical,
+ * and diff both ways before changing either.
  * @module constraint
  * @example
  * import "./constraint.j" as constraint;
@@ -180,15 +179,14 @@ func isPartial(s as string) {
 }
 
 /**
- * Whether a constraint is in the grammar (specification 2.4): a wildcard, an
- * exact version, a caret or tilde over a partial, or a comparator over a
- * version - each with nothing else before or after it but ASCII spaces and
- * tabs, which are ignored. Something outside it is not a looser way of saying
- * something inside it, so `satisfies` matches nothing for it rather than
- * guessing: `^abc` used to read as `^0` and `^ 1.2.0` chose a 0.x release.
+ * Whether a constraint is in the grammar (server specification 2.4): a
+ * wildcard, an exact version, a caret or tilde over a partial, or a comparator
+ * over a version, each with nothing before or after it but ASCII spaces and
+ * tabs, which are ignored. `satisfies` matches nothing for a constraint outside
+ * the grammar rather than guessing (`^abc` is not `^0`).
  *
- * Only ASCII space and tab are trimmed. `strings.trim` also strips Unicode
- * whitespace, so a constraint led by a no-break space used to be valid.
+ * Only ASCII space and tab are trimmed: `strings.trim` also strips Unicode
+ * whitespace, which would make a constraint led by a no-break space valid.
  * @param constraint {string} the constraint expression
  * @return {bool} true when it is in the grammar
  */
@@ -253,13 +251,10 @@ func inRange(v as semver.Version, lower as semver.Version, upper as semver.Versi
     return semver.compare($v, $lower) >= 0 and semver.compare($v, $upper) < 0;
 }
 
-# rangeMatch evaluates a caret / tilde range against v. Numeric-core ranges
-# target released versions, so a prerelease candidate never matches. The gate in
-# `satisfies` already refuses every prerelease before this runs, since a caret
-# or tilde operand is a partial (`isPartial` refuses `^0.2.0-rc.1` outright) and
-# so carries no prerelease to opt in with; the check here only keeps this
-# function correct on its own terms, which is what the specification says a
-# range does.
+# rangeMatch evaluates a caret / tilde range against v. A numeric range never
+# matches a prerelease. `satisfies` already refuses one before this runs, since
+# a partial cannot name a prerelease (`isPartial` refuses `^0.2.0-rc.1`); the
+# check keeps this function correct on its own.
 func rangeMatch(v as semver.Version, lower as semver.Version, upper as semver.Version) {
     if (semver.isPrerelease($v)) {
         return false;
@@ -268,9 +263,9 @@ func rangeMatch(v as semver.Version, lower as semver.Version, upper as semver.Ve
 }
 
 # constraintVersion returns the version text a constraint carries, with its
-# operator stripped. A wildcard carries none, and a caret / tilde operand is a
-# *partial* ("0.2"), which is not valid SemVer and therefore carries no
-# prerelease either - which is exactly the answer wanted in both cases.
+# operator stripped. A wildcard carries none, and a caret or tilde operand is a
+# partial, which `isPartial` keeps free of any prerelease: in both cases no
+# prerelease is named.
 func constraintVersion(constraint as string) {
     def c as string init trimAscii($constraint);
     if ($c == "" or $c == "*" or $c == "any") {
@@ -299,8 +294,8 @@ func sameCore(a as semver.Version, b as semver.Version) {
 # test is what silently promotes an unreleased version over the last real one
 # for every consumer who wrote `*` or `>=0.1.0`. So the candidate's core must be
 # named by a constraint that is itself a prerelease: `>=0.2.0-dev` reaches
-# `0.2.0-rc.1`, and nothing reaches `0.3.0-alpha` but a constraint naming
-# `0.3.0`.
+# `0.2.0-rc.1`, and nothing reaches `0.3.0-alpha` but a constraint naming a
+# 0.3.0 prerelease.
 #
 # Because a constraint here is a single expression with no compound ranges,
 # this needs no per-comparator bookkeeping: there is one version in the
@@ -348,12 +343,15 @@ func rest(s as string, n as int) {
 
 /**
  * Report whether a concrete version satisfies a constraint. Supported forms:
- * "*" / "" / "any" (any valid version), an exact "1.2.3" or "=1.2.3", the
+ * "*" / "" / "any" (any release), an exact "1.2.3" or "=1.2.3", the
  * comparators ">=", ">", "<=", "<", the caret "^1.2.0", and the tilde
  * "~1.2.3". Only single constraints are supported (no ", " / "||" compound
- * ranges), and ASCII spaces and tabs around one are ignored. An invalid or
- * unusable version string never satisfies anything, and neither does anything
- * at all for a constraint outside the grammar.
+ * ranges), and ASCII spaces and tabs around one are ignored. A prerelease
+ * satisfies only a constraint that names a prerelease of the same
+ * major.minor.patch, so `satisfies("1.0.0-rc.1", "*")` is false and
+ * `satisfies("1.0.0-rc.1", ">=1.0.0-rc.0")` true. An invalid or unusable version
+ * never satisfies anything, and nothing satisfies a constraint outside the
+ * grammar.
  * @param version {string} the concrete version to test (e.g. "1.4.0")
  * @param constraint {string} the constraint expression from the manifest
  * @return {bool} true when version satisfies constraint
@@ -364,9 +362,9 @@ export func satisfies(version as string, constraint as string) {
         return false;
     }
     def v as semver.Version init semver.parse($version);
-    # One gate for all six forms: the wildcards, the four comparators, and the
-    # caret and tilde ranges. A prerelease reaching any of them without being
-    # named would outrank the release it precedes, since it sorts above it.
+    # One gate for every form: wildcard, exact, comparator, caret and tilde. An
+    # unnamed prerelease would outrank the release before it, since it sorts
+    # above it.
     if (semver.isPrerelease($v) and not prereleaseAllowed($v, $c)) {
         return false;
     }
@@ -485,8 +483,10 @@ export func highest(versions as list of string) {
 }
 
 /**
- * Pick the highest version from a list that satisfies the constraint. Versions
- * that are not valid SemVer are skipped. Returns "" when none match.
+ * Pick the highest version from a list that satisfies the constraint. Skipped:
+ * versions that are not valid SemVer, unusable ones (a numeric identifier over
+ * 18 digits), and prereleases the constraint does not name (`satisfies`).
+ * Returns "" when none match.
  * @param versions {list of string} the candidate versions
  * @param constraint {string} the constraint expression
  * @return {string} the highest satisfying version, or "" if none match

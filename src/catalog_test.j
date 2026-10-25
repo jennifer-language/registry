@@ -5,7 +5,7 @@
 # White-box tests for catalog.j: the pure candidate set the resolver reads.
 # Run with:
 #
-#     jennifer test cli/catalog_test.j
+#     jennifer test src/catalog_test.j
 
 use testing;
 

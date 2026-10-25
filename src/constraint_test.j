@@ -4,7 +4,7 @@
 #
 # White-box tests for constraint.j. Run with:
 #
-#     jennifer test cli/constraint_test.j
+#     jennifer test src/constraint_test.j
 #
 # The overlay splices constraint.j in first, so the tests reach its exported
 # surface (satisfies / best) by bare identifier.
