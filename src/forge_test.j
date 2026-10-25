@@ -213,3 +213,38 @@ func testTheRecordedUrlUsesTheForgesSchemeAndPort() {
     testing.assertEqual(originProblem("http://git.lan:3000/o/r", "http://git.lan:3000"), "");
     testing.assertContains(originProblem("http://git.lan/o/r", "http://git.lan:3000"), "port");
 }
+
+# --- accounts (12.5) ----------------------------------------------------------
+
+func testAnAccountIsReadByIdWithEitherUsernameField() {
+    def gh as Account init accountFrom(json.decode('{"id": 583231, "login": "octocat"}'), "login");
+    testing.assertEqual($gh.id, "583231");
+    testing.assertEqual($gh.login, "octocat");
+    def gl as Account init accountFrom(json.decode('{"id": 7, "username": "alice"}'), "username");
+    testing.assertEqual($gl.login, "alice");
+    testing.assertEqual(accountFrom(json.decode('{"login": "x"}'), "login").id, "");
+}
+
+func testAListYieldsOnlyTheExactUsername() {
+    # a prefix match from a search must never stand in for the account
+    def doc as json.Value init json.decode(
+        '[{"id": 1, "username": "alice2"}, {"id": 2, "username": "Alice"}]');
+    testing.assertEqual(accountFromList($doc, "username", "alice").id, "2");
+    testing.assertEqual(accountFromList($doc, "username", "bob").id, "");
+    testing.assertEqual(accountFromList($doc, "username", "").id, "1");
+}
+
+func testOnlyDigitsAreAnAccountId() {
+    testing.assertTrue(isAccountId("583231"));
+    for (def bad in ["", "12a", "../x", "1 2"]) {
+        testing.assertFalse(isAccountId($bad));
+    }
+}
+
+func testAMappingNeedsTheForgeToAgreeOnTheUsername() {
+    def found as Account init Account{id: "7", login: "Alice"};
+    testing.assertEqual(agreedAccount("alice", $found).id, "7");
+    testing.assertEqual(agreedAccount("alice2", $found).id, "");
+    testing.assertEqual(agreedAccount("", $found).id, "");
+    testing.assertEqual(agreedAccount("alice", noAccount()).id, "");
+}

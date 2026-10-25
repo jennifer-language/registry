@@ -93,6 +93,10 @@ export def struct Permission {
  *     forge user push? Asked with the registry's own token (`Config.apiToken`),
  *     where identity and forge are different services (12.5)
  * @field repo {func} `func(Config, url) -> Repo`: the immutable identity of a repository
+ * @field account {func} `func(Config, username) -> Account`: the account with exactly
+ *     this username, or `noAccount()`; throws when the forge will not say (12.5)
+ * @field accountById {func} `func(Config, id) -> Account`: the account with this
+ *     immutable id and its current username, or `noAccount()`; throws likewise
  */
 export def struct Forge {
     name as string,
@@ -103,8 +107,104 @@ export def struct Forge {
     fileExists as func,
     permission as func,
     permissionFor as func,
-    repo as func
+    repo as func,
+    account as func,
+    accountById as func
 };
+
+/**
+ * A forge account (12.5): the immutable id a link is recorded by, and the
+ * username it has now.
+ * @field id {string} the forge's immutable numeric account id, as text; "" for none
+ * @field login {string} the current username
+ */
+export def struct Account {
+    id as string,
+    login as string
+};
+
+/**
+ * No account.
+ * @return {Account} an account with an empty id
+ */
+export func noAccount() {
+    return Account{id: "", login: ""};
+}
+
+/**
+ * Read one user payload as an `Account`. Pure. GitHub and Gitea name the
+ * username `login`, GitLab `username`.
+ * @param doc {json.Value} the decoded user object
+ * @param loginField {string} the member holding the username
+ * @return {Account} the account, or `noAccount()` when a field is missing
+ */
+export func accountFrom(doc as json.Value, loginField as string) {
+    if (not (json.typeOf($doc, "") == "map") or not json.has($doc, "/id") or
+        not json.has($doc, "/" + $loginField)) {
+        return noAccount();
+    }
+    return Account{
+        id: convert.toString(json.asInt($doc, "/id")),
+        login: json.asString($doc, "/" + $loginField)
+    };
+}
+
+/**
+ * The first account of a list payload whose username equals `username`,
+ * ignoring case (GitLab's `GET /users?username=`, Gitea's search `data`), or
+ * any first account when `username` is "". Pure.
+ * @param doc {json.Value} the decoded list
+ * @param loginField {string} the member holding the username
+ * @param username {string} the username wanted, or "" for the first entry
+ * @return {Account} the account, or `noAccount()`
+ */
+export func accountFromList(doc as json.Value, loginField as string, username as string) {
+    if (not (json.typeOf($doc, "") == "list")) {
+        return noAccount();
+    }
+    for (def i in 0..json.length($doc, "")) {
+        def a as Account init accountFrom(json.get($doc, "/" + convert.toString($i)), $loginField);
+        if (not ($a.id == "") and
+            ($username == "" or strings.lower($a.login) == strings.lower($username))) {
+            return $a;
+        }
+    }
+    return noAccount();
+}
+
+/**
+ * The forge account an identity maps onto (12.5): the one the forge found for
+ * the username the identity provider asserted, accepted only when the forge
+ * reports that same username back (ignoring case). Never a display name. Pure.
+ * @param asserted {string} the username the identity provider asserted
+ * @param found {Account} what `Forge.account` answered for it
+ * @return {Account} the agreed account, or `noAccount()`
+ */
+export func agreedAccount(asserted as string, found as Account) {
+    if ($found.id == "" or $asserted == "" or
+        not (strings.lower($found.login) == strings.lower($asserted))) {
+        return noAccount();
+    }
+    return $found;
+}
+
+/**
+ * Whether `id` is a forge account id: decimal digits only, so it is safe in a
+ * request path. Pure.
+ * @param id {string} the candidate
+ * @return {bool} true for 1 to 18 digits
+ */
+export func isAccountId(id as string) {
+    if (len($id) == 0 or len($id) > 18) {
+        return false;
+    }
+    for (def ch in strings.chars($id)) {
+        if ($ch < "0" or $ch > "9") {
+            return false;
+        }
+    }
+    return true;
+}
 
 /**
  * Turn a forge's answer about one ref into presence, or refuse to guess.

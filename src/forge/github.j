@@ -266,6 +266,50 @@ func repo(cfg as forge.Config, url as string) {
  * The GitHub forge.
  * @return {forge.Forge} the vtable; every call takes a `forge.Config`
  */
+# account looks up the forge account with exactly this username (12.5). A
+# missing account is `noAccount()`; any other failure throws, never "none".
+func account(cfg as forge.Config, username as string) {
+    def problem as string init forge.askProblem($cfg, $username);
+    if (not ($problem == "")) {
+        throw Error{kind: "forge", message: $problem};
+    }
+    def res as http.Response init get($cfg, "/users/" + $username, "");
+    if ($res.status == 404) {
+        return forge.noAccount();
+    }
+    if (not ($res.status == 200)) {
+        throw Error{
+            kind: "forge",
+            message: "the forge answered " + convert.toString($res.status) +
+                " when asked for the account " + $username
+        };
+    }
+    return forge.accountFrom(json.decode($res.body), "login");
+}
+
+# accountById resolves an immutable account id to its current username (`GET /user/{id}`).
+func accountById(cfg as forge.Config, id as string) {
+    if (not forge.isAccountId($id)) {
+        return forge.noAccount();
+    }
+    def res as http.Response init get($cfg, "/user/" + $id, "");
+    if ($res.status == 404) {
+        return forge.noAccount();
+    }
+    if (not ($res.status == 200)) {
+        throw Error{
+            kind: "forge",
+            message: "the forge answered " + convert.toString($res.status) +
+                " when asked for account " + $id
+        };
+    }
+    def found as forge.Account init forge.accountFrom(json.decode($res.body), "login");
+    if (not ($found.id == $id)) {
+        return forge.noAccount();
+    }
+    return $found;
+}
+
 export func forge() {
     return forge.Forge{
         name: "github",
@@ -276,6 +320,8 @@ export func forge() {
         fileExists: fileExists,
         permission: permission,
         permissionFor: permissionFor,
-        repo: repo
+        repo: repo,
+        account: account,
+        accountById: accountById
     };
 }
