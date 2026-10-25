@@ -100,6 +100,8 @@ export def struct Tls {
  *     one parsed copy, but each large page is built per request, so this bounds memory
  * @field orgMaxAgeHours {int} how old a login's organisation memberships may be
  *     before a refresh is refused (8.7); 0 turns the check off
+ * @field authRateLimit {int} requests per minute one client address may make to
+ *     the `/auth` routes together; 0 turns the limit off
  * @field respondTimeoutSeconds {int} how long a request may take before the
  *     engine answers `503` itself; above the slowest publish (forge calls)
  * @field sourceAuthority {string} how a publish proves push access to its
@@ -134,6 +136,7 @@ export def struct Config {
     maxInFlight as int,
     respondTimeoutSeconds as int,
     orgMaxAgeHours as int,
+    authRateLimit as int,
     trustpubAudience as string,
     trustpubProvider as string,
     trustpubIssuer as string,
@@ -171,6 +174,7 @@ export func defaults() {
         maxInFlight: 32,
         respondTimeoutSeconds: 120,
         orgMaxAgeHours: 168,
+        authRateLimit: 30,
         trustpubAudience: "",
         trustpubProvider: "github-actions",
         trustpubIssuer: "",
@@ -277,6 +281,7 @@ export func applyToml(base as Config, text as string) {
     $out.identitySecret = str($doc, "/identity/secret", $out.identitySecret);
     $out.identityScopes = str($doc, "/identity/scopes", $out.identityScopes);
     $out.orgMaxAgeHours = count($doc, "/identity/orgMaxAge", $out.orgMaxAgeHours);
+    $out.authRateLimit = count($doc, "/identity/rateLimit", $out.authRateLimit);
     $out.tokenKey = str($doc, "/tokenKey", $out.tokenKey);
     $out.policy = str($doc, "/policy", $out.policy);
     $out.forge = str($doc, "/forge/provider", $out.forge);
@@ -403,6 +408,7 @@ export func applyEnv(base as Config, env as map of string to string) {
         $out.tls.renewBeforeDays);
     $out.maxInFlight = envInt($env, "REGISTRY_MAX_IN_FLIGHT", $out.maxInFlight);
     $out.orgMaxAgeHours = envInt($env, "REGISTRY_ORG_MAX_AGE", $out.orgMaxAgeHours);
+    $out.authRateLimit = envInt($env, "REGISTRY_AUTH_RATE_LIMIT", $out.authRateLimit);
     $out.respondTimeoutSeconds = envInt(
         $env,
         "REGISTRY_RESPOND_TIMEOUT",
@@ -476,6 +482,9 @@ export func problem(cfg as Config) {
     }
     if ($cfg.orgMaxAgeHours < 0) {
         return "identity.orgMaxAge must be 0 (off) or a number of hours";
+    }
+    if ($cfg.authRateLimit < 0) {
+        return "identity.rateLimit must be 0 (off) or requests per minute";
     }
     if ($cfg.respondTimeoutSeconds < 1) {
         return "respondTimeout must be at least 1 second";

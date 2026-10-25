@@ -236,6 +236,19 @@ orgMaxAge = 24
     testing.assertContains(problem($c), "orgMaxAge");
 }
 
+func testTheAuthRateLimitReadsFileAndEnvironment() {
+    testing.assertEqual(defaults().authRateLimit, 30);
+    def file as Config init applyToml(defaults(), '[identity]
+rateLimit = 60
+');
+    testing.assertEqual($file.authRateLimit, 60);
+    def env as map of string to string init {"REGISTRY_AUTH_RATE_LIMIT": "0"};
+    testing.assertEqual(applyEnv($file, $env).authRateLimit, 0);
+    def c as Config init defaults();
+    $c.authRateLimit = -1;
+    testing.assertContains(problem($c), "rateLimit");
+}
+
 func testUnknownProviderForgeAndPolicyNamesAreRefused() {
     # serve would otherwise wire the github module for any unknown name
     def c as Config init defaults();

@@ -56,6 +56,9 @@
 # Hours a login's organisation memberships stay usable before a refresh is
 # refused and the caller must log in again (8.7). 0 turns the check off.
 # orgMaxAge = 168                   # REGISTRY_ORG_MAX_AGE
+# Requests a minute one client address may make to /auth/device, /auth/token
+# and /auth/refresh together; past it, 429 with Retry-After. 0 turns it off.
+# rateLimit = 30                    # REGISTRY_AUTH_RATE_LIMIT
 
 # Who may claim a scope over HTTP.
 #   derived     a caller may claim the scope matching their own login (the
