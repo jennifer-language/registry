@@ -104,6 +104,7 @@ failure; a failed first issuance leaves the registry on plain HTTP with an
 | `REGISTRY_IDENTITY_SECRET` | unset | `serve` | the client secret, for a provider that needs one |
 | `REGISTRY_IDENTITY_SCOPES` | per module | `serve` | override the requested scopes |
 | `REGISTRY_ORG_MAX_AGE` | `168` | `serve` | hours a login's organisation memberships stay usable; `0` is off |
+| `REGISTRY_AUTH_RATE_LIMIT` | `30` | `serve` | requests a minute one client address may make to the `/auth` routes; `0` is off |
 | `REGISTRY_TOKEN_KEY` | unset | `serve` | the HMAC secret bearer tokens are signed with |
 | `REGISTRY_CONFIG` | `config.toml` | `serve` | where the configuration file is |
 | `REGISTRY_TLS` | `0` | `serve` | serve HTTPS and obtain a certificate |
@@ -315,8 +316,8 @@ and `deckadmin` never sees a request, so only the shared file shows both.
 | `add-owner <scope> <subject>` | let another principal write under a scope |
 | `remove-owner <scope> <subject>` | revoke a co-owner |
 | `namespaces [--owned\|--reserved]` | list registered scopes and who owns each |
-| `trust <deck> <repositoryId> [flags]` | let a CI workflow publish a deck (8.9) |
-| `untrust <deck>` | remove a deck's trusted publisher |
+| `trust <deck or @scope> <repositoryId> [flags]` | let a CI workflow publish a deck, or every deck in a scope (8.9) |
+| `untrust <deck or @scope>` | remove a trusted publisher |
 | `publishers` | list trusted publishers |
 | `reserve-defaults [-n\|--dry-run]` | hold every reserved scope so nobody can claim one |
 | `keywords [words...]` | print the refused-keyword list decoded, or encode terms for it |
@@ -325,7 +326,7 @@ and `deckadmin` never sees a request, so only the shared file shows both.
 | `revoke-token <fingerprint>` | revoke one CI token |
 | `yank <deck> <version>` | withdraw a version from new resolutions |
 | `unyank <deck> <version>` | restore a withdrawn version |
-| `revoke <accountId>` | invalidate an identity's refresh tokens |
+| `revoke <subject>` | invalidate an identity's refresh tokens and drop its kept provider token |
 
 #### Organisation scopes
 
@@ -518,6 +519,11 @@ so it is gated as a publish is. A binding on a deck with no versions is
 A pending binding unused for 30 days expires: publishes through it are refused,
 `trust` lists it as `[pending, expired]`, and registering it again renews it.
 
+`trust @acme <repositoryId>` binds a whole scope instead: every deck under
+`@acme`, existing or not, may be published by that workflow. A deck's own binding
+takes precedence over its scope's. Scope owners register bindings themselves
+with `POST /publishers` (see the API reference); `trust` is the operator's path.
+
 `--workflow` and `--refs` stop other jobs in that repository from publishing.
 Without a workflow, a pull-request build proposed by a contributor runs with the
 same repository identity as the release job.
@@ -568,7 +574,7 @@ Before deploying:
   | Value | Asks with | Use when |
   | ----- | --------- | -------- |
   | `login` | the caller's own provider token, kept **sealed** from their login | identity and forge are one service |
-  | `service` | `REGISTRY_FORGE_TOKEN`, about the caller's **username** | identity and forge differ but share one user directory |
+  | `service` | `REGISTRY_FORGE_TOKEN`, about the forge account **linked** at login | identity and forge differ but share one user directory |
 
   Unset, it is `login` when identity and forge are the same service (same
   provider family and base URL) and `service` otherwise. The server refuses to
@@ -580,11 +586,16 @@ Before deploying:
   accounts are asked to log in again. Accounts that logged in before tokens were
   kept are in the same position.
 
-  In `service` mode the caller's login is taken as their forge username. That
-  holds only when both services read one directory (one LDAP or OIDC source),
-  which the operator asserts: section 12.5 forbids matching display names that
-  merely look alike. The forge token must see every repository decks are
-  published from.
+  In `service` mode each login is linked to a forge account: the registry looks
+  up the username the identity provider asserted and links the forge account
+  that reports exactly that username, recorded by its immutable id. A publish
+  then asks about that account under its current username, so later renames on
+  either side do not matter. This assumes both services read one directory (one
+  LDAP or OIDC source); display names are never matched (12.5). An account
+  with no link (it never logged in since, or the forge has no such user) cannot
+  publish until it logs in again, and a CI token acts through the link of its
+  minter or the scope owner. The forge token must see every repository decks are
+  published from, and be allowed to look users up.
 
 There is one module per provider, `src/identity/<name>.j` and
 `src/forge/<name>.j`, each exporting a `provider()` that returns a struct of

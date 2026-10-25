@@ -555,6 +555,7 @@ routes lets a registry derive this list from its router.
 | `yank` | `POST /yank`, `POST /unyank` | no |
 | `claim` | `POST /claim` (8.2) | no |
 | `owners` | `POST /owners` | no |
+| `publishers` | `POST /publishers` (8.9) | no |
 | `scopes` | `GET /scopes` (7) | no |
 
 A registry **MUST** list `deck`. Feature names are a set: several routes **MAY**
@@ -954,6 +955,7 @@ the primary host. That is an operational decision, not a protocol change: the
 | `POST /claim` | claim a scope for the authenticated caller (8.2) |
 | `POST /owners` | add or remove a co-owner of a scope; the owner only (2.2) |
 | `GET /scopes` | list registered scopes and who holds them |
+| `POST /publishers` | register or remove a trusted publisher; the owner only (8.9) |
 
 `GET /scopes` is the only one of these that needs no caller. It reports each
 scope's name, kind, and whether it is owned or reserved, and for an owned one the
@@ -993,7 +995,10 @@ body.
 **The order is normative.** The manifest is read *before* authorisation, because
 the name being authorised is the one in the manifest, not one the caller
 supplied. A caller cannot rename a deck at publish time, and cannot publish a
-repository into a scope its manifest does not name.
+repository into a scope its manifest does not name. Points 6 to 8 come after
+authorisation, so a caller without authority learns neither which versions exist
+nor what a repository holds. A manifest that yields no scoped name or no SemVer
+version fails at point 3 with `400`, since point 4 needs the name.
 
 ### 7.1 Two authorisations, not one
 
@@ -1336,6 +1341,11 @@ registry runs its own OAuth application.
 | `POST /auth/token` | exchange an approved device code for a registry token |
 | `POST /auth/refresh` | exchange a refresh token for a new registry token |
 
+These routes take no credential and each costs a call to the identity provider,
+so a registry **SHOULD** limit them per client address and answer `429` with a
+`Retry-After` header past the limit. The limit must leave room for polling at
+`interval` (section 11).
+
 **The registry drives the flow against GitHub; the client never talks to GitHub
 and never holds a GitHub token.** This keeps the client free of
 per-registry configuration, keeps the OAuth application's identifiers and scopes
@@ -1404,14 +1414,17 @@ Response `200`:
   "expiresIn": 3600,
   "refreshToken": "def50200f1a2...",
   "login": "alice",
+  "subject": "1234567",
   "accountId": 1234567,
   "orgs": ["acme", "viverto"]
 }
 ```
 
-`login` and `accountId` are the identity the token carries, returned so a client
-can say "logged in as @alice" without decoding the token. **`accountId` is the
-identity that matters** (8.1); `login` is a display label.
+`login` and `subject` are the identity the token carries, returned so a client
+can say "logged in as @alice" without decoding the token. **`subject` is the
+identity that matters** (8.1), an opaque string; `login` is a display label.
+`accountId` repeats a subject that is a decimal number, as a number, for clients
+that read it; it is absent for any other subject (an OIDC UUID, for instance).
 
 `orgs` is the organisation **logins** the token carries, sorted, and a registry
 that supports organisation scopes **SHOULD** return it. Present and empty means
@@ -1513,21 +1526,21 @@ none can leave it out.
 
 A scope **MAY** be owned by an **organisation** rather than a person. Such a
 scope is granted by an operator, or claimed by an active member (8.2), and marked
-as an organisation scope; every
-later write under it asks whether the caller can act for that organisation,
-instead of comparing their own id.
+as an organisation scope; every later write under it checks whether the caller
+is an active member of that organisation, instead of comparing their own id.
 
 The shape follows from 8.1 without further choices:
 
 - the scope is owned by the **organisation's** numeric id;
 - a claim requires the claimant to be able to act for that organisation **at
   claim time**, and grants the claimant nothing personally;
-- every later write re-asks whether the caller can act for that organisation
-  **now**, so somebody who leaves stops being able to publish, yank, or change
-  owners under it, promptly and without any bookkeeping.
+- every later write checks the memberships the caller's token carries, which
+  are read from the provider at login and bounded in age (below), so somebody
+  who leaves stops being able to publish, yank, or change owners under it within
+  that bound, without any bookkeeping.
 
-`GET /user/memberships/orgs/{org}` answers that question about the caller
-and returns `role` (`admin`, `member`, `billing_manager`) and `state` (`active`,
+On GitHub, `GET /user/memberships/orgs/{org}` answers that question about the
+caller and returns `role` (`admin`, `member`, `billing_manager`) and `state` (`active`,
 `pending`). Two exclusions always apply:
 
 - **`state: pending` is not membership.** An invited but unjoined account has
@@ -1545,16 +1558,16 @@ above regardless.
 
 **Anyone an organisation adds becomes able to publish under its scope.** That is
 the same trust an organisation already
-extends by granting repository write access, and it is why membership is asked
-rather than stored.
+extends by granting repository write access, and it is why membership is read
+from the provider rather than kept as a list here.
 
 #### When membership is read
 
-A registry that discards the provider token after login (8.5, which this
-specification recommends) **cannot** ask the provider at write time, because it
-holds no credential to ask with. It **MUST** therefore read memberships during
-the exchange and carry them in its own token, and it **MUST** record when they
-were read.
+Memberships are not asked at write time: a registry may hold no provider
+credential then (8.5 recommends issuing its own token rather than using the
+provider's), and asking per write would make every publish depend on the
+provider. A registry **MUST** therefore read memberships during the exchange and
+carry them in its own token, and it **MUST** record when they were read.
 
 Two rules bound it:
 
@@ -1575,10 +1588,11 @@ Two consequences to design for:
 
 - **An abandoned organisation freezes.** If everyone leaves, or the organisation
   is deleted, nobody can publish or yank under its scope, and the operator path
-  (section 10) becomes the only remedy.
-- **Publishing gains a dependency on the GitHub API.** An outage or a rate limit
-  blocks publishes under organisation scopes. Reads are unaffected, and user
-  scopes stay offline-authorisable.
+  (12.8) becomes the only remedy.
+- **Logging in gains a dependency on the provider's membership API.** An outage
+  or a rate limit at login yields no memberships, so organisation-scope writes
+  fail until the next login succeeds. Reads are unaffected, and publishing itself
+  asks the provider nothing.
 
 ### 8.8 Publishing without a browser
 
@@ -1616,6 +1630,11 @@ step becomes one-time.**
 A registry **MAY** accept an OIDC identity token issued by a CI system to a job,
 in place of a bearer token, at the write endpoints.
 
+The job sends it as `Authorization: Bearer <identity token>` on `POST /publish`
+(the URL in `auth.trustedPublishing.url`). The registry tells it apart from its
+own bearer token by its `iss`, then verifies it as below. A registry **MAY** also
+accept it as the request body's `identityToken` member.
+
 #### The binding
 
 A trusted publisher is a record on a **deck**, or on a scope, naming the workload
@@ -1632,6 +1651,33 @@ permitted to write to it:
 The binding **MUST** key on the **immutable repository id**, not the path, for
 the reason 8.1 gives about logins: a repository path can be renamed and the
 freed path re-registered by somebody else. The path is a display label.
+
+A deck's own binding takes precedence over its scope's. A scope binding covers
+every deck in the scope, including decks not yet published, so it is never
+pending (below).
+
+#### Registering a binding
+
+`POST /publishers` registers or removes one, authorised by a bearer token (8.4):
+
+```json
+{
+  "target": "@acme/routeros",
+  "provider": "github-actions",
+  "repositoryId": "123456789",
+  "repository": "acme/deck-routeros",
+  "workflow": "acme/deck-routeros/.github/workflows/publish.yml",
+  "refs": "refs/tags/*"
+}
+```
+
+`target` is a deck or a whole scope (`@acme`). `action: "remove"` removes the
+binding for `target`. Only the scope's owner may do either, or an active member
+of an organisation scope; a co-owner may not, for the reason 2.2 gives for the
+owners list: a binding is a standing write grant that would outlive the
+co-owner's removal. The reply is `200` with the binding, `400` for a malformed
+request, `403` for a caller without that authority, and `404` for an
+unregistered scope or removing an absent binding.
 
 #### Verifying a token
 
@@ -1883,6 +1929,14 @@ names. A registry **SHOULD** use a claim the provider asserts and the forge agre
 with (typically the same directory's username or email when both are backed by
 one LDAP or OIDC source), and **MUST** treat a failed mapping as unverifiable
 rather than as permission granted.
+
+The reference implementation maps at login: it asks the forge for the account
+with exactly the username the provider asserted, accepts it only when the forge
+reports that username back, and records the forge's immutable account id
+against the subject. A later publish resolves that id to the account's current
+username before asking about permissions, so a rename on either side does not
+break or redirect the mapping. A subject with no recorded mapping is
+unverifiable until it logs in again.
 
 ### 12.6 Policy is the third axis, and it is pure
 

@@ -120,8 +120,9 @@ token.
 
 Polling outcomes ride on the status code: `200` approved, `202` pending, `429`
 slow down, `403` denied, `410` expired. A success carries `token`, `expiresIn`
-(3600), `refreshToken`, `login`, `accountId`, and `orgs`, the organisation logins
-the token carries. A body without its field is `400`; a provider that cannot be
+(3600), `refreshToken`, `login`, `subject` (the provider's subject id, a string),
+`accountId` (the same as a number, only when it is one), and `orgs`, the
+organisation logins the token carries. A body without its field is `400`; a provider that cannot be
 reached is `502`. A rejected or expired refresh token is `401`.
 
 Under `authcode` (an OIDC provider without a device endpoint) discovery carries
@@ -164,6 +165,7 @@ unversioned.
 | `POST /yank`, `POST /unyank` | withdraw a version, or restore it (logins only) |
 | `POST /claim` | claim a scope for the caller (logins only) |
 | `POST /owners` | add or remove a co-owner of a scope (logins only) |
+| `POST /publishers` | register or remove a trusted publisher on a deck or scope (logins only) |
 
 "Logins only" routes are registered only when the login surface is configured;
 otherwise they are `404`.
@@ -371,12 +373,14 @@ by the route. Bodies are capped at 64 KB.
 | ---------- | ------- | ----------- |
 | registry bearer token, from the token exchange | `Authorization: Bearer <token>` | every write (logins only) |
 | CI token, minted by `deckadmin mint-token` | `Authorization: Bearer jvcp_...` | `POST /publish` |
-| CI identity token (trusted publishing) | `"identityToken"` in the body | `POST /publish` |
+| CI identity token (trusted publishing) | `Authorization: Bearer <identity token>`, or `"identityToken"` in the body | `POST /publish` |
 
 A bearer token establishes **name authority**: the caller must own the scope or
 be a co-owner, or be an active member of an organisation scope. A CI token is
-bound to one scope or one deck. A trusted-publishing token is matched against a
-binding registered with `deckadmin trust`, keyed on the repository id; its
+bound to one scope or one deck. A bearer JWT whose `iss` is the configured CI
+issuer is treated as a trusted-publishing token. It is matched against the
+deck's binding, else its scope's, registered with `POST /publishers` or
+`deckadmin trust` and keyed on the repository id; its
 `aud` must be this registry's audience, its commit the one the tag resolves to,
 and, for a tag ref, its tag the one published.
 
@@ -441,11 +445,29 @@ name, `409` for one already held or reserved, `403` when the policy declines.
 ```
 
 Bearer token only, and only the scope's **owner**: a co-owner cannot change the
-list. `subject` is an account id in digits; `action` is `add` or `remove`, and
-anything else adds. `200` with `{"scope", "provider", "kind", "owners"}`, the
-owner and co-owner ids. `400` for a missing field or a non-numeric subject,
+list. `subject` is the co-owner's subject id at the provider; `action` is `add`
+or `remove`, and anything else adds. `200` with `{"scope", "provider", "kind",
+"owners"}`, the owner and co-owner ids. `400` for a missing field or a subject
+that is empty or contains whitespace,
 `403` for anybody but the owner, `404` for an unregistered scope or removing a
 non-co-owner, `409` for removing the owner.
+
+### POST /publishers
+
+```json
+{ "target": "@acme/tool", "provider": "github-actions", "repositoryId": "123456789",
+  "repository": "acme/deck-tool", "workflow": "acme/deck-tool/.github/workflows/publish.yml",
+  "refs": "refs/tags/*" }
+```
+
+Bearer token only. Registers a trusted publisher (8.9) on a deck, or on a whole
+scope with `"target": "@acme"`; `"action": "remove"` removes it. The scope's
+owner may do this, or an active member of an organisation scope; a co-owner may
+not. `provider` defaults to `github-actions` and `refs` to `refs/tags/*`;
+`repositoryId` must be the forge's numeric id. `200` with the binding (`target`,
+`provider`, `repositoryId`, `repository`, `workflow`, `refs`, `pending`), or
+`{"target", "removed": true}`. `400` for a malformed request, `403` for anybody
+else, `404` for an unregistered scope or removing an absent binding.
 
 ## Status codes
 
@@ -460,9 +482,12 @@ non-co-owner, `409` for removing the owner.
 | `502` | the forge or identity provider could not be reached |
 | `503` | the respond timeout (120 s by default) passed; the engine answers this itself |
 
-A manifest that fails validation is `400`. The specification reserves `429` for
-rate limiting; this implementation rate-limits nothing, and `429` appears only as
-the token exchange's "slow down".
+A manifest that fails validation is `400`. `429` comes only from the three
+`/auth` routes: they share a budget per client address (`identity.rateLimit`, 30
+requests a minute by default, sliding window) and answer `429` with
+`Retry-After` past it. A device poll at GitHub's 5-second interval uses 12. An
+IPv6 client counts against its /64. Behind a proxy, set `clientIpHeader`, or every
+client shares the proxy's budget. Nothing else is rate-limited.
 
 ## Caching
 
