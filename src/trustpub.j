@@ -131,6 +131,26 @@ export func pendingExpired(b as Binding, now as int) {
 }
 
 /**
+ * Whether a presented bearer credential is a CI identity token from `issuer`,
+ * read from its unverified `iss`. For routing only (8.9: the token is sent in
+ * place of a bearer token); `verified` then checks it in full.
+ * @param token {string} the presented credential
+ * @param issuer {string} the issuer this registry accepts ("" accepts none)
+ * @return {bool} true when it should be verified as an identity token
+ */
+export func isIdentityToken(token as string, issuer as string) {
+    if ($issuer == "" or len(strings.split($token, ".")) != 3) {
+        return false;
+    }
+    try {
+        def claims as json.Value init jwt.decode($token);
+        return json.has($claims, "/iss") and json.asString($claims, "/iss") == $issuer;
+    } catch (err) {
+        return false;
+    }
+}
+
+/**
  * Is this a provider whose claim shape is known?
  * @param provider {string} the provider name
  * @return {bool} true when claims can be read from it

@@ -357,3 +357,14 @@ func testTheRunMustHaveBuiltTheRelease() {
     $c.issuedAt = 2000;
     testing.assertFalse(matchesRelease($c, "v1.0.0", $commit, 1000).allowed);
 }
+
+func testAnIdentityTokenIsRecognisedByItsIssuer() {
+    # 8.9: sent in place of a bearer token, routed by its unverified `iss`
+    def key as bytes init crypto.rsaGenerateKey(2048);
+    def token as string init signedBy($key, '{"iss":"https://ci.example","repository_id":"42"}');
+    testing.assertTrue(isIdentityToken($token, "https://ci.example"));
+    testing.assertFalse(isIdentityToken($token, "https://other.example"));
+    testing.assertFalse(isIdentityToken($token, ""));
+    testing.assertFalse(isIdentityToken("jvcp_abc", "https://ci.example"));
+    testing.assertFalse(isIdentityToken("a.b", "https://ci.example"));
+}
