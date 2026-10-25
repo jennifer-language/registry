@@ -51,3 +51,14 @@ func testOnlyA401MarksATokenAsRejected() {
     testing.assertEqual(rejectionKind(403), "identity");
     testing.assertEqual(rejectionKind(500), "identity");
 }
+
+func testASubjectIsOpaqueButBounded() {
+    # 8.1: numeric ids and OIDC UUIDs alike; nothing empty, spaced or over 255
+    for (def ok in ["1234567", "07", "4f1c2a9e-7b1d-4c55-9a7e-2f0d8c3b6a11", "auth0|abc"]) {
+        testing.assertTrue(isSubject($ok));
+    }
+    def long as string init strings.repeat("a", 256);
+    for (def bad in ["", "a b", "x\ty", "é", $long]) {
+        testing.assertFalse(isSubject($bad));
+    }
+}

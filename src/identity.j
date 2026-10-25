@@ -88,6 +88,25 @@ export def struct Poll {
 };
 
 /**
+ * Whether `s` is usable as a subject id (specification 8.1): an opaque string of
+ * 1 to 255 printable ASCII characters without whitespace, the bound OIDC places
+ * on `sub`. Numeric ids (GitHub, GitLab, Gitea) qualify as their decimal text.
+ * @param s {string} the candidate
+ * @return {bool} true when it can be stored and compared as a subject
+ */
+export func isSubject(s as string) {
+    if (len($s) == 0 or len($s) > 255) {
+        return false;
+    }
+    for (def ch in strings.chars($s)) {
+        if ($ch < "!" or $ch > "~") {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
  * The error kind `subject` throws when the provider refuses the token outright
  * (HTTP 401): it was revoked or has expired. Any other failure is `identity` or
  * a network kind, which says nothing about the grant (specification 8.5).
