@@ -526,7 +526,7 @@ func testRevokeDropsThatAccountsRefreshTokens() {
         $db,
         "aaaa",
         store.Refresh{
-            accountId: 42,
+            subject: "42",
             login: "alice",
             expiresAt: 1800000000,
             orgs: {},
@@ -536,7 +536,7 @@ func testRevokeDropsThatAccountsRefreshTokens() {
         $db,
         "bbbb",
         store.Refresh{
-            accountId: 99,
+            subject: "99",
             login: "bob",
             expiresAt: 1800000000,
             orgs: {},
@@ -549,11 +549,11 @@ func testRevokeDropsThatAccountsRefreshTokens() {
     testing.assertTrue(store.hasRefresh($r.db, "bbbb"));
 }
 
-func testRevokeRejectsANonNumericAccountId() {
-    # ownership binds to the numeric id, so a login is not an answer here
-    def r as AdminResult init dispatch(emptyStore(), ["deckadmin", "revoke", "alice"]);
+func testRevokeRejectsAnUnusableSubject() {
+    # subjects are opaque (8.1), but whitespace never occurs in one
+    def r as AdminResult init dispatch(emptyStore(), ["deckadmin", "revoke", "a b"]);
     testing.assertFalse($r.ok);
-    testing.assertContains($r.message, "not a numeric account id");
+    testing.assertContains($r.message, "not a subject id");
 }
 
 # --- logging configuration ----------------------------------------------------
@@ -661,6 +661,16 @@ func testTrustRegistersABinding() {
     testing.assertEqual($b.provider, trustpub.GITHUB);
     # the default narrows to tags rather than admitting every branch build
     testing.assertEqual($b.refPattern, "refs/tags/*");
+}
+
+func testTrustTakesAWholeScope() {
+    def argv as list of string init ["deckadmin", "trust", "@acme", "123456789"];
+    def r as AdminResult init dispatch(owned(), $argv);
+    testing.assertTrue($r.ok);
+    testing.assertContains($r.message, "every deck in the scope");
+    testing.assertEqual(store.bindingFor($r.db, "@acme/anything").repositoryId, "123456789");
+    def gone as AdminResult init dispatch($r.db, ["deckadmin", "untrust", "@acme"]);
+    testing.assertFalse(store.hasBinding($gone.db, "@acme"));
 }
 
 func testTrustNeedsTheRepositoryId() {

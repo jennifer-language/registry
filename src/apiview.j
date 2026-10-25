@@ -99,6 +99,7 @@ export func index(authOn as bool) {
         def gated as list of string init [
             "POST /claim",
             "POST /owners",
+            "POST /publishers",
             "POST /yank",
             "POST /unyank",
             "POST /auth/device",

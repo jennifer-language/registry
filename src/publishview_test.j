@@ -198,9 +198,28 @@ func testATreeWithoutTheEntryModuleIsRefused() {
 }
 
 func testTheReleaseChecksBindEveryWayOfPublishing() {
+    # a token for the tag it builds, so authorisation passes and step 6 refuses
     def src as Source init source();
     $src.tag = "v9.9.9";
-    testing.assertEqual(byTrustedPublisher(bound(), claims(), AUD, ISS, $src, NOW).status, 400);
+    def c as trustpub.Claims init claims();
+    $c.ref = "refs/tags/v9.9.9";
+    testing.assertEqual(byTrustedPublisher(bound(), $c, AUD, ISS, $src, NOW).status, 400);
+}
+
+func testAStrangerLearnsNothingFromTheReleaseChecks() {
+    # section 7 order: authorisation (4) before the tag (6), conflict (7) and tree (8)
+    def src as Source init source();
+    $src.tag = "v9.9.9";
+    $src.entryPresent = false;
+    testing.assertEqual(byToken(owned(), stranger(), $src, NOW).status, 403);
+}
+
+func testAConflictIsReportedBeforeAMissingEntryModule() {
+    # step 7 before step 8
+    def first as PublishReply init byToken(owned(), alice(), source(), NOW);
+    def again as Source init source();
+    $again.entryPresent = false;
+    testing.assertEqual(byToken($first.db, alice(), $again, NOW).status, 409);
 }
 
 func testTheEntryPathComesFromTheManifestName() {
@@ -725,4 +744,45 @@ func testATokenForAnotherTagDoesNotPublish() {
     def out as PublishReply init byTrustedPublisher(bound(), $c, AUD, ISS, source(), NOW);
     testing.assertEqual($out.status, 403);
     testing.assertContains(json.asString($out.body, "/error"), "not for the tag");
+}
+
+func testAScopeBindingPublishesAnyDeckInTheScope() {
+    # 8.9: one binding for a whole scope; never pending
+    def scoped as trustpub.Binding init store.getBinding(bound(), "@acme/routeros");
+    $scoped.deck = "@acme";
+    $scoped.pending = false;
+    def db as flatdb.DB init store.putBinding(owned(), $scoped);
+    def out as PublishReply init byTrustedPublisher($db, claims(), AUD, ISS, source(), NOW);
+    testing.assertEqual($out.status, 201);
+}
+
+func testNewBindingValidatesTheTarget() {
+    def ok as NewBinding init newBinding(owned(), "@acme", "github-actions", "42", "", "", "", NOW);
+    testing.assertTrue($ok.ok);
+    testing.assertFalse($ok.binding.pending);
+    testing.assertEqual($ok.binding.refPattern, "refs/tags/*");
+    def deck as NewBinding init newBinding(
+        owned(),
+        "@acme/new",
+        "github-actions",
+        "42",
+        "",
+        "",
+        "",
+        NOW);
+    testing.assertTrue($deck.binding.pending);
+    for (def bad in ["acme", "@", "@Acme/x y", "@nobody"]) {
+        testing.assertFalse(newBinding(owned(), $bad, "github-actions", "42", "", "", "", NOW).ok);
+    }
+    def byPath as NewBinding init newBinding(
+        owned(),
+        "@acme",
+        "github-actions",
+        "acme/x",
+        "",
+        "",
+        "",
+        NOW);
+    testing.assertFalse($byPath.ok);
+    testing.assertFalse(newBinding(owned(), "@acme", "jenkins", "42", "", "", "", NOW).ok);
 }

@@ -46,8 +46,8 @@ def const REFRESH_BYTES as int init 32;
 
 /**
  * Who a token authenticates.
- * @field accountId {int} the numeric GitHub account id, which ownership binds to
- * @field login {string} the GitHub login, a display label only
+ * @field subject {string} the provider's subject id, opaque (8.1); ownership binds to it
+ * @field login {string} the provider login, a display label only
  * @field expiresAt {int} when the token stops working (Unix seconds)
  * @field orgs {map of string to string} folded organisation login to provider id,
  *     read at login (8.7)
@@ -55,7 +55,7 @@ def const REFRESH_BYTES as int init 32;
  *     token carries no `orgsAt` claim
  */
 export def struct Identity {
-    accountId as int,
+    subject as string,
     login as string,
     expiresAt as int,
     orgs as map of string to string,
@@ -65,8 +65,8 @@ export def struct Identity {
 /**
  * Mint a signed bearer token for an account.
  * @param key {bytes} the HMAC signing secret
- * @param accountId {int} the numeric GitHub account id
- * @param login {string} the GitHub login, carried as a display label
+ * @param subject {string} the provider's subject id
+ * @param login {string} the provider login, carried as a display label
  * @param orgs {map of string to string} the organisations the account actively
  *     belongs to, folded login -> id, read at login (8.7)
  * @param checkedAt {int} when that membership was read (Unix seconds). Separate
@@ -77,15 +77,14 @@ export def struct Identity {
  */
 export func mint(
     key as bytes,
-    accountId as int,
+    subject as string,
     login as string,
     orgs as map of string to string,
     checkedAt as int,
     ttl as int,
     now as int) {
     def claims as json.Value init json.map();
-    # `sub` is the account id as text, since a JWT subject is a string.
-    $claims = json.set($claims, "/sub", convert.toString($accountId));
+    $claims = json.set($claims, "/sub", $subject);
     $claims = json.set($claims, "/login", $login);
     $claims = json.set($claims, "/iat", $now);
     $claims = json.set($claims, "/exp", $now + $ttl);
@@ -124,7 +123,7 @@ export func verify(key as bytes, token as string) {
         $checkedAt = json.asInt($claims, "/orgsAt");
     }
     return Identity{
-        accountId: convert.toInt(json.asString($claims, "/sub")),
+        subject: json.asString($claims, "/sub"),
         login: json.asString($claims, "/login"),
         expiresAt: json.asInt($claims, "/exp"),
         orgs: $orgs,

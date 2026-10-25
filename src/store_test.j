@@ -248,9 +248,9 @@ func aNamespace(scope as string, subject as string, login as string) {
 # --- refresh tokens ---------------------------------------------------------
 
 # aRefresh builds a Refresh record for tests.
-func aRefresh(accountId as int, expiresAt as int) {
+func aRefresh(subject as string, expiresAt as int) {
     return Refresh{
-        accountId: $accountId,
+        subject: $subject,
         login: "alice",
         expiresAt: $expiresAt,
         orgs: {},
@@ -260,10 +260,10 @@ func aRefresh(accountId as int, expiresAt as int) {
 
 func testRefreshRoundTrips() {
     def db as flatdb.DB init emptyStore();
-    $db = putRefresh($db, "aaaa", aRefresh(42, 1800000000));
+    $db = putRefresh($db, "aaaa", aRefresh("42", 1800000000));
     testing.assertTrue(hasRefresh($db, "aaaa"));
     def rec as Refresh init getRefresh($db, "aaaa");
-    testing.assertEqual($rec.accountId, 42);
+    testing.assertEqual($rec.subject, "42");
     testing.assertEqual($rec.login, "alice");
     testing.assertEqual($rec.expiresAt, 1800000000);
 }
@@ -276,7 +276,7 @@ func testTheOrganisationsOnARefreshRoundTrip() {
         $db,
         "bbbb",
         Refresh{
-            accountId: 42,
+            subject: "42",
             login: "alice",
             expiresAt: 1800000000,
             orgs: {"acme": "7", "viverto": "42"},
@@ -301,8 +301,8 @@ func testDeleteRefreshIsANoOpWhenUnknown() {
 
 func testDeleteRefreshRemovesOnlyThatToken() {
     def db as flatdb.DB init emptyStore();
-    $db = putRefresh($db, "aaaa", aRefresh(42, 1800000000));
-    $db = putRefresh($db, "bbbb", aRefresh(42, 1800000000));
+    $db = putRefresh($db, "aaaa", aRefresh("42", 1800000000));
+    $db = putRefresh($db, "bbbb", aRefresh("42", 1800000000));
     $db = deleteRefresh($db, "aaaa");
     testing.assertFalse(hasRefresh($db, "aaaa"));
     testing.assertTrue(hasRefresh($db, "bbbb"));
@@ -311,10 +311,10 @@ func testDeleteRefreshRemovesOnlyThatToken() {
 func testRevokeAccountDropsEveryTokenOfThatAccount() {
     # the operator path for invalidating an identity's outstanding tokens
     def db as flatdb.DB init emptyStore();
-    $db = putRefresh($db, "aaaa", aRefresh(42, 1800000000));
-    $db = putRefresh($db, "bbbb", aRefresh(42, 1800000000));
-    $db = putRefresh($db, "cccc", aRefresh(99, 1800000000));
-    $db = revokeAccount($db, 42);
+    $db = putRefresh($db, "aaaa", aRefresh("42", 1800000000));
+    $db = putRefresh($db, "bbbb", aRefresh("42", 1800000000));
+    $db = putRefresh($db, "cccc", aRefresh("99", 1800000000));
+    $db = revokeAccount($db, "42");
     testing.assertFalse(hasRefresh($db, "aaaa"));
     testing.assertFalse(hasRefresh($db, "bbbb"));
     testing.assertTrue(hasRefresh($db, "cccc"));
@@ -322,41 +322,41 @@ func testRevokeAccountDropsEveryTokenOfThatAccount() {
 
 func testAForgeTokenIsKeptPerAccount() {
     def db as flatdb.DB init emptyStore();
-    testing.assertEqual(getForgeToken($db, 42), "");
-    $db = putForgeToken($db, 42, "sealed-1", 1700000000);
-    testing.assertEqual(getForgeToken($db, 42), "sealed-1");
-    testing.assertEqual(getForgeToken($db, 99), "");
+    testing.assertEqual(getForgeToken($db, "42"), "");
+    $db = putForgeToken($db, "42", "sealed-1", 1700000000);
+    testing.assertEqual(getForgeToken($db, "42"), "sealed-1");
+    testing.assertEqual(getForgeToken($db, "99"), "");
     # a later login replaces it: no history of old credentials is kept
-    $db = putForgeToken($db, 42, "sealed-2", 1700000100);
-    testing.assertEqual(getForgeToken($db, 42), "sealed-2");
+    $db = putForgeToken($db, "42", "sealed-2", 1700000100);
+    testing.assertEqual(getForgeToken($db, "42"), "sealed-2");
 }
 
 func testRevokingAnAccountDropsItsForgeToken() {
     # a revoked account must not leave a credential the registry could act with
     def db as flatdb.DB init emptyStore();
-    $db = putForgeToken($db, 42, "sealed", 1700000000);
-    $db = putForgeToken($db, 99, "other", 1700000000);
-    $db = revokeAccount($db, 42);
-    testing.assertEqual(getForgeToken($db, 42), "");
-    testing.assertEqual(getForgeToken($db, 99), "other");
+    $db = putForgeToken($db, "42", "sealed", 1700000000);
+    $db = putForgeToken($db, "99", "other", 1700000000);
+    $db = revokeAccount($db, "42");
+    testing.assertEqual(getForgeToken($db, "42"), "");
+    testing.assertEqual(getForgeToken($db, "99"), "other");
 }
 
 func testCountRefreshCountsOnlyThatAccount() {
     # asked before a revoke so the log records what was dropped
     def db as flatdb.DB init emptyStore();
-    testing.assertEqual(countRefresh($db, 42), 0);
-    $db = putRefresh($db, "aaaa", aRefresh(42, 1800000000));
-    $db = putRefresh($db, "bbbb", aRefresh(42, 1800000000));
-    $db = putRefresh($db, "cccc", aRefresh(99, 1800000000));
-    testing.assertEqual(countRefresh($db, 42), 2);
-    testing.assertEqual(countRefresh($db, 99), 1);
-    testing.assertEqual(countRefresh($db, 7), 0);
+    testing.assertEqual(countRefresh($db, "42"), 0);
+    $db = putRefresh($db, "aaaa", aRefresh("42", 1800000000));
+    $db = putRefresh($db, "bbbb", aRefresh("42", 1800000000));
+    $db = putRefresh($db, "cccc", aRefresh("99", 1800000000));
+    testing.assertEqual(countRefresh($db, "42"), 2);
+    testing.assertEqual(countRefresh($db, "99"), 1);
+    testing.assertEqual(countRefresh($db, "7"), 0);
 }
 
 func testPurgeDropsOnlyExpiredTokens() {
     def db as flatdb.DB init emptyStore();
-    $db = putRefresh($db, "old", aRefresh(42, 1000));
-    $db = putRefresh($db, "live", aRefresh(42, 1800000000));
+    $db = putRefresh($db, "old", aRefresh("42", 1000));
+    $db = putRefresh($db, "live", aRefresh("42", 1800000000));
     $db = purgeExpiredRefresh($db, 2000);
     testing.assertFalse(hasRefresh($db, "old"));
     testing.assertTrue(hasRefresh($db, "live"));
@@ -364,7 +364,7 @@ func testPurgeDropsOnlyExpiredTokens() {
 
 func testPurgeTreatsTheExpiryInstantAsExpired() {
     def db as flatdb.DB init emptyStore();
-    $db = putRefresh($db, "edge", aRefresh(42, 2000));
+    $db = putRefresh($db, "edge", aRefresh("42", 2000));
     $db = purgeExpiredRefresh($db, 2000);
     testing.assertFalse(hasRefresh($db, "edge"));
 }
@@ -650,4 +650,47 @@ func testProvenanceStoresIdsAsNumbersAndSkipsWhatIsNotOne() {
     testing.assertEqual($back.repoId, "123");
     testing.assertEqual($back.repoOwnerId, "");
     testing.assertEqual($back.repoOwner, "acme");
+}
+
+func testAForgeLinkIsKeptPerSubjectAndDroppedOnRevoke() {
+    def db as flatdb.DB init emptyStore();
+    testing.assertEqual(getForgeLink($db, "a/b~c").forgeId, "");
+    def link as ForgeLink init ForgeLink{forgeId: "583231", forgeLogin: "octocat", linkedAt: 5};
+    $db = putForgeLink($db, "a/b~c", $link);
+    testing.assertEqual(getForgeLink($db, "a/b~c").forgeLogin, "octocat");
+    $db = revokeAccount($db, "a/b~c");
+    testing.assertEqual(getForgeLink($db, "a/b~c").forgeId, "");
+}
+
+func scopeBinding(key as string, repoId as string) {
+    return trustpub.Binding{
+        provider: "github-actions",
+        repositoryId: $repoId,
+        repository: "acme/x",
+        workflow: "",
+        refPattern: "refs/tags/*",
+        deck: $key,
+        pending: false,
+        createdAt: "1"
+    };
+}
+
+func testADeckBindingWinsOverItsScopes() {
+    # 8.9: a binding on a deck, or on its scope
+    def db as flatdb.DB init putBinding(emptyStore(), scopeBinding("@acme", "1"));
+    testing.assertEqual(bindingFor($db, "@acme/tool").repositoryId, "1");
+    $db = putBinding($db, scopeBinding("@acme/tool", "2"));
+    testing.assertEqual(bindingFor($db, "@acme/tool").repositoryId, "2");
+    testing.assertEqual(bindingFor($db, "@acme/other").repositoryId, "1");
+    testing.assertEqual(bindingFor($db, "@beta/tool").repositoryId, "");
+}
+
+func testReassigningAScopeDropsItsScopeBinding() {
+    def db as flatdb.DB init putBinding(emptyStore(), scopeBinding("@acme", "1"));
+    $db = putBinding($db, scopeBinding("@acme/tool", "2"));
+    $db = putBinding($db, scopeBinding("@beta", "3"));
+    $db = dropDelegations($db, "acme");
+    testing.assertFalse(hasBinding($db, "@acme"));
+    testing.assertFalse(hasBinding($db, "@acme/tool"));
+    testing.assertTrue(hasBinding($db, "@beta"));
 }

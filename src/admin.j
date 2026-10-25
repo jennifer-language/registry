@@ -25,7 +25,9 @@ import "./store.j" as store;
 import "./deckname.j" as deckname;
 import "./scope.j" as scope;
 import "./audit.j" as audit;
+import "./identity.j" as identity;
 import "./trustpub.j" as trustpub;
+import "./publishview.j" as publishview;
 import "./citoken.j" as citoken;
 import "./reserved.j" as reserved;
 import "./keywords.j" as keywords;
@@ -314,7 +316,7 @@ export func parser() {
     def tp as args.Parser init args.parser(
         "trust",
         "let a CI workflow publish a deck with no stored credential");
-    $tp = args.positional($tp, "deck", "the deck the workflow may publish");
+    $tp = args.positional($tp, "deck", "the deck (@scope/deck) or scope (@scope) it may publish");
     $tp = args.positional($tp, "repositoryId", "the forge's immutable numeric repository id");
     $tp = args.flag(
         $tp,
@@ -325,17 +327,17 @@ export func parser() {
     $tp = args.flag($tp, "repository", "", "", "the repository path, a display label");
     $tp = args.flag($tp, "workflow", "", "", "the workflow file permitted to publish");
     $tp = args.flag($tp, "refs", "", "refs/tags/*", "which refs may publish");
-    $p = args.command($p, "trust", "register a trusted publisher for a deck", $tp);
+    $p = args.command($p, "trust", "register a trusted publisher for a deck or scope", $tp);
 
     def tpl as args.Parser init args.parser("publishers", "list trusted publishers");
     $p = args.command($p, "publishers", "list trusted publishers", $tpl);
 
     def tpr as args.Parser init args.parser("untrust", "remove a trusted publisher");
-    $tpr = args.positional($tpr, "deck", "the deck to cut off");
+    $tpr = args.positional($tpr, "deck", "the deck or @scope to cut off");
     $p = args.command($p, "untrust", "remove a deck's trusted publisher", $tpr);
 
     def rv as args.Parser init args.parser("revoke", "invalidate an identity's tokens");
-    $rv = args.positional($rv, "accountId", "the numeric account id at the identity provider");
+    $rv = args.positional($rv, "subject", "the account's subject id at the identity provider");
     $p = args.command($p, "revoke", "invalidate an identity's refresh tokens", $rv);
     return $p;
 }
@@ -630,15 +632,12 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
  * @return {AdminResult} the result: the (edited) store, flags, and a message
  */
 export func cmdRevoke(db as flatdb.DB, r as args.Result, now as string) {
-    def raw as string init args.asString($r, "accountId");
-    def id as int init 0;
-    try {
-        $id = convert.toInt($raw);
-    } catch (err) {
-        return failResult($db, "not a numeric account id: " + $raw);
+    def raw as string init strings.trim(args.asString($r, "subject"));
+    if (not identity.isSubject($raw)) {
+        return failResult($db, "not a subject id: " + $raw);
     }
-    def held as int init store.countRefresh($db, $id);
-    def out as flatdb.DB init store.revokeAccount($db, $id);
+    def held as int init store.countRefresh($db, $raw);
+    def out as flatdb.DB init store.revokeAccount($db, $raw);
     return editResult(
         $out,
         "revoked the refresh tokens of account " + $raw,
@@ -875,69 +874,37 @@ export func cmdSetYanked(db as flatdb.DB, r as args.Result, now as string, yanke
  * Register a trusted publisher: the CI workflow permitted to publish a deck
  * with no stored credential (specification 8.9).
  *
- * The scope must already be owned, so a binding never bypasses name authority.
- * A binding on a deck with no versions is pending until the first publish.
+ * Validated by `publishview.newBinding`: a deck or a whole `@scope`, under a
+ * registered, owned scope. A deck binding with no versions is pending.
  * @param db {flatdb.DB} the current registry store
  * @param r {args.Result} the parsed command line
  * @param now {string} the registration timestamp (Unix seconds as text)
  * @return {AdminResult} the result: the (edited) store, flags, and a message
  */
 export func cmdTrust(db as flatdb.DB, r as args.Result, now as string) {
-    def deck as string init deckname.fold(args.asString($r, "deck"));
-    if (not deckname.isValid($deck) or not deckname.isScoped($deck)) {
-        return failResult($db, "not a registry deck name: " + $deck);
+    def nb as publishview.NewBinding init publishview.newBinding(
+        $db,
+        args.asString($r, "deck"),
+        args.asString($r, "provider"),
+        args.asString($r, "repositoryId"),
+        args.asString($r, "repository"),
+        args.asString($r, "workflow"),
+        args.asString($r, "refs"),
+        $now);
+    if (not $nb.ok) {
+        return failResult($db, $nb.error);
     }
-    def provider as string init args.asString($r, "provider");
-    if (not trustpub.isKnownProvider($provider)) {
-        return failResult(
-            $db,
-            "unknown CI provider: " + $provider +
-                " (github-actions, gitlab-ci, or gitea-actions)");
-    }
-    def repoId as string init strings.trim(args.asString($r, "repositoryId"));
-    if ($repoId == "") {
-        return failResult(
-            $db,
-            "a trusted publisher needs the repository id, " +
-                "not the path: a path can be renamed and re-registered by somebody else");
-    }
-    # A binding is a standing write grant, so it is gated like a publish.
-    def scopeName as string init deckname.scopeOf($deck);
-    if (not store.hasNamespace($db, $scopeName)) {
-        return failResult(
-            $db,
-            "namespace @" + $scopeName +
-                " is not registered; run 'deckadmin register-namespace " + $scopeName + "'");
-    }
-    # A reserved scope has no owner for the publisher to act for; a binding
-    # would open a name the registry holds shut.
-    if (store.getNamespace($db, $scopeName).subject == "") {
-        return failResult(
-            $db,
-            "@" + $scopeName + " is reserved: it is held by " +
-                "an operator and has no owner for a trusted publisher to act for; " +
-                "grant it first with 'deckadmin register-namespace " + $scopeName +
-                " --owner <id>'");
-    }
-    def pending as bool init not store.hasDeck($db, $deck);
-    def b as trustpub.Binding init trustpub.Binding{
-        provider: $provider,
-        repositoryId: $repoId,
-        repository: args.asString($r, "repository"),
-        workflow: args.asString($r, "workflow"),
-        refPattern: args.asString($r, "refs"),
-        deck: $deck,
-        pending: $pending,
-        createdAt: $now
-    };
-    def what as string init "trusted " + $repoId + " to publish " + $deck;
-    if ($pending) {
+    def b as trustpub.Binding init $nb.binding;
+    def what as string init "trusted " + $b.repositoryId + " to publish " + $b.deck;
+    if (store.isScopeKey($b.deck)) {
+        $what = $what + " (every deck in the scope)";
+    } elseif ($b.pending) {
         $what = $what + " (pending: the deck has no versions yet)";
     }
     return editResult(
         store.putBinding($db, $b),
         $what,
-        audit.publisherTrusted($deck, $provider, $repoId, $b.repository, $pending));
+        audit.publisherTrusted($b.deck, $b.provider, $b.repositoryId, $b.repository, $b.pending));
 }
 
 /**

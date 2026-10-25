@@ -13,7 +13,7 @@ use strings;
 # jwt.verify checks `exp` against the real clock, so tokens that must verify
 # are minted around now; only the expiry test uses this past instant.
 def const PAST as int init 1700000000;
-def const ACCOUNT as int init 1234567;
+def const ACCOUNT as string init "1234567";
 
 func nowish() {
     return now();
@@ -32,7 +32,7 @@ func otherKey() {
 func testRoundTripCarriesTheIdentity() {
     def token as string init mint(key(), ACCOUNT, "alice", {}, 0, 3600, nowish());
     def who as Identity init verify(key(), $token);
-    testing.assertEqual($who.accountId, ACCOUNT);
+    testing.assertEqual($who.subject, ACCOUNT);
     testing.assertEqual($who.login, "alice");
     testing.assertEqual($who.expiresAt, nowish() + 3600);
 }
@@ -47,7 +47,7 @@ func testSubjectIsTheAccountIdNotTheLogin() {
     # a login can be re-registered after a rename, so ownership binds to the id
     def a as string init mint(key(), ACCOUNT, "alice", {}, 0, 3600, nowish());
     def b as string init mint(key(), ACCOUNT, "alice-renamed", {}, 0, 3600, nowish());
-    testing.assertEqual(verify(key(), $a).accountId, verify(key(), $b).accountId);
+    testing.assertEqual(verify(key(), $a).subject, verify(key(), $b).subject);
 }
 
 # The zero-argument shims assertThrows dispatches by name.
@@ -91,7 +91,7 @@ func testExpiryIsEnforced() {
 # throwsOnNoExpiry signs, with the right key, a token that never expires.
 func throwsOnNoExpiry() {
     def claims as json.Value init json.map();
-    $claims = json.set($claims, "/sub", convert.toString(ACCOUNT));
+    $claims = json.set($claims, "/sub", ACCOUNT);
     $claims = json.set($claims, "/login", "alice");
     verify(key(), jwt.sign($claims, key(), ALG));
 }

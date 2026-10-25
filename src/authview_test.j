@@ -13,7 +13,7 @@ use json;
 use convert;
 import "./identity/github.j" as githubIdentity;
 
-def const ACCOUNT as int init 1234567;
+def const ACCOUNT as string init "1234567";
 def const TOKEN_TTL as int init 3600;
 def const REFRESH_TTL as int init 1209600;
 def const ORG_MAX_AGE as int init 604800;
@@ -115,7 +115,7 @@ func testIssueLoginIssuesForAnIdentifiedAccount() {
     def found as Login init Login{
         ok: true,
         reply: pending(emptyDb()),
-        accountId: ACCOUNT,
+        subject: ACCOUNT,
         login: "octocat",
         orgs: $orgs,
         accessToken: "gho_from_the_provider"
@@ -123,7 +123,7 @@ func testIssueLoginIssuesForAnIdentifiedAccount() {
     def out as AuthReply init issueLogin(config(), emptyDb(), $found, nowish());
     testing.assertEqual($out.status, 200);
     testing.assertTrue($out.changed);
-    testing.assertEqual(json.asInt($out.body, "/accountId"), ACCOUNT);
+    testing.assertEqual(json.asString($out.body, "/subject"), ACCOUNT);
     testing.assertEqual(store.countRefresh($out.db, ACCOUNT), 1);
 }
 
@@ -132,7 +132,7 @@ func identified(accessToken as string) {
     return Login{
         ok: true,
         reply: pending(emptyDb()),
-        accountId: ACCOUNT,
+        subject: ACCOUNT,
         login: "octocat",
         orgs: $none,
         accessToken: $accessToken
@@ -173,7 +173,7 @@ func fakeSubject(cfg as identity.Config, accessToken as string) {
         throw Error{kind: identity.REJECTED, message: "rejected the token: 401"};
     }
     if ($accessToken == "ok" or $accessToken == "other") {
-        def id as string init convert.toString(ACCOUNT);
+        def id as string init ACCOUNT;
         if ($accessToken == "other") {
             $id = "999";
         }
@@ -235,7 +235,7 @@ func testAnAuthorizationCodeLogsIn() {
     # 12.2 authcode: the client ran PKCE against the provider and hands over the code
     def got as Login init login(codeConfig(), codeBody("good", "http://127.0.0.1:53682/cb"));
     testing.assertTrue($got.ok);
-    testing.assertEqual($got.accountId, ACCOUNT);
+    testing.assertEqual($got.subject, ACCOUNT);
     def v6 as Login init login(codeConfig(), codeBody("good", "http://[::1]:8000/"));
     testing.assertTrue($v6.ok);
 }
@@ -355,14 +355,14 @@ func testIssueReturnsAUsableTokenPair() {
     def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", {}, 0, nowish());
     testing.assertEqual($out.status, 200);
     testing.assertTrue($out.changed);
-    testing.assertEqual(json.asInt($out.body, "/accountId"), ACCOUNT);
+    testing.assertEqual(json.asString($out.body, "/subject"), ACCOUNT);
     testing.assertEqual(json.asString($out.body, "/login"), "alice");
     testing.assertEqual(json.asInt($out.body, "/expiresIn"), TOKEN_TTL);
     # the bearer token verifies, and carries the identity
     def who as token.Identity init token.verify(
         config().signingKey,
         json.asString($out.body, "/token"));
-    testing.assertEqual($who.accountId, ACCOUNT);
+    testing.assertEqual($who.subject, ACCOUNT);
     testing.assertEqual($who.login, "alice");
 }
 
@@ -408,7 +408,7 @@ func testIssuePurgesExpiredRefreshTokens() {
     $db = store.putRefresh(
         $db,
         "deadbeef",
-        store.Refresh{accountId: 999, login: "old", expiresAt: 1, orgs: {}, orgsCheckedAt: 0});
+        store.Refresh{subject: "999", login: "old", expiresAt: 1, orgs: {}, orgsCheckedAt: 0});
     testing.assertTrue(store.hasRefresh($db, "deadbeef"));
     def out as AuthReply init issue(config(), $db, ACCOUNT, "alice", {}, 0, nowish());
     testing.assertFalse(store.hasRefresh($out.db, "deadbeef"));
@@ -435,7 +435,7 @@ func testRefreshReturnsANewPair() {
         nowish(),
         GRANT_VALID);
     testing.assertEqual($out.status, 200);
-    testing.assertEqual(json.asInt($out.body, "/accountId"), ACCOUNT);
+    testing.assertEqual(json.asString($out.body, "/subject"), ACCOUNT);
     # the identity survives without another provider call
     testing.assertEqual(json.asString($out.body, "/login"), "alice");
 }
@@ -489,7 +489,7 @@ func testAnExpiredRefreshTokenIs401AndIsDropped() {
     def db as flatdb.DB init emptyDb();
     def token as string init token.newRefresh();
     def expired as store.Refresh init store.Refresh{
-        accountId: ACCOUNT,
+        subject: ACCOUNT,
         login: "alice",
         expiresAt: 1,
         orgs: {},
@@ -508,7 +508,7 @@ func testAuthenticateAcceptsAMintedToken() {
     def out as AuthReply init loggedIn(emptyDb());
     def header as string init "Bearer " + json.asString($out.body, "/token");
     def who as token.Identity init authenticate(config(), $header);
-    testing.assertEqual($who.accountId, ACCOUNT);
+    testing.assertEqual($who.subject, ACCOUNT);
 }
 
 func throwsOnMissingBearer() {
@@ -598,10 +598,24 @@ func testTheMembershipWindowLeavesLoginsWithoutOrganisationsAlone() {
     testing.assertEqual($out.status, 200);
 }
 
-func testOnlyACanonicalNumberIsAnAccountId() {
-    # "07" and "+7" both read as 7, which would make two subjects one account
-    testing.assertEqual(accountIdOf("1234567"), 1234567);
+func testANumericSubjectAlsoAnswersAsAccountId() {
+    # `accountId` stays for clients that read a number; it never merges spellings
+    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", {}, 0, nowish());
+    testing.assertEqual(json.asInt($out.body, "/accountId"), 1234567);
+    testing.assertEqual(numericId("1234567"), 1234567);
     for (def bad in ["07", "+7", "-7", "0", "", "7a", "a1b2-uuid"]) {
-        testing.assertEqual(accountIdOf($bad), 0);
+        testing.assertEqual(numericId($bad), 0);
     }
+}
+
+func testAnOpaqueSubjectLogsIn() {
+    # 8.1: an OIDC `sub` such as a UUID is stored as it is, without `accountId`
+    def uuid as string init "4f1c2a9e-7b1d-4c55-9a7e-2f0d8c3b6a11";
+    def out as AuthReply init issue(config(), emptyDb(), $uuid, "alice", {}, 0, nowish());
+    testing.assertEqual(json.asString($out.body, "/subject"), $uuid);
+    testing.assertFalse(json.has($out.body, "/accountId"));
+    def who as token.Identity init token.verify(
+        config().signingKey,
+        json.asString($out.body, "/token"));
+    testing.assertEqual($who.subject, $uuid);
 }

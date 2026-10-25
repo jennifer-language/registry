@@ -133,8 +133,8 @@ export func stateReply(db as flatdb.DB, state as string) {
  * refresh both answer through here, so their response shape is the same.
  * @param cfg {Config} the issuing configuration
  * @param db {flatdb.DB} the store to record the refresh token in
- * @param accountId {int} the numeric GitHub account id
- * @param login {string} the GitHub login, carried as a display label
+ * @param subject {string} the provider's subject id (8.1)
+ * @param login {string} the provider login, carried as a display label
  * @param orgs {map of string to string} the organisations read at login (8.7)
  * @param checkedAt {int} when those memberships were read (Unix seconds). Carried
  *     separately so a refresh can reissue them without pretending they are fresh.
@@ -144,14 +144,14 @@ export func stateReply(db as flatdb.DB, state as string) {
 export func issue(
     cfg as Config,
     db as flatdb.DB,
-    accountId as int,
+    subject as string,
     login as string,
     orgs as map of string to string,
     checkedAt as int,
     now as int) {
     def bearer as string init token.mint(
         $cfg.signingKey,
-        $accountId,
+        $subject,
         $login,
         $orgs,
         $checkedAt,
@@ -163,7 +163,7 @@ export func issue(
         $out,
         token.fingerprint($refreshToken),
         store.Refresh{
-            accountId: $accountId,
+            subject: $subject,
             login: $login,
             expiresAt: $now + $cfg.refreshTtl,
             orgs: $orgs,
@@ -174,7 +174,12 @@ export func issue(
     $body = json.set($body, "/expiresIn", $cfg.tokenTtl);
     $body = json.set($body, "/refreshToken", $refreshToken);
     $body = json.set($body, "/login", $login);
-    $body = json.set($body, "/accountId", $accountId);
+    $body = json.set($body, "/subject", $subject);
+    # `accountId` predates opaque subjects; kept for clients that read a number.
+    def numeric as int init numericId($subject);
+    if ($numeric > 0) {
+        $body = json.set($body, "/accountId", $numeric);
+    }
     $body = json.set($body, "/orgs", orgNames($orgs));
     return AuthReply{status: 200, body: $body, db: $out, changed: true};
 }
@@ -229,7 +234,7 @@ export func device(cfg as Config, db as flatdb.DB) {
  * false, `reply` ready to send) or the identified account.
  * @field ok {bool} true when the provider identified an account
  * @field reply {AuthReply} the answer to send when `ok` is false
- * @field accountId {int} the provider's numeric account id
+ * @field subject {string} the provider's subject id (8.1)
  * @field login {string} the account's login, a display label
  * @field orgs {map of string to string} folded organisation login to provider id
  * @field accessToken {string} the provider's token, for `issueLogin` to keep
@@ -238,7 +243,7 @@ export func device(cfg as Config, db as flatdb.DB) {
 export def struct Login {
     ok as bool,
     reply as AuthReply,
-    accountId as int,
+    subject as string,
     login as string,
     orgs as map of string to string,
     accessToken as string
@@ -253,7 +258,7 @@ func noStore() {
 # early wraps an answer that ends the exchange before any account is known.
 func early(reply as AuthReply) {
     def none as map of string to string init {};
-    return Login{ok: false, reply: $reply, accountId: 0, login: "", orgs: $none, accessToken: ""};
+    return Login{ok: false, reply: $reply, subject: "", login: "", orgs: $none, accessToken: ""};
 }
 
 /**
@@ -397,31 +402,24 @@ func identify(cfg as Config, accessToken as string) {
         def none as map of string to string init {};
         $orgs = $none;
     }
-    # Account ids are ints, but an OIDC `sub` is an opaque string (a UUID on
-    # Keycloak and Authelia); until ids are strings in the store, such an account
-    # is refused here. The number must also read back as the same text:
-    # `convert.toInt` takes "07" and "+7" as 7, which would merge two subjects.
-    def accountId as int init accountIdOf($who.id);
-    if ($accountId == 0) {
-        return early(fail(
-            noStore(),
-            501,
-            "this registry cannot yet issue tokens for an " +
-                "account whose id is not a number"));
+    # The subject is stored and compared as an opaque string (8.1); an OIDC `sub`
+    # is often a UUID.
+    if (not identity.isSubject($who.id)) {
+        return early(fail(noStore(), 502, "the provider returned an unusable subject id"));
     }
     return Login{
         ok: true,
         reply: pending(noStore()),
-        accountId: $accountId,
+        subject: $who.id,
         login: $who.login,
         orgs: $orgs,
         accessToken: $accessToken
     };
 }
 
-# accountIdOf reads a provider's subject as an account id, or 0 when it is not
-# one: not a number, not positive, or not written the one way a number is.
-func accountIdOf(id as string) {
+# numericId is the subject as a positive number when it is written as one
+# (no sign, no leading zero), else 0. Only for the `accountId` reply field.
+func numericId(id as string) {
     def n as int init 0;
     try {
         $n = convert.toInt($id);
@@ -457,11 +455,11 @@ export func issueLogin(cfg as Config, db as flatdb.DB, got as Login, now as int)
     if (not ($got.accessToken == "")) {
         $out = store.putForgeToken(
             $out,
-            $got.accountId,
+            $got.subject,
             forgecred.seal($cfg.signingKey, $got.accessToken),
             $now);
     }
-    return issue($cfg, $out, $got.accountId, $got.login, $got.orgs, $now, $now);
+    return issue($cfg, $out, $got.subject, $got.login, $got.orgs, $now, $now);
 }
 
 /**
@@ -515,7 +513,7 @@ export func checkGrant(cfg as Config, db as flatdb.DB, body as string) {
         return "";
     }
     def rec as store.Refresh init store.getRefresh($db, token.fingerprint($presented));
-    def sealed as string init store.getForgeToken($db, $rec.accountId);
+    def sealed as string init store.getForgeToken($db, $rec.subject);
     if ($sealed == "") {
         return GRANT_MISSING;
     }
@@ -535,7 +533,7 @@ export func checkGrant(cfg as Config, db as flatdb.DB, body as string) {
         }
         return GRANT_UNKNOWN;
     }
-    if (not (accountIdOf($who.id) == $rec.accountId)) {
+    if (not ($who.id == $rec.subject)) {
         return GRANT_REVOKED;
     }
     return GRANT_VALID;
@@ -600,7 +598,7 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int, 
         def gone as flatdb.DB init store.deleteRefresh($db, $print);
         def why as string init "the provider no longer accepts this login (revoked or expired)";
         if ($grant == GRANT_REVOKED) {
-            $gone = store.deleteForgeToken($gone, $rec.accountId);
+            $gone = store.deleteForgeToken($gone, $rec.subject);
         } else {
             $why = "this login has no provider grant on record to re-check";
         }
@@ -616,7 +614,7 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int, 
     def rotated as flatdb.DB init store.deleteRefresh($db, $print);
     # Keep `orgsCheckedAt`: a refresh proves possession of a token, not continued
     # membership, so advancing it would make a stale membership renewable forever.
-    return issue($cfg, $rotated, $rec.accountId, $rec.login, $rec.orgs, $rec.orgsCheckedAt, $now);
+    return issue($cfg, $rotated, $rec.subject, $rec.login, $rec.orgs, $rec.orgsCheckedAt, $now);
 }
 
 /**

@@ -18,6 +18,7 @@
 
 use json;
 use strings;
+use maps;
 import "flatdb.j" as flatdb;
 import "./store.j" as store;
 import "./scope.j" as scope;
@@ -25,6 +26,8 @@ import "./policy.j" as policy;
 import "./identity.j" as identity;
 import "./deckname.j" as deckname;
 import "./audit.j" as audit;
+import "./trustpub.j" as trustpub;
+import "./publishview.j" as publishview;
 
 /**
  * The outcome of a scope operation: the response, and the store it wants saved.
@@ -141,8 +144,8 @@ export func owners(
     if (not store.hasNamespace($db, $folded)) {
         return refuse($db, 404, "@" + $folded + " is not a registered scope");
     }
-    if (not isSubjectId(strings.trim($subject))) {
-        return refuse($db, 400, "`subject` is an account id, in digits: " + $subject);
+    if (not identity.isSubject(strings.trim($subject))) {
+        return refuse($db, 400, "`subject` is not a subject id: " + $subject);
     }
     # Asked of the scope first, so a stranger hears what they would hear on any
     # write; then narrowed to the owner, since `authorise` admits co-owners too.
@@ -196,19 +199,120 @@ export func owners(
     };
 }
 
-# isSubjectId reports whether s is a canonical account id: digits, no sign, no
-# leading zero, at most 18 digits. A non-canonical spelling would match nobody,
-# or a differently spelled id.
-func isSubjectId(s as string) {
-    if (len($s) == 0 or len($s) > 18 or (len($s) > 1 and strings.startsWith($s, "0"))) {
-        return false;
+# delegationRefusal is why `who` may not register or remove trusted publishers
+# under a scope, or "". The same rule as co-owners: the owner of a user scope,
+# an active member of an organisation scope, never a co-owner, since a binding
+# is a standing write grant that would outlive the co-owner's removal.
+func delegationRefusal(db as flatdb.DB, who as identity.Subject, folded as string) {
+    def verdict as policy.Decision init scope.authorise($db, $who, $folded);
+    if (not $verdict.allowed) {
+        return $verdict.reason;
     }
-    for (def ch in strings.chars($s)) {
-        if ($ch < "0" or $ch > "9") {
-            return false;
+    def ns as store.Namespace init store.getNamespace($db, $folded);
+    if ($ns.kind == store.SCOPE_ORG) {
+        return "";
+    }
+    if (not ($ns.provider == $who.provider and $ns.subject == $who.id)) {
+        return "only the owner of @" + $folded + " may change its trusted publishers";
+    }
+    return "";
+}
+
+# bindingBody renders a binding as `POST /publishers` answers it.
+func bindingBody(b as trustpub.Binding) {
+    def body as json.Value init json.map();
+    $body = json.set($body, "/target", $b.deck);
+    $body = json.set($body, "/provider", $b.provider);
+    $body = json.set($body, "/repositoryId", $b.repositoryId);
+    $body = json.set($body, "/repository", $b.repository);
+    $body = json.set($body, "/workflow", $b.workflow);
+    $body = json.set($body, "/refs", $b.refPattern);
+    return json.set($body, "/pending", $b.pending);
+}
+
+/**
+ * `POST /publishers`: register or remove a trusted publisher (8.9) on a deck
+ * (`@scope/deck`) or a whole scope (`@scope`), as the scope's owner (8.8: the
+ * one-time browser step).
+ *
+ * Re-registering replaces the binding, which is how a repository migration is
+ * done. Removing an absent one is `404`.
+ * @param db {flatdb.DB} the store, opened under the write lock
+ * @param who {identity.Subject} the authenticated caller
+ * @param target {string} `@scope/deck` or `@scope`
+ * @param fields {map of string to string} `provider`, `repositoryId`, `repository`,
+ *     `workflow`, `refs` (ignored on removal)
+ * @param add {bool} true to register, false to remove
+ * @param now {string} the timestamp (Unix seconds as text)
+ * @return {ScopeReply} the outcome, and the store to persist on success
+ */
+export func publishers(
+    db as flatdb.DB,
+    who as identity.Subject,
+    target as string,
+    fields as map of string to string,
+    add as bool,
+    now as string) {
+    if (strings.trim($target) == "") {
+        return refuse($db, 400, "missing `target` (@scope/deck or @scope)");
+    }
+    def key as string init deckname.fold(strings.trim($target));
+    def folded as string init store.bindingScopeOf($key);
+    if ($folded == "" or not store.hasNamespace($db, $folded)) {
+        return refuse($db, 404, "no registered scope for " + $target);
+    }
+    def refusal as string init delegationRefusal($db, $who, $folded);
+    if (not ($refusal == "")) {
+        return refuse($db, 403, $refusal);
+    }
+    if (not $add) {
+        if (not store.hasBinding($db, $key)) {
+            return refuse($db, 404, "no trusted publisher is registered for " + $key);
         }
+        def gone as trustpub.Binding init store.getBinding($db, $key);
+        def removed as json.Value init json.set(json.map(), "/target", $key);
+        return ScopeReply{
+            status: 200,
+            body: json.set($removed, "/removed", true),
+            db: store.removeBinding($db, $key),
+            changed: true,
+            event: audit.publisherUntrusted($key, $gone.repositoryId)
+        };
     }
-    return true;
+    def provider as string init fieldOr($fields, "provider", "github-actions");
+    def nb as publishview.NewBinding init publishview.newBinding(
+        $db,
+        $key,
+        $provider,
+        fieldOr($fields, "repositoryId", ""),
+        fieldOr($fields, "repository", ""),
+        fieldOr($fields, "workflow", ""),
+        fieldOr($fields, "refs", ""),
+        $now);
+    if (not $nb.ok) {
+        return refuse($db, 400, $nb.error);
+    }
+    def b as trustpub.Binding init $nb.binding;
+    return ScopeReply{
+        status: 200,
+        body: bindingBody($b),
+        db: store.putBinding($db, $b),
+        changed: true,
+        event: audit.publisherTrusted(
+            $b.deck,
+            $b.provider,
+            $b.repositoryId,
+            $b.repository,
+            $b.pending)
+    };
+}
+
+# fieldOr reads a request field, or `fallback` when it is absent or blank.
+func fieldOr(fields as map of string to string, name as string, fallback as string) {
+    if (not maps.has($fields, $name) or strings.trim($fields[$name]) == "") {
+        return $fallback;
+    }
+    return strings.trim($fields[$name]);
 }
 
 # ownersBody renders a scope's principals.

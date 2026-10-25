@@ -147,7 +147,7 @@ export func checkSource(src as Source) {
  * Where the entry module of the deck a manifest names must be, or "" when the
  * manifest does not parse or names no valid deck (the parse error is then what
  * the publish reports). The caller asks the forge about this file before
- * `checkRelease` judges the answer.
+ * `entryProblem` judges the answer.
  * @param manifestText {string} the bytes of `deck.toml` at the commit
  * @return {string} the path, such as `src/routeros.j`, or ""
  */
@@ -173,20 +173,14 @@ export func deckNameOf(manifestText as string) {
 }
 
 /**
- * Whether what the commit holds is a release of what its manifest says
- * (specification 7, steps 6 and 8).
- *
- * The tag and the manifest must name the same version, allowing one leading `v`
- * on the tag (2.3); otherwise the record's `ref` and `version` disagree. The
- * tree must hold the entry module, without which a client installs nothing.
- *
- * Neither depends on the store, so both are checked as soon as the manifest is
- * read.
+ * Whether the tag and the manifest name the same version (specification 7,
+ * step 6), allowing one leading `v` on the tag (2.3); otherwise the record's
+ * `ref` and `version` disagree.
  * @param src {Source} the forge's output
  * @param m {manifest.Manifest} the parsed manifest, already `ok`
- * @return {string} "" when it is a release of what it says, or the complaint
+ * @return {string} "" when they agree, or the complaint
  */
-export func checkRelease(src as Source, m as manifest.Manifest) {
+export func versionProblem(src as Source, m as manifest.Manifest) {
     def tagged as string init $src.tag;
     if (strings.startsWith($tagged, "v")) {
         $tagged = strings.substring($tagged, 1, len($tagged));
@@ -195,11 +189,40 @@ export func checkRelease(src as Source, m as manifest.Manifest) {
         return "the tag " + $src.tag + " disagrees with the version in deck.toml, " +
             $m.version + "; tag the release " + $m.version + " or v" + $m.version;
     }
+    return "";
+}
+
+/**
+ * Whether the tree holds the entry module (specification 7, step 8; 6.1),
+ * without which a client installs nothing.
+ * @param src {Source} the forge's output
+ * @return {string} "" when it does, or the complaint
+ */
+export func entryProblem(src as Source) {
     if (not $src.entryPresent) {
         return "the tree at " + $src.commit + " has no " + entryPathFor($src.manifestText) +
             ", the entry module a deck must contain";
     }
     return "";
+}
+
+# releaseChecks runs section 7's steps 6, 7 and 8, in that order, once the
+# caller is authorised (step 4): a stranger learns neither which versions exist
+# nor what a repository holds. Answers status 0 when all pass.
+func releaseChecks(db as flatdb.DB, m as manifest.Manifest, src as Source) {
+    def mislabelled as string init versionProblem($src, $m);
+    if (not ($mislabelled == "")) {
+        return refuse($db, 400, $mislabelled);
+    }
+    if (alreadyPublished($db, $m)) {
+        return refuse($db, 409, $m.name + "@" + $m.version + " is already published");
+    }
+    def noEntry as string init entryProblem($src);
+    if (not ($noEntry == "")) {
+        return refuse($db, 400, $noEntry);
+    }
+    def passed as PublishReply init refuse($db, 0, "");
+    return $passed;
 }
 
 # storeVersion writes the version the manifest describes, pinned to the commit
@@ -393,10 +416,6 @@ export func byToken(db as flatdb.DB, who as identity.Subject, src as Source, now
     if (not $m.ok) {
         return refuse($db, 400, $m.error);
     }
-    def releaseComplaint as string init checkRelease($src, $m);
-    if (not ($releaseComplaint == "")) {
-        return refuse($db, 400, $releaseComplaint);
-    }
     def deckComplaint as string init checkDeck($db, $m);
     if (not ($deckComplaint == "")) {
         return refuse($db, 403, $deckComplaint);
@@ -411,8 +430,9 @@ export func byToken(db as flatdb.DB, who as identity.Subject, src as Source, now
     if (not ($sourceComplaint == "")) {
         return refuse($db, 403, $sourceComplaint);
     }
-    if (alreadyPublished($db, $m)) {
-        return refuse($db, 409, $m.name + "@" + $m.version + " is already published");
+    def checked as PublishReply init releaseChecks($db, $m, $src);
+    if (not ($checked.status == 0)) {
+        return $checked;
     }
     return succeed($db, $m, $src, $now, "token");
 }
@@ -441,10 +461,6 @@ export func byCiToken(db as flatdb.DB, t as citoken.Token, src as Source, now as
     if (not $m.ok) {
         return refuse($db, 400, $m.error);
     }
-    def releaseComplaint as string init checkRelease($src, $m);
-    if (not ($releaseComplaint == "")) {
-        return refuse($db, 400, $releaseComplaint);
-    }
     def deckComplaint as string init checkDeck($db, $m);
     if (not ($deckComplaint == "")) {
         return refuse($db, 403, $deckComplaint);
@@ -467,8 +483,9 @@ export func byCiToken(db as flatdb.DB, t as citoken.Token, src as Source, now as
     if (not ($sourceComplaint == "")) {
         return refuse($db, 403, $sourceComplaint);
     }
-    if (alreadyPublished($db, $m)) {
-        return refuse($db, 409, $m.name + "@" + $m.version + " is already published");
+    def checked as PublishReply init releaseChecks($db, $m, $src);
+    if (not ($checked.status == 0)) {
+        return $checked;
     }
     def out as PublishReply init succeed($db, $m, $src, $now, "ci-token");
     $out.db = store.touchCiToken($out.db, $t.fingerprint, $now);
@@ -508,18 +525,18 @@ export func byTrustedPublisher(
     if (not $m.ok) {
         return refuse($db, 400, $m.error);
     }
-    def releaseComplaint as string init checkRelease($src, $m);
-    if (not ($releaseComplaint == "")) {
-        return refuse($db, 400, $releaseComplaint);
-    }
     def deckComplaint as string init checkDeck($db, $m);
     if (not ($deckComplaint == "")) {
         return refuse($db, 403, $deckComplaint);
     }
-    if (not store.hasBinding($db, $m.name)) {
-        return refuse($db, 403, "no trusted publisher is registered for " + $m.name);
+    # The deck's own binding, else its scope's (8.9).
+    def b as trustpub.Binding init store.bindingFor($db, $m.name);
+    if ($b.repositoryId == "") {
+        return refuse(
+            $db,
+            403,
+            "no trusted publisher is registered for " + $m.name + " or its scope");
     }
-    def b as trustpub.Binding init store.getBinding($db, $m.name);
     if (trustpub.pendingExpired($b, convert.toInt($now))) {
         return refuse(
             $db,
@@ -547,8 +564,9 @@ export func byTrustedPublisher(
     if (not $run.allowed) {
         return refuse($db, 403, $run.reason);
     }
-    if (alreadyPublished($db, $m)) {
-        return refuse($db, 409, $m.name + "@" + $m.version + " is already published");
+    def checked as PublishReply init releaseChecks($db, $m, $src);
+    if (not ($checked.status == 0)) {
+        return $checked;
     }
     def out as PublishReply init succeed($db, $m, $src, $now, "trusted-publisher");
     # A pending binding becomes a normal one on the first successful publish.
@@ -558,6 +576,108 @@ export func byTrustedPublisher(
         $out.db = store.putBinding($out.db, $settled);
     }
     return $out;
+}
+
+/**
+ * A trusted-publisher binding to record, or why it cannot be.
+ * @field ok {bool} true when `binding` may be stored
+ * @field error {string} why not, for the operator or the caller
+ * @field binding {trustpub.Binding} the binding
+ * @field scope {string} the folded scope it falls under
+ */
+export def struct NewBinding {
+    ok as bool,
+    error as string,
+    binding as trustpub.Binding,
+    scope as string
+};
+
+# bindingError is a refused NewBinding.
+func bindingError(message as string) {
+    def none as trustpub.Binding init trustpub.Binding{
+        provider: "",
+        repositoryId: "",
+        repository: "",
+        workflow: "",
+        refPattern: "",
+        deck: "",
+        pending: false,
+        createdAt: ""
+    };
+    return NewBinding{ok: false, error: $message, binding: $none, scope: ""};
+}
+
+/**
+ * Validate a trusted-publisher binding (8.9) for `target`, a deck
+ * (`@scope/deck`) or a whole scope (`@scope`). Shared by `deckadmin trust` and
+ * `POST /publishers`; neither authorises the caller here.
+ *
+ * The scope must be registered and owned, so a binding never bypasses name
+ * authority. A deck binding on a deck with no versions is pending (8.9 first
+ * publish); a scope binding covers decks yet to exist and is never pending.
+ * @param db {flatdb.DB} the store to read
+ * @param target {string} `@scope/deck` or `@scope`
+ * @param provider {string} the CI issuer, e.g. `github-actions`
+ * @param repositoryId {string} the forge's immutable numeric repository id
+ * @param repository {string} the repository path, a display label
+ * @param workflow {string} the workflow file permitted to publish ("" for any)
+ * @param refs {string} the ref pattern permitted to publish ("" for every tag)
+ * @param now {string} the registration timestamp (Unix seconds as text)
+ * @return {NewBinding} the binding, or the refusal
+ */
+export func newBinding(
+    db as flatdb.DB,
+    target as string,
+    provider as string,
+    repositoryId as string,
+    repository as string,
+    workflow as string,
+    refs as string,
+    now as string) {
+    def key as string init deckname.fold(strings.trim($target));
+    def scopeName as string init "";
+    if (store.isScopeKey($key)) {
+        $scopeName = strings.substring($key, 1, len($key));
+        if (not deckname.isScopeIdent($scopeName)) {
+            return bindingError("not a scope: " + $target);
+        }
+    } elseif (deckname.isValid($key) and deckname.isScoped($key)) {
+        $scopeName = deckname.scopeOf($key);
+    } else {
+        return bindingError("not a registry deck name or @scope: " + $target);
+    }
+    if (not trustpub.isKnownProvider($provider)) {
+        return bindingError("unknown CI provider: " + $provider +
+            " (github-actions, gitlab-ci, or gitea-actions)");
+    }
+    def repoId as string init strings.trim($repositoryId);
+    if (not forge.isAccountId($repoId)) {
+        return bindingError("a trusted publisher needs the numeric repository id, not " +
+            "the path: a path can be renamed and re-registered by somebody else");
+    }
+    if (not store.hasNamespace($db, $scopeName)) {
+        return bindingError("namespace @" + $scopeName + " is not registered");
+    }
+    # A reserved scope has no owner for the publisher to act for.
+    if (store.getNamespace($db, $scopeName).subject == "") {
+        return bindingError("@" + $scopeName + " is reserved: held by an operator, with no " +
+            "owner for a trusted publisher to act for");
+    }
+    def pattern as string init strings.trim($refs);
+    if ($pattern == "") {
+        $pattern = "refs/tags/*";
+    }
+    def b as trustpub.Binding init trustpub.Binding{
+        provider: $provider,
+        repositoryId: $repoId,
+        repository: strings.trim($repository),
+        workflow: strings.trim($workflow),
+        refPattern: $pattern,
+        deck: $key,
+        pending: not store.isScopeKey($key) and not store.hasDeck($db, $key),
+        createdAt: $now
+    };
+    return NewBinding{ok: true, error: "", binding: $b, scope: $scopeName};
 }
 
 /**

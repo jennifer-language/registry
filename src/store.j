@@ -648,9 +648,9 @@ export func dropDelegations(db as flatdb.DB, scope as string) {
             $out = flatdb.remove($out, ciTokenPtr($print));
         }
     }
-    for (def deck in listBindings($db)) {
-        if (deckname.scopeOf($deck) == $folded) {
-            $out = flatdb.remove($out, bindingPtr($deck));
+    for (def key in listBindings($db)) {
+        if (bindingScopeOf($key) == $folded) {
+            $out = flatdb.remove($out, bindingPtr($key));
         }
     }
     return $out;
@@ -1007,7 +1007,7 @@ func refreshPtr(fingerprint as string) {
  * A stored refresh token: who it belongs to and when it stops working. The
  * token itself is never stored, only its fingerprint (the map key), so a leaked
  * database holds no live credentials.
- * @field accountId {int} the numeric account id this token authenticates
+ * @field subject {string} the provider subject id this token authenticates
  * @field login {string} the provider login, a display label refreshed on each use
  * @field expiresAt {int} when the token stops working (Unix seconds)
  * @field orgs {map of string to string} folded organisation login to provider id,
@@ -1016,7 +1016,7 @@ func refreshPtr(fingerprint as string) {
  *     reads as 0
  */
 export def struct Refresh {
-    accountId as int,
+    subject as string,
     login as string,
     expiresAt as int,
     orgs as map of string to string,
@@ -1036,7 +1036,7 @@ export func putRefresh(db as flatdb.DB, fingerprint as string, rec as Refresh) {
         $out = flatdb.set($out, "/refreshTokens", json.map());
     }
     def rj as json.Value init json.map();
-    $rj = json.set($rj, "/accountId", $rec.accountId);
+    $rj = json.set($rj, "/subject", $rec.subject);
     $rj = json.set($rj, "/login", $rec.login);
     $rj = json.set($rj, "/expiresAt", $rec.expiresAt);
     def ids as json.Value init json.map();
@@ -1072,7 +1072,7 @@ export func getRefresh(db as flatdb.DB, fingerprint as string) {
         $checkedAt = json.asInt($rec, "/orgsCheckedAt");
     }
     return Refresh{
-        accountId: json.asInt($rec, "/accountId"),
+        subject: recordString($rec, "/subject"),
         login: json.asString($rec, "/login"),
         expiresAt: json.asInt($rec, "/expiresAt"),
         orgs: recordMap($rec, "/orgs"),
@@ -1099,16 +1099,16 @@ export func deleteRefresh(db as flatdb.DB, fingerprint as string) {
  * the operational log records how many were dropped; "revoked 0" usually means
  * the wrong account id.
  * @param db {flatdb.DB} the store to read
- * @param accountId {int} the numeric account id
+ * @param subject {string} the subject id
  * @return {int} the number of live refresh tokens held by that account
  */
-export func countRefresh(db as flatdb.DB, accountId as int) {
+export func countRefresh(db as flatdb.DB, subject as string) {
     if (not flatdb.has($db, "/refreshTokens")) {
         return 0;
     }
     def n as int init 0;
     for (def key in flatdb.keys($db, "/refreshTokens")) {
-        if (getRefresh($db, $key).accountId == $accountId) {
+        if (getRefresh($db, $key).subject == $subject) {
             $n = $n + 1;
         }
     }
@@ -1116,28 +1116,29 @@ export func countRefresh(db as flatdb.DB, accountId as int) {
 }
 
 /**
- * Forget every refresh token belonging to an account, and its sealed forge
- * credential, returning a fresh DB. The operator path of specification 8.5.
+ * Forget every refresh token belonging to an account, its sealed forge
+ * credential and its forge link, returning a fresh DB. The operator path of
+ * specification 8.5.
  * @param db {flatdb.DB} the store to edit
- * @param accountId {int} the numeric account id to revoke
+ * @param subject {string} the subject id to revoke
  * @return {flatdb.DB} a fresh store without that account's tokens
  */
-export func revokeAccount(db as flatdb.DB, accountId as int) {
+export func revokeAccount(db as flatdb.DB, subject as string) {
     # A revoked account must not leave a forge token the registry could act with.
-    def out as flatdb.DB init deleteForgeToken($db, $accountId);
+    def out as flatdb.DB init deleteForgeLink(deleteForgeToken($db, $subject), $subject);
     if (not flatdb.has($out, "/refreshTokens")) {
         return $out;
     }
     for (def key in flatdb.keys($db, "/refreshTokens")) {
-        if (getRefresh($db, $key).accountId == $accountId) {
+        if (getRefresh($db, $key).subject == $subject) {
             $out = flatdb.remove($out, refreshPtr($key));
         }
     }
     return $out;
 }
 
-func forgeTokenPtr(accountId as int) {
-    return "/forgeTokens/" + convert.toString($accountId);
+func forgeTokenPtr(subject as string) {
+    return "/forgeTokens/" + ptrEscape($subject);
 }
 
 /**
@@ -1147,12 +1148,12 @@ func forgeTokenPtr(accountId as int) {
  * service, to ask the forge whether this account may push to a repository
  * (specification 7.1, route A). One per account; a later login replaces it.
  * @param db {flatdb.DB} the store to edit
- * @param accountId {int} the numeric account id
+ * @param subject {string} the subject id
  * @param sealed {string} the credential as `forgecred.seal` produced it
  * @param storedAt {int} when it was recorded (Unix seconds)
  * @return {flatdb.DB} a fresh store with the credential recorded
  */
-export func putForgeToken(db as flatdb.DB, accountId as int, sealed as string, storedAt as int) {
+export func putForgeToken(db as flatdb.DB, subject as string, sealed as string, storedAt as int) {
     def out as flatdb.DB init $db;
     if (not flatdb.has($out, "/forgeTokens")) {
         $out = flatdb.set($out, "/forgeTokens", json.map());
@@ -1160,34 +1161,101 @@ export func putForgeToken(db as flatdb.DB, accountId as int, sealed as string, s
     def rec as json.Value init json.map();
     $rec = json.set($rec, "/sealed", $sealed);
     $rec = json.set($rec, "/storedAt", $storedAt);
-    return flatdb.set($out, forgeTokenPtr($accountId), $rec);
+    return flatdb.set($out, forgeTokenPtr($subject), $rec);
 }
 
 /**
  * An account's sealed forge credential, or "" when none is on record.
  * @param db {flatdb.DB} the store to read
- * @param accountId {int} the numeric account id
+ * @param subject {string} the subject id
  * @return {string} the sealed credential, or ""
  */
-export func getForgeToken(db as flatdb.DB, accountId as int) {
-    if (not flatdb.has($db, forgeTokenPtr($accountId) + "/sealed")) {
+export func getForgeToken(db as flatdb.DB, subject as string) {
+    if (not flatdb.has($db, forgeTokenPtr($subject) + "/sealed")) {
         return "";
     }
-    return json.asString(flatdb.get($db, forgeTokenPtr($accountId) + "/sealed"), "");
+    return json.asString(flatdb.get($db, forgeTokenPtr($subject) + "/sealed"), "");
 }
 
 /**
  * Forget an account's forge credential, returning a fresh DB. A no-op when there
  * is none.
  * @param db {flatdb.DB} the store to edit
- * @param accountId {int} the numeric account id
+ * @param subject {string} the subject id
  * @return {flatdb.DB} a fresh store without it
  */
-export func deleteForgeToken(db as flatdb.DB, accountId as int) {
-    if (not flatdb.has($db, forgeTokenPtr($accountId))) {
+export func deleteForgeToken(db as flatdb.DB, subject as string) {
+    if (not flatdb.has($db, forgeTokenPtr($subject))) {
         return $db;
     }
-    return flatdb.remove($db, forgeTokenPtr($accountId));
+    return flatdb.remove($db, forgeTokenPtr($subject));
+}
+
+/**
+ * The forge account a subject was linked to at login (12.5), for `service`
+ * source authority: the forge's immutable account id, and its username then.
+ * @field forgeId {string} the forge account id; "" when there is no link
+ * @field forgeLogin {string} the forge username when the link was made
+ * @field linkedAt {int} when (Unix seconds)
+ */
+export def struct ForgeLink {
+    forgeId as string,
+    forgeLogin as string,
+    linkedAt as int
+};
+
+func forgeLinkPtr(subject as string) {
+    return "/forgeLinks/" + ptrEscape($subject);
+}
+
+/**
+ * Record a subject's forge link, replacing any earlier one.
+ * @param db {flatdb.DB} the store to edit
+ * @param subject {string} the identity-provider subject
+ * @param link {ForgeLink} the forge account it maps to
+ * @return {flatdb.DB} a fresh store
+ */
+export func putForgeLink(db as flatdb.DB, subject as string, link as ForgeLink) {
+    def out as flatdb.DB init $db;
+    if (not flatdb.has($out, "/forgeLinks")) {
+        $out = flatdb.set($out, "/forgeLinks", json.map());
+    }
+    def rec as json.Value init json.map();
+    $rec = json.set($rec, "/forgeId", $link.forgeId);
+    $rec = json.set($rec, "/forgeLogin", $link.forgeLogin);
+    $rec = json.set($rec, "/linkedAt", $link.linkedAt);
+    return flatdb.set($out, forgeLinkPtr($subject), $rec);
+}
+
+/**
+ * A subject's forge link; `forgeId` is "" when there is none.
+ * @param db {flatdb.DB} the store to read
+ * @param subject {string} the identity-provider subject
+ * @return {ForgeLink} the link
+ */
+export func getForgeLink(db as flatdb.DB, subject as string) {
+    if (not flatdb.has($db, forgeLinkPtr($subject))) {
+        return ForgeLink{forgeId: "", forgeLogin: "", linkedAt: 0};
+    }
+    def rec as json.Value init flatdb.get($db, forgeLinkPtr($subject));
+    return ForgeLink{
+        forgeId: recordString($rec, "/forgeId"),
+        forgeLogin: recordString($rec, "/forgeLogin"),
+        linkedAt: json.asInt($rec, "/linkedAt")
+    };
+}
+
+/**
+ * Forget a subject's forge link. A no-op when there is none.
+ * @param db {flatdb.DB} the store to edit
+ * @param subject {string} the identity-provider subject
+ * @return {flatdb.DB} a fresh store
+ */
+export func deleteForgeLink(db as flatdb.DB, subject as string) {
+    if (not flatdb.has($db, forgeLinkPtr($subject))) {
+        return $db;
+    }
+    return flatdb.remove($db, forgeLinkPtr($subject));
 }
 
 /**
@@ -1245,8 +1313,8 @@ export func resolve(db as flatdb.DB, name as string, constraintExpr as string) {
 
 # --- trusted publisher bindings ---------------------------------------------
 
-# bindingPtr is the JSON Pointer of a deck's trusted-publisher binding, keyed on
-# the folded deck name.
+# bindingPtr is the JSON Pointer of a trusted-publisher binding, keyed on the
+# folded deck name, or on `@scope` for one covering a whole scope (8.9).
 func bindingPtr(deck as string) {
     return "/publishers/" + ptrEscape(deckname.fold($deck));
 }
@@ -1320,6 +1388,47 @@ export func getBinding(db as flatdb.DB, deck as string) {
     }
     $out.createdAt = recordString($rec, "/createdAt");
     return $out;
+}
+
+/**
+ * Whether a binding key names a whole scope (`@scope`) rather than a deck.
+ * @param key {string} a binding key, as `Binding.deck` holds it
+ * @return {bool} true for `@scope`
+ */
+export func isScopeKey(key as string) {
+    return strings.startsWith($key, "@") and not strings.contains($key, "/");
+}
+
+/**
+ * The scope a binding key falls under: the scope itself for `@scope`, the
+ * deck's scope otherwise.
+ * @param key {string} a binding key
+ * @return {string} the folded scope, or ""
+ */
+export func bindingScopeOf(key as string) {
+    if (isScopeKey($key)) {
+        return deckname.fold(strings.substring($key, 1, len($key)));
+    }
+    return deckname.scopeOf($key);
+}
+
+/**
+ * The binding that authorises trusted publishing of a deck (8.9): the deck's
+ * own, else its scope's. A zero `Binding` (empty `repositoryId`) when neither
+ * exists.
+ * @param db {flatdb.DB} the store to read
+ * @param deck {string} the deck name
+ * @return {trustpub.Binding} the binding that applies
+ */
+export func bindingFor(db as flatdb.DB, deck as string) {
+    if (hasBinding($db, $deck)) {
+        return getBinding($db, $deck);
+    }
+    def scopeKey as string init "@" + deckname.scopeOf($deck);
+    if (not ($scopeKey == "@") and hasBinding($db, $scopeKey)) {
+        return getBinding($db, $scopeKey);
+    }
+    return getBinding($db, $deck);
 }
 
 /**

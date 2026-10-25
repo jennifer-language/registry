@@ -353,15 +353,12 @@ export func scopeRegistered(
 
 /**
  * An identity's refresh tokens were revoked.
- * @param accountId {string} the subject whose tokens were dropped
+ * @param subject {string} the subject whose tokens were dropped
  * @param count {int} how many were dropped
  * @return {Event} the event
  */
-export func tokensRevoked(accountId as string, count as int) {
-    def f as map of string to string init {
-        "subject": $accountId,
-        "tokens": convert.toString($count)
-    };
+export func tokensRevoked(subject as string, count as int) {
+    def f as map of string to string init {"subject": $subject, "tokens": convert.toString($count)};
     return Event{level: WARN, message: "refresh tokens revoked", fields: $f};
 }
 
@@ -478,13 +475,13 @@ export func loginStarted(provider as string) {
  * failing: GitHub omits those that have not approved this registry. The log
  * then explains a later refusal to claim an org scope.
  * @param kind {string} "issued" or "refreshed"
- * @param accountId {string} the subject the token was minted for
+ * @param subject {string} the subject the token was minted for
  * @param login {string} the display label
  * @param orgs {string} the organisation logins, comma-separated; "" for none
  * @return {Event} the event
  */
-export func tokenIssued(kind as string, accountId as string, login as string, orgs as string) {
-    def f as map of string to string init {"subject": $accountId, "login": $login, "orgs": $orgs};
+export func tokenIssued(kind as string, subject as string, login as string, orgs as string) {
+    def f as map of string to string init {"subject": $subject, "login": $login, "orgs": $orgs};
     return Event{level: INFO, message: "token " + $kind, fields: $f};
 }
 

@@ -178,8 +178,66 @@ func testACoOwnerCannotChangeTheCoOwners() {
     testing.assertEqual(owners($db, $bob, "alice", "999", false, NOW).status, 403);
 }
 
-func testACoOwnerIsAnAccountId() {
-    for (def bad in ["alice", "+7", "07", "7a", "-1", "1234567890123456789"]) {
+func testACoOwnerMustBeAUsableSubject() {
+    # subjects are opaque (8.1); only an empty or whitespace-bearing one is refused
+    for (def bad in ["", "a b", "x\ty"]) {
         testing.assertEqual(owners(owned(), alice(), "alice", $bad, true, NOW).status, 400);
     }
+}
+
+# --- trusted publishers (8.9) -------------------------------------------------
+
+func bindingFields() {
+    def f as map of string to string init {"provider": "github-actions", "repositoryId": "42"};
+    return $f;
+}
+
+func testTheOwnerRegistersAScopeWidePublisher() {
+    def out as ScopeReply init publishers(owned(), alice(), "@alice", bindingFields(), true, NOW);
+    testing.assertEqual($out.status, 200);
+    testing.assertTrue($out.changed);
+    testing.assertEqual(store.bindingFor($out.db, "@alice/tool").repositoryId, "42");
+    def removed as ScopeReply init publishers(
+        $out.db,
+        alice(),
+        "@alice",
+        bindingFields(),
+        false,
+        NOW);
+    testing.assertEqual($removed.status, 200);
+    testing.assertFalse(store.hasBinding($removed.db, "@alice"));
+    def again as ScopeReply init publishers(
+        $removed.db,
+        alice(),
+        "@alice",
+        bindingFields(),
+        false,
+        NOW);
+    testing.assertEqual($again.status, 404);
+}
+
+func testOnlyTheOwnerChangesPublishers() {
+    # a binding is a standing grant, like a co-owner entry
+    testing.assertEqual(
+        publishers(owned(), stranger(), "@alice", bindingFields(), true, NOW).status,
+        403);
+    def db as flatdb.DB init owners(owned(), alice(), "alice", "9999999", true, NOW).db;
+    def out as ScopeReply init publishers(
+        $db,
+        stranger(),
+        "@alice/tool",
+        bindingFields(),
+        true,
+        NOW);
+    testing.assertEqual($out.status, 403);
+    testing.assertContains(json.asString($out.body, "/error"), "only the owner");
+}
+
+func testABadPublisherRequestIs400Or404() {
+    def noId as map of string to string init {"provider": "github-actions"};
+    testing.assertEqual(publishers(owned(), alice(), "@alice", $noId, true, NOW).status, 400);
+    testing.assertEqual(publishers(owned(), alice(), "", bindingFields(), true, NOW).status, 400);
+    testing.assertEqual(
+        publishers(owned(), alice(), "@nobody", bindingFields(), true, NOW).status,
+        404);
 }

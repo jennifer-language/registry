@@ -57,6 +57,8 @@ import "../src/policy/operator.j" as operatorPolicy;
 import "../src/policy/derived.j" as derivedPolicy;
 import "../src/policy/firstcome.j" as firstcomePolicy;
 import "../src/reserved.j" as reserved;
+import "../src/throttle.j" as throttle;
+import "ratelimit.j" as ratelimit;
 
 # Configuration: defaults, then config.toml, then the environment, which wins.
 # `config` merges as a pure function (tested); this only reads.
@@ -88,6 +90,7 @@ def envNames as list of string init [
     "REGISTRY_IDENTITY_SECRET",
     "REGISTRY_IDENTITY_SCOPES",
     "REGISTRY_ORG_MAX_AGE",
+    "REGISTRY_AUTH_RATE_LIMIT",
     "REGISTRY_TOKEN_KEY",
     "REGISTRY_FORGE",
     "REGISTRY_FORGE_BASEURL",
@@ -224,6 +227,11 @@ def auth as authview.Config init authview.Config{
     orgMaxAge: $cfg.orgMaxAgeHours * 3600
 };
 def authOn as bool init authview.enabled($auth);
+
+# Section 11: the `/auth` routes call the provider for anybody, so they share a
+# per-address budget (`throttle`). With the setting at 0, `authThrottled` never
+# consults it.
+def authLimiter as ratelimit.Limiter init throttle.limiter($cfg.authRateLimit);
 
 # selectForge maps the configured forge name onto its vtable. Identity and forge
 # are configured separately (specification 12.1).
@@ -708,8 +716,8 @@ func answerAuth(ctx as web.Context, stage as string, out as authview.AuthReply) 
     if ($out.changed) {
         store.save($out.db);
     }
-    if ($out.status == 200 and json.has($out.body, "/accountId")) {
-        def who as string init convert.toString(json.asInt($out.body, "/accountId"));
+    if ($out.status == 200 and json.has($out.body, "/subject")) {
+        def who as string init json.asString($out.body, "/subject");
         def names as list of string init [];
         for (def i in 0..json.length($out.body, "/orgs")) {
             $names[] = json.asString($out.body, "/orgs/" + convert.toString($i));
@@ -735,12 +743,36 @@ func requestText(ctx as web.Context) {
     return convert.stringFromBytes(web.body($ctx), "utf-8");
 }
 
+# authThrottled answers `429` with `Retry-After` and returns true when this
+# client address has used its `/auth` budget for the window.
+func authThrottled(ctx as web.Context, stage as string) {
+    if ($cfg.authRateLimit == 0) {
+        return false;
+    }
+    def client as string init audit.clientOf(forwardedFor($ctx), web.remoteAddr($ctx));
+    def got as ratelimit.Result init ratelimit.check($authLimiter, throttle.keyOf($client));
+    if ($got.allowed) {
+        return false;
+    }
+    audit.write($logSink, audit.loginRefused($stage, 429, "rate limit exceeded"));
+    web.setHeader($ctx, "Retry-After", convert.toString($got.retryAfter));
+    webapi.fail(
+        $ctx,
+        429,
+        "too many login requests; retry in " +
+            convert.toString($got.retryAfter) + " s");
+    return true;
+}
+
 /**
  * POST /auth/device: begin a device authorization with the identity provider and
  * return the code the user types.
  * @param ctx {web.Context} the request context
  */
 func apiAuthDevice(ctx as web.Context) {
+    if (authThrottled($ctx, "device")) {
+        return;
+    }
     # Writes nothing, so no lock is held across the provider call.
     def db as flatdb.DB init sharedStore();
     answerAuth($ctx, "device", authview.device($auth, $db));
@@ -751,16 +783,48 @@ func apiAuthDevice(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiAuthToken(ctx as web.Context) {
+    if (authThrottled($ctx, "issued")) {
+        return;
+    }
     # Provider calls run unlocked; the lock covers only recording the refresh token.
     def got as authview.Login init authview.login($auth, requestText($ctx));
     if (not $got.ok) {
         answerAuth($ctx, "issued", $got.reply);
         return;
     }
+    # 12.5, `service` source authority: map the login onto a forge account by
+    # the username both services agree on, and record it by the forge's
+    # immutable id. Asked unlocked, like the provider.
+    def mapped as string init "unasked";
+    def linked as forge.Account init forge.noAccount();
+    if ($sourceAuthority == "service") {
+        try {
+            $linked = forge.agreedAccount($got.login, $theForge.account($forgeConfig, $got.login));
+            $mapped = "answered";
+        } catch (err) {
+            $mapped = "unknown";
+        }
+    }
     def held as store.Lock init lockedStore();
     defer store.unlock($held);
     def db as flatdb.DB init store.open($dbPath);
-    answerAuth($ctx, "issued", authview.issueLogin($auth, $db, $got, token.now()));
+    def now as int init token.now();
+    def out as authview.AuthReply init authview.issueLogin($auth, $db, $got, $now);
+    if ($out.status == 200 and $mapped == "answered") {
+        # A login whose mapping failed must not keep an older link. A forge that
+        # could not be asked says nothing either way, so that keeps it.
+        if ($linked.id == "") {
+            $out.db = store.deleteForgeLink($out.db, $got.subject);
+        } else {
+            def link as store.ForgeLink init store.ForgeLink{
+                forgeId: $linked.id,
+                forgeLogin: $linked.login,
+                linkedAt: $now
+            };
+            $out.db = store.putForgeLink($out.db, $got.subject, $link);
+        }
+    }
+    answerAuth($ctx, "issued", $out);
 }
 
 /**
@@ -768,6 +832,9 @@ func apiAuthToken(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiAuthRefresh(ctx as web.Context) {
+    if (authThrottled($ctx, "refreshed")) {
+        return;
+    }
     def body as string init requestText($ctx);
     # 8.5: the provider is asked before the lock, as in `apiAuthToken`.
     def grant as string init authview.checkGrant($auth, store.open($dbPath), $body);
@@ -889,8 +956,8 @@ func authorityFor(
 }
 
 # askForge asks with the configured credential: the account's own sealed
-# provider token (`login`), or the registry's forge token about the account's
-# username (`service`, 12.5).
+# provider token (`login`), or the registry's forge token about the forge
+# account linked to the subject at login (`service`, 12.5).
 func askForge(db as flatdb.DB, principal as identity.Subject, repository as string) {
     if ($principal.id == "") {
         return forge.unknown("there is no account behind this publish whose access " +
@@ -901,9 +968,21 @@ func askForge(db as flatdb.DB, principal as identity.Subject, repository as stri
             $principal.provider + ", not on this registry's identity provider");
     }
     if ($sourceAuthority == "service") {
-        return $theForge.permissionFor($forgeConfig, $repository, $principal.login);
+        # 12.5: the forge account linked at login, by its immutable id, under the
+        # username it has now. No link is unverifiable, never a guess.
+        def link as store.ForgeLink init store.getForgeLink($db, $principal.id);
+        if ($link.forgeId == "") {
+            return forge.unknown("no forge account is linked to this account; log in " +
+                "again so the registry can map it onto one");
+        }
+        def current as forge.Account init $theForge.accountById($forgeConfig, $link.forgeId);
+        if ($current.id == "") {
+            return forge.unknown("the forge account " + $link.forgeLogin +
+                " linked to this account no longer exists");
+        }
+        return $theForge.permissionFor($forgeConfig, $repository, $current.login);
     }
-    def sealed as string init store.getForgeToken($db, convert.toInt($principal.id));
+    def sealed as string init store.getForgeToken($db, $principal.id);
     if ($sealed == "") {
         return forge.unknown("no forge credential is on record for this account; " +
             "log in again so the registry can ask the forge");
@@ -936,7 +1015,7 @@ func callerOf(ctx as web.Context) {
             web.header($ctx, "Authorization"));
         return identity.Subject{
             provider: $providerName,
-            id: convert.toString($held.accountId),
+            id: $held.subject,
             login: $held.login,
             orgs: $held.orgs,
             orgsCheckedAt: convert.toString($held.orgsCheckedAt)
@@ -961,6 +1040,19 @@ func fieldOf(body as json.Value, pointer as string) {
         return "";
     }
     return json.asString($body, $pointer);
+}
+
+# identityTokenOf is the CI identity token a publish presents (8.9), or "": sent
+# in place of a bearer token and told apart by its issuer, or in the
+# `identityToken` body field.
+func identityTokenOf(body as json.Value, presented as string) {
+    if (json.has($body, "/identityToken")) {
+        return json.asString($body, "/identityToken");
+    }
+    if ($tpOn and trustpub.isIdentityToken($presented, $tpIssuer)) {
+        return $presented;
+    }
+    return "";
 }
 
 /**
@@ -990,24 +1082,22 @@ func apiPublish(ctx as web.Context) {
     def ciRec as citoken.Token;
     def who as identity.Subject;
 
-    if (json.has($body, "/identityToken")) {
+    def presented as string init web.bearerToken($ctx);
+    def identityToken as string init identityTokenOf($body, $presented);
+    if (not ($identityToken == "")) {
         $mode = "trusted";
         if (not $tpOn) {
             webapi.fail($ctx, 501, "this registry does not accept trusted publishing");
             return;
         }
         try {
-            $claims = trustpub.verified(
-                json.asString($body, "/identityToken"),
-                $tpKeys,
-                $tpProvider);
+            $claims = trustpub.verified($identityToken, $tpKeys, $tpProvider);
         } catch (err) {
             webapi.fail($ctx, 401, "the identity token did not verify: " + $err.message);
             return;
         }
     } else {
         # A CI token (8.10) is told apart from a bearer token by its prefix.
-        def presented as string init web.bearerToken($ctx);
         if (citoken.looksLikeToken($presented)) {
             $mode = "ci";
             $ciRec = store.getCiToken($db, token.fingerprint($presented));
@@ -1197,6 +1287,34 @@ func apiOwners(ctx as web.Context) {
 }
 
 /**
+ * POST /publishers: register or remove a trusted publisher on a deck or a
+ * scope, as the scope's owner (8.9).
+ * @param ctx {web.Context} the request context
+ */
+func apiPublishers(ctx as web.Context) {
+    def who as identity.Subject init callerOf($ctx);
+    if ($who.id == "") {
+        webapi.unauthorized($ctx, "a bearer token is required to change trusted publishers");
+        return;
+    }
+    def fields as map of string to string init {};
+    for (def name in ["provider", "repositoryId", "repository", "workflow", "refs"]) {
+        $fields[$name] = bodyField($ctx, $name);
+    }
+    def held as store.Lock init lockedStore();
+    defer store.unlock($held);
+    answerScope(
+        $ctx,
+        scopeview.publishers(
+            store.open($dbPath),
+            $who,
+            bodyField($ctx, "target"),
+            $fields,
+            not (bodyField($ctx, "action") == "remove"),
+            convert.toString(token.now())));
+}
+
+/**
  * GET /scopes: every registered scope and who holds it. Public, as deck pages
  * already show it.
  * @param ctx {web.Context} the request context
@@ -1331,6 +1449,8 @@ if ($authOn) {
     $api = webapi.feature($api, "claim");
     $api = webapi.post($api, "/owners", apiOwners, webapi.public());
     $api = webapi.feature($api, "owners");
+    $api = webapi.post($api, "/publishers", apiPublishers, webapi.public());
+    $api = webapi.feature($api, "publishers");
 }
 
 # Publishing is always served: CI tokens need no configuration. The handler

@@ -51,8 +51,8 @@ func testIndex() {
 
 func testIndexListsTheLoginGatedRoutesWhenLoginsAreOn() {
     def reply as Reply init index(true);
-    testing.assertEqual(json.length($reply.body, "/endpoints"), 17);
-    testing.assertEqual(json.asString($reply.body, "/endpoints/16"), "POST /auth/refresh");
+    testing.assertEqual(json.length($reply.body, "/endpoints"), 18);
+    testing.assertEqual(json.asString($reply.body, "/endpoints/17"), "POST /auth/refresh");
 }
 
 # discoveryBase mimics what webapi.discovery derives from the route table, so
