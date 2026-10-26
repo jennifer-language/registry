@@ -206,6 +206,12 @@ func tableProblem(doc as toml.Value, pointer as string, decks as bool, self as s
             $seen[$folded] = true;
         }
         def value as string init toml.asString($doc, $at);
+        # The module reads "" as "*", the default where nothing was given; written
+        # in a manifest it is a placeholder or a slip, so it is refused (2.4).
+        if (strings.trim($value) == "") {
+            return "empty version constraint for " + $key + " in " + $label +
+                ": write \"*\" for any version";
+        }
         if (not constraint.isValidConstraint($value)) {
             return "not a valid version constraint for " + $key + " in " + $label + ": " +
                 $value;

@@ -176,6 +176,31 @@ func testADependencyConstraintMustBeInTheGrammar() {
     testing.assertContains($m.error, "not a valid version constraint");
 }
 
+func testAnEmptyDependencyConstraintIsRefused() {
+    def m as Manifest init parse(withBody('[decks]
+"@acme/net" = ""
+'));
+    testing.assertFalse($m.ok);
+    testing.assertContains($m.error, "empty version constraint for @acme/net");
+    testing.assertContains($m.error, "write \"*\"");
+}
+
+func testABlankEngineConstraintIsRefused() {
+    def m as Manifest init parse(withBody('[engines]
+jennifer = "  "
+'));
+    testing.assertFalse($m.ok);
+    testing.assertContains($m.error, "empty version constraint for jennifer");
+}
+
+func testAWildcardDependencyStillParses() {
+    def m as Manifest init parse(withBody('[decks]
+"@acme/net" = "*"
+'));
+    testing.assertTrue($m.ok);
+    testing.assertEqual($m.requires["@acme/net"], "*");
+}
+
 func testADependencyMustBeAScopedDeckName() {
     def m as Manifest init parse(withBody('[decks]
 "not a name!" = "^1"

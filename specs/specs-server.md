@@ -173,7 +173,7 @@ part of the grammar.
 
 ```
 constraint = wildcard | exact | caret | tilde | comparator
-wildcard   = "" | "*" | "any"
+wildcard   = "*" | "any"
 exact      = [ "=" ] version
 caret      = "^" partial
 tilde      = "~" partial
@@ -183,7 +183,7 @@ partial    = num [ "." num [ "." num ] ]
 
 | Form | Satisfied when |
 | ---- | -------------- |
-| `*` / `any` / `` | any published version |
+| `*` / `any` | any published version |
 | `=1.2.3` | exactly 1.2.3 |
 | `^1.2.3` | `>=1.2.3 <2.0.0` |
 | `^0.2.3` | `>=0.2.3 <0.3.0` (zero-aware) |
@@ -197,6 +197,12 @@ partial    = num [ "." num [ "." num ] ]
 | `>=1.0.0` etc. | the comparator holds |
 
 A version string that is not valid SemVer satisfies nothing at all.
+
+**The empty string is not a constraint.** Where a constraint is left out (a
+query without one, a client command naming a deck without a version), it means
+`*`. Written in a manifest, `""` is refused at publish (section 7) with a
+message naming `*`: an empty value there is a placeholder or a slip, and read as
+`*` it would silently admit every future major version.
 
 **A prerelease is opt-in, and the opt-in has to name it.** A version carrying a
 prerelease component satisfies a constraint **only when the constraint's own
