@@ -312,6 +312,12 @@ Notes:
   so an inaccurate value produces a runtime failure for the consumer.
 - An absent `requires` / `engines` / `capabilities` **MUST** be treated as empty,
   not as an error.
+- **A registry SHOULD bound what a manifest puts into the record**, since every
+  field here is served with the deck and held in listings. The reference
+  registry refuses a `description` over 512 characters, a `license` over 64,
+  more than 32 `capabilities` or one over 64 characters, more than 256
+  `requires` entries, more than 16 `engines` keys, an `engines` key or a
+  capability outside `[a-z][a-z0-9-]*`, and a deck that requires itself.
 - An absent `kind` **MUST** be treated as `"tar.gz"`, for compatibility with
   records written before `git` existed.
 - For `kind: "git"`, `commit` is the integrity pin and `checksum` is meaningless
@@ -998,7 +1004,11 @@ supplied. A caller cannot rename a deck at publish time, and cannot publish a
 repository into a scope its manifest does not name. Points 6 to 8 come after
 authorisation, so a caller without authority learns neither which versions exist
 nor what a repository holds. A manifest that yields no scoped name or no SemVer
-version fails at point 3 with `400`, since point 4 needs the name.
+version fails at point 3 with `400`, since point 4 needs the name. The detail of
+such a failure quotes the manifest, which the registry may have read with rights
+the caller lacks (7.2), so it **MUST NOT** be shown to a caller who is not
+authorised for the name the manifest gives; the caller sees a fixed message and
+the detail goes to the operational log.
 
 ### 7.1 Two authorisations, not one
 
@@ -1655,6 +1665,14 @@ freed path re-registered by somebody else. The path is a display label.
 A deck's own binding takes precedence over its scope's. A scope binding covers
 every deck in the scope, including decks not yet published, so it is never
 pending (below).
+
+`refPattern` is a full ref under `refs/`: exact, or a prefix ending in a single
+`*`; a registry **SHOULD** refuse any other shape at registration, since a star
+elsewhere matches nothing and the owner only finds out at the first publish. A
+pattern wider than tags (`refs/heads/*`) lets any run of the repository publish
+any tag it names, because the commit check (step 5 below) ties a token to the
+commit it built, not to a tag; the default, every tag, is the widest a scope
+owner should register without a reason.
 
 #### Registering a binding
 

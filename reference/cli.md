@@ -72,7 +72,10 @@ REGISTRY_ACME_DIRECTORY=https://acme-staging-v02.api.letsencrypt.org/directory
 
 Renewal is decided from the recorded issue time, `renewBeforeDays` before the
 90 day lifetime expires, and is checked **only at startup**: a long-running
-server does not renew, so restart it within that window. A renewal that fails
+server does not renew, so restart it within that window. `renewBeforeDays` must
+be between 1 and 88: below that the renewal would follow the expiry, above it
+every boot after the first day would re-issue, into the CA's
+duplicate-certificate limit. A renewal that fails
 while a certificate is still on disk serves the stored one, without logging the
 failure; a failed first issuance leaves the registry on plain HTTP with an
 `error` in the log.
@@ -92,7 +95,7 @@ failure; a failed first issuance leaves the registry on plain HTTP with an
 | `REGISTRY_DB` | `data/decks.json` | both | the flatdb database path |
 | `REGISTRY_ADDR` | `:8080` | `serve` | the listen address |
 | `REGISTRY_URL` | unset | `serve` | the canonical base URL advertised in discovery |
-| `REGISTRY_CLIENT_IP_HEADER` | unset | `serve` | header a trusted proxy puts the real client address in |
+| `REGISTRY_CLIENT_IP_HEADER` | unset | `serve` | header a trusted proxy puts the real client address in; read only on a connection from a loopback or private address |
 | `REGISTRY_POLICY` | `derived` | `serve` | who may claim a scope: `derived`, `operator`, `firstcome` |
 | `REGISTRY_LOG` | unset | both | append the operational log to this file |
 | `REGISTRY_LOG_LEVEL` | `info` | both | `debug`, `info`, `warn`, `error` |
@@ -105,6 +108,8 @@ failure; a failed first issuance leaves the registry on plain HTTP with an
 | `REGISTRY_IDENTITY_SCOPES` | per module | `serve` | override the requested scopes |
 | `REGISTRY_ORG_MAX_AGE` | `168` | `serve` | hours a login's organisation memberships stay usable; `0` is off |
 | `REGISTRY_AUTH_RATE_LIMIT` | `30` | `serve` | requests a minute one client address may make to the `/auth` routes; `0` is off |
+| `REGISTRY_WRITE_RATE_LIMIT` | `60` | `serve` | writes a minute per authenticated subject; `0` is off |
+| `REGISTRY_READ_RATE_LIMIT` | `120` | `serve` | `/resolve-graph` and full `/search` listings a minute per client address; `0` is off |
 | `REGISTRY_TOKEN_KEY` | unset | `serve` | the HMAC secret bearer tokens are signed with |
 | `REGISTRY_CONFIG` | `config.toml` | `serve` | where the configuration file is |
 | `REGISTRY_TLS` | `0` | `serve` | serve HTTPS and obtain a certificate |
@@ -126,6 +131,11 @@ failure; a failed first issuance leaves the registry on plain HTTP with an
 | `REGISTRY_TRUSTPUB_AUDIENCE` | unset | `serve` | the `aud` a CI token must carry; gates trusted publishing |
 | `REGISTRY_TRUSTPUB_PROVIDER` | `github-actions` | `serve` | `github-actions`, `gitlab-ci`, or `gitea-actions` |
 | `REGISTRY_TRUSTPUB_ISSUER` | per provider | `serve` | the OIDC issuer, required for anything self-hosted |
+
+`REGISTRY_IDENTITY_BASEURL` and `REGISTRY_FORGE_BASEURL` must be `https` URLs,
+since users' provider tokens and the registry's forge token travel to them. An
+`http` URL is accepted only for a loopback host (`localhost`, `127.0.0.1`,
+`[::1]`); anything else is refused at boot.
 
 The server's console always receives the log as human-readable text; the file
 is an extra copy and the only one that survives a restart. Both binaries write
@@ -367,8 +377,9 @@ jennifer run bin/deckadmin remove-owner acme 67890
 ```
 
 The argument is the principal id, not a login, so a rename never changes who may
-write. Co-owners live under the scope's own provider; the same numeric id at a
-different provider is a different person and is refused.
+write; it is checked as a subject id, as `POST /owners` checks it. Co-owners live
+under the scope's own provider; the same numeric id at a different provider is a
+different person and is refused.
 
 - **A reserved scope cannot take a co-owner.** There is no owner to co-own with,
   and accepting one would leave a scope nobody holds that somebody can write to.
@@ -436,7 +447,7 @@ adjudicates trademarks. Disputes go through the operator path.
 | ---- | ------- | ----- |
 | `--deck <name>` | none | narrow it to one deck within the scope |
 | `--name <label>` | `ci` | a label, shown in listings |
-| `--days <n>` | `90` | how long it lives (`0` = never) |
+| `--days <n>` | `90` | how long it lives (`0` = never); a whole number, never negative |
 
 The fallback for non-interactive publishing where trusted publishing (8.9) is
 unavailable: a laptop, a cron job, a CI system that mints no identity token.
@@ -489,7 +500,14 @@ registered, so nobody can claim it, and bound to nobody, so nobody can publish
 under it.
 
 Re-running it on an existing scope **reassigns** it. This is the only way a
-scope changes hands.
+scope changes hands. A change of owner or provider drops the scope's co-owners,
+CI tokens and trusted publishers; re-running it for the same owner (to set
+`--org`, say) keeps all three and says so.
+
+`--owner` must be a subject id (`identity.isSubject`: 1 to 255 printable ASCII
+characters, no whitespace) and `--provider` one of the identity modules
+(`github`, `gitlab`, `gitea`, `forgejo`, `oidc`); anything else is refused,
+since a scope bound to a mistyped provider could never be written under.
 
 #### `trust`
 

@@ -56,9 +56,12 @@ So there is no install history here to leak, subpoena, sell, or breach:
   at each refresh that you have not revoked the registry's access, and, where
   the registry asks your forge whether you may push, for that question. Never a
   password.
-- **No tracking on the website.** The pages carry no analytics, no third-party
-  requests, and no cookies. The only script is the light/dark switch, and the
-  only thing stored in your browser is which of the two you picked.
+- **No tracking on the website.** The pages carry no analytics and no cookies.
+  The only script is the light/dark switch, and the only thing stored in your
+  browser is which of the two you picked. The one request a page can make
+  elsewhere is for an image a publisher put in a README (a badge, a
+  screenshot); that goes to wherever the publisher hosted it, and the registry
+  neither proxies nor sees it.
 
 What the registry does see is a client asking where a deck lives: the metadata
 lookup that precedes a fetch. Those lookups are counted per deck, in aggregate,

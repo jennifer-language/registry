@@ -52,7 +52,14 @@ jennifer = ">=0.24.0"
   deck is pure.
 - **`[decks]`** is your deck's own dependencies, captured at publish time, and
   drives resolution for your consumers. It is never recomputed, so a version
-  keeps resolving the way it did the day it was published.
+  keeps resolving the way it did the day it was published. A deck cannot
+  require itself.
+- **Limits.** Everything in the manifest is served with every lookup of your
+  deck, so it is bounded: `description` up to 512 characters, `license` up to
+  64, at most 32 `capabilities` of up to 64 characters each, at most 256
+  `[decks]` entries and 16 `[engines]` keys. Capability and engine names are
+  lowercase letters, digits and hyphens. A manifest past a limit is refused
+  with the field named.
 
 ## Publishing it
 

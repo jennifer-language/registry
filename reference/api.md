@@ -482,12 +482,33 @@ else, `404` for an unregistered scope or removing an absent binding.
 | `502` | the forge or identity provider could not be reached |
 | `503` | the respond timeout (120 s by default) passed; the engine answers this itself |
 
-A manifest that fails validation is `400`. `429` comes only from the three
-`/auth` routes: they share a budget per client address (`identity.rateLimit`, 30
-requests a minute by default, sliding window) and answer `429` with
-`Retry-After` past it. A device poll at GitHub's 5-second interval uses 12. An
-IPv6 client counts against its /64. Behind a proxy, set `clientIpHeader`, or every
-client shares the proxy's budget. Nothing else is rate-limited.
+A manifest that fails validation is `400`.
+
+`429` carries a `Retry-After` header and comes from three budgets, each a
+sliding one-minute window:
+
+| Budget | Routes | Counted per | Default |
+| ------ | ------ | ----------- | ------- |
+| `identity.rateLimit` (`REGISTRY_AUTH_RATE_LIMIT`) | `/auth/device`, `/auth/token`, `/auth/refresh` | client address | 30 |
+| `writeRateLimit` (`REGISTRY_WRITE_RATE_LIMIT`) | `/publish`, `/claim`, `/owners`, `/publishers`, `/yank`, `/unyank` | authenticated subject or CI token; the address for trusted publishing | 60 |
+| `readRateLimit` (`REGISTRY_READ_RATE_LIMIT`) | `/resolve-graph`, and `/search` as JSON with an empty query (the whole index) | client address | 120 |
+
+`0` turns a budget off. A device poll at GitHub's 5-second interval uses 12 of
+the login budget. An IPv6 client counts against its /64. Behind a proxy, set
+`clientIpHeader`, or every client shares the proxy's budget; the header is read
+only on a connection from a loopback or private address, where a proxy can be,
+so a client on the public internet cannot name its own address. Other reads
+are not rate-limited.
+
+## Plain HTTP when TLS is on
+
+With `tls.enabled`, the plain listener (`addr`, port 80 in the container) serves
+only `/.well-known/acme-challenge/` for HTTP-01, `/health`, and a `301` to the
+same path on `https://<first tls.domains entry>` for anything else (the query
+string is not carried). Bearer and refresh tokens therefore never travel in
+clear, and every TLS response carries `Strict-Transport-Security` for a year.
+A failed certificate issuance leaves that listener up for a restart to retry;
+it does not fall back to serving the registry over plain HTTP.
 
 ## Caching
 
