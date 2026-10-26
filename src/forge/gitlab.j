@@ -222,9 +222,10 @@ func handles(cfg as forge.Config, url as string) {
 }
 
 func resolveTag(cfg as forge.Config, url as string, tag as string) {
+    # One segment on the tags API, so a `/` in the tag is escaped like `refExists`.
     def res as http.Response init get(
         $cfg,
-        "/projects/" + projectId($url) + "/repository/tags/" + $tag,
+        "/projects/" + projectId($url) + "/repository/tags/" + forge.encodeSegment($tag),
         "");
     if (not ($res.status == 200)) {
         throw Error{
@@ -298,9 +299,10 @@ func fileExists(cfg as forge.Config, url as string, commit as string, path as st
     return forge.refPresence($res.status);
 }
 
+# permission asks with the caller's token only (see forge/github.j).
 func permission(cfg as forge.Config, url as string, callerToken as string) {
-    if ($callerToken == "" and $cfg.apiToken == "") {
-        return forge.unknown("the registry holds no credential this forge accepts");
+    if ($callerToken == "") {
+        return forge.unknown("no caller credential to ask the forge with");
     }
     def res as http.Response init get($cfg, "/projects/" + projectId($url), $callerToken);
     if (not ($res.status == 200)) {

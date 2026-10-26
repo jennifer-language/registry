@@ -11,6 +11,7 @@
 
 use testing;
 use json;
+use strings;
 
 def const NOW as string init "1700000000";
 def const COMMIT as string init "9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f70819293";
@@ -166,6 +167,76 @@ func testAMalformedManifestIsA400() {
     testing.assertEqual($out.status, 400);
 }
 
+# A manifest that names a deck but does not validate: its error quotes the
+# file, which under `service` authority the registry may have read where the
+# caller cannot.
+func brokenNamed() {
+    def src as Source init source();
+    $src.manifestText = '[package]
+name = "@acme/routeros"
+version = "0.1.0"
+
+[decks]
+"@acme/net" = "~>secret-branch"
+';
+    return $src;
+}
+
+func testTheOwnerReadsWhyTheManifestFailed() {
+    def out as PublishReply init byToken(owned(), alice(), brokenNamed(), NOW);
+    testing.assertEqual($out.status, 400);
+    testing.assertContains(json.asString($out.body, "/error"), "secret-branch");
+}
+
+func testAStrangerIsNotShownTheManifestsContent() {
+    def out as PublishReply init byToken(owned(), stranger(), brokenNamed(), NOW);
+    testing.assertEqual($out.status, 400);
+    def shown as string init json.asString($out.body, "/error");
+    testing.assertFalse(strings.contains($shown, "secret-branch"));
+    testing.assertContains($shown, "did not validate");
+    # the operator still gets the detail
+    testing.assertContains($out.event.fields["reason"], "secret-branch");
+}
+
+func testAnUnnamedManifestShowsNobodyItsContent() {
+    def src as Source init source();
+    $src.manifestText = "name = \nbroken secret-branch";
+    def out as PublishReply init byToken(owned(), alice(), $src, NOW);
+    testing.assertFalse(strings.contains(json.asString($out.body, "/error"), "secret-branch"));
+}
+
+func testACiTokenReadsErrorsOnlyForWhatItCovers() {
+    def db as flatdb.DB init withCiToken();
+    def covered as PublishReply init byCiToken($db, ciToken(), brokenNamed(), NOW);
+    testing.assertContains(json.asString($covered.body, "/error"), "secret-branch");
+    def other as Source init brokenNamed();
+    $other.manifestText = strings.replace($other.manifestText, "@acme/routeros", "@other/else");
+    def elsewhere as PublishReply init byCiToken($db, ciToken(), $other, NOW);
+    testing.assertEqual($elsewhere.status, 400);
+    def elsewhereShown as string init json.asString($elsewhere.body, "/error");
+    testing.assertFalse(strings.contains($elsewhereShown, "secret-branch"));
+}
+
+func testABoundWorkloadReadsErrorsAnUnboundOneDoesNot() {
+    def shown as PublishReply init byTrustedPublisher(
+        bound(),
+        claims(),
+        AUD,
+        ISS,
+        brokenNamed(),
+        NOW);
+    testing.assertContains(json.asString($shown.body, "/error"), "secret-branch");
+    def hidden as PublishReply init byTrustedPublisher(
+        owned(),
+        claims(),
+        AUD,
+        ISS,
+        brokenNamed(),
+        NOW);
+    testing.assertEqual($hidden.status, 400);
+    testing.assertFalse(strings.contains(json.asString($hidden.body, "/error"), "secret-branch"));
+}
+
 func testATagThatDisagreesWithTheManifestIsRefused() {
     # `ref` and `version` must not disagree (7, step 6)
     def src as Source init source();
@@ -279,6 +350,7 @@ func claims() {
         provider: trustpub.GITHUB,
         issuer: ISS,
         audience: AUD,
+        audiences: [AUD],
         repositoryId: REPO_ID,
         repository: "acme/deck-routeros",
         workflow: "acme/deck-routeros/.github/workflows/publish.yml",
@@ -332,6 +404,7 @@ version = "0.1.0"
 func testATokenForAnotherAudienceIsRefused() {
     def c as trustpub.Claims init claims();
     $c.audience = "some-other-service";
+    $c.audiences = ["some-other-service"];
     def out as PublishReply init byTrustedPublisher(bound(), $c, AUD, ISS, source(), NOW);
     testing.assertEqual($out.status, 403);
     testing.assertContains(json.asString($out.body, "/error"), "audience");
@@ -785,4 +858,32 @@ func testNewBindingValidatesTheTarget() {
         NOW);
     testing.assertFalse($byPath.ok);
     testing.assertFalse(newBinding(owned(), "@acme", "jenkins", "42", "", "", "", NOW).ok);
+}
+
+func testNewBindingValidatesTheRefPattern() {
+    for (def ok in ["refs/tags/v1.0.0", "refs/tags/v1*", "refs/heads/release/*"]) {
+        def fine as NewBinding init newBinding(
+            owned(),
+            "@acme",
+            "github-actions",
+            "42",
+            "",
+            "",
+            $ok,
+            NOW);
+        testing.assertTrue($fine.ok);
+    }
+    for (def bad in ["refs/tags/*foo", "*", "v*", "refs/tags/*/*", "tags/*"]) {
+        def out as NewBinding init newBinding(
+            owned(),
+            "@acme",
+            "github-actions",
+            "42",
+            "",
+            "",
+            $bad,
+            NOW);
+        testing.assertFalse($out.ok);
+        testing.assertContains($out.error, "refs");
+    }
 }

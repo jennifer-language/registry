@@ -23,7 +23,6 @@
  */
 
 use json;
-use lists;
 use strings;
 use convert;
 import "http.j" as http;
@@ -31,6 +30,8 @@ import "../forge.j" as forge;
 
 def const TIMEOUT_MS as int init 10000;
 def const MAX_BYTES as int init 262144;
+# The contents API answers a file with its base64 body (see forge/github.j).
+def const ENTRY_MAX_BYTES as int init 2097152;
 
 func jsonHeaders() {
     def h as map of string to string init {};
@@ -128,13 +129,17 @@ export func tagCommitFrom(doc as json.Value) {
 }
 
 func get(cfg as forge.Config, path as string, callerToken as string) {
+    return getUpTo($cfg, $path, $callerToken, MAX_BYTES);
+}
+
+func getUpTo(cfg as forge.Config, path as string, callerToken as string, maxBytes as int) {
     def h as map of string to string init jsonHeaders();
     if (not ($callerToken == "")) {
         $h["Authorization"] = "token " + $callerToken;
     } elseif (not ($cfg.apiToken == "")) {
         $h["Authorization"] = "token " + $cfg.apiToken;
     }
-    return http.requestWith("GET", requireBase($cfg) + $path, $h, "", TIMEOUT_MS, MAX_BYTES);
+    return http.requestWith("GET", requireBase($cfg) + $path, $h, "", TIMEOUT_MS, $maxBytes);
 }
 
 func repoPath(url as string) {
@@ -146,7 +151,10 @@ func handles(cfg as forge.Config, url as string) {
 }
 
 func resolveTag(cfg as forge.Config, url as string, tag as string) {
-    def res as http.Response init get($cfg, repoPath($url) + "/tags/" + $tag, "");
+    def res as http.Response init get(
+        $cfg,
+        repoPath($url) + "/tags/" + forge.encodeSegments($tag),
+        "");
     if (not ($res.status == 200)) {
         throw Error{
             kind: "forge",
@@ -190,22 +198,23 @@ func refExists(cfg as forge.Config, url as string, name as string) {
     return forge.refPresence($tag.status);
 }
 
-# fileExists answers from a listing of the file's directory (see forge/github.j).
+# fileExists asks for the path itself (see forge/github.j).
 func fileExists(cfg as forge.Config, url as string, commit as string, path as string) {
-    def parts as list of string init forge.splitPath($path);
-    def res as http.Response init get(
+    def res as http.Response init getUpTo(
         $cfg,
-        repoPath($url) + "/contents/" + $parts[0] + "?ref=" + $commit,
-        "");
+        repoPath($url) + "/contents/" + forge.encodeSegments($path) + "?ref=" + $commit,
+        "",
+        ENTRY_MAX_BYTES);
     if (not forge.refPresence($res.status)) {
         return false;
     }
-    return lists.contains(forge.fileNames(json.decode($res.body), "file"), $parts[1]);
+    return forge.isFile(json.decode($res.body), "file");
 }
 
+# permission asks with the caller's token only (see forge/github.j).
 func permission(cfg as forge.Config, url as string, callerToken as string) {
-    if ($callerToken == "" and $cfg.apiToken == "") {
-        return forge.unknown("the registry holds no credential this forge accepts");
+    if ($callerToken == "") {
+        return forge.unknown("no caller credential to ask the forge with");
     }
     def res as http.Response init get($cfg, repoPath($url), $callerToken);
     if (not ($res.status == 200)) {

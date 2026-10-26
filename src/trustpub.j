@@ -27,6 +27,7 @@
  */
 
 use strings;
+use lists;
 use json;
 use convert;
 import "http.j" as http;
@@ -49,7 +50,8 @@ export def const GITHUB_ISSUER as string init "https://token.actions.githubuserc
  * Kept separate from verification so matching is testable on hand-written claims.
  * @field provider {string} which issuer shape this was read with
  * @field issuer {string} the `iss` claim
- * @field audience {string} the `aud` claim
+ * @field audience {string} the `aud` claim; the first value when it is a list
+ * @field audiences {list of string} every `aud` value (RFC 7519 allows a list)
  * @field repositoryId {string} the forge's immutable numeric repository id
  * @field repository {string} the repository path, for display only
  * @field workflow {string} the workflow file that ran, without any ref suffix
@@ -62,6 +64,7 @@ export def struct Claims {
     provider as string,
     issuer as string,
     audience as string,
+    audiences as list of string,
     repositoryId as string,
     repository as string,
     workflow as string,
@@ -127,7 +130,34 @@ export func pendingExpired(b as Binding, now as int) {
     if (not $b.pending or $b.createdAt == "") {
         return false;
     }
-    return $now - convert.toInt($b.createdAt) > PENDING_TTL_SECONDS;
+    def created as int init 0;
+    try {
+        $created = convert.toInt($b.createdAt);
+    } catch (err) {
+        # An unreadable timestamp cannot prove the binding is fresh.
+        return true;
+    }
+    return $now - $created > PENDING_TTL_SECONDS;
+}
+
+/**
+ * Why a binding's ref pattern cannot be registered, or "" when it can.
+ *
+ * A pattern is a full ref under `refs/`: exact, or a prefix ending in one
+ * star. Anything else either matches nothing (a star elsewhere is compared
+ * literally by `refMatches`) or more than its author meant.
+ * @param pattern {string} the pattern as submitted
+ * @return {string} the complaint, or ""
+ */
+export func refPatternProblem(pattern as string) {
+    if (not strings.startsWith($pattern, "refs/")) {
+        return "`refs` must be a full ref under refs/, such as refs/tags/v1.0.0";
+    }
+    def stars as int init len(strings.split($pattern, "*")) - 1;
+    if ($stars > 1 or ($stars == 1 and not strings.endsWith($pattern, "*"))) {
+        return "`refs` may carry one star, at its end: the pattern is a ref or a prefix";
+    }
+    return "";
 }
 
 /**
@@ -157,6 +187,28 @@ export func isIdentityToken(token as string, issuer as string) {
  */
 export func isKnownProvider(provider as string) {
     return $provider == GITHUB or $provider == GITLAB or $provider == GITEA;
+}
+
+# audiencesOf reads `aud`, a string or a list of strings (RFC 7519 4.1.3).
+# Anything else reads as no audience, which `check` refuses.
+func audiencesOf(doc as json.Value) {
+    def out as list of string init [];
+    if (not json.has($doc, "/aud")) {
+        return $out;
+    }
+    if (json.typeOf($doc, "/aud") == "string") {
+        $out[] = json.asString($doc, "/aud");
+        return $out;
+    }
+    if (json.typeOf($doc, "/aud") == "list") {
+        for (def i in 0..json.length($doc, "/aud")) {
+            def at as string init "/aud/" + convert.toString($i);
+            if (json.typeOf($doc, $at) == "string") {
+                $out[] = json.asString($doc, $at);
+            }
+        }
+    }
+    return $out;
 }
 
 # text reads a claim as a string, "" when absent. A numeric claim (repository
@@ -202,7 +254,8 @@ export func claimsFrom(provider as string, doc as json.Value) {
     def out as Claims init Claims{
         provider: $provider,
         issuer: text($doc, "/iss"),
-        audience: text($doc, "/aud"),
+        audience: "",
+        audiences: audiencesOf($doc),
         repositoryId: "",
         repository: "",
         workflow: "",
@@ -210,6 +263,9 @@ export func claimsFrom(provider as string, doc as json.Value) {
         sha: strings.lower(text($doc, "/sha")),
         issuedAt: 0
     };
+    if (len($out.audiences) > 0) {
+        $out.audience = $out.audiences[0];
+    }
     if (json.has($doc, "/iat") and json.typeOf($doc, "/iat") == "int") {
         $out.issuedAt = json.asInt($doc, "/iat");
     }
@@ -351,7 +407,7 @@ export func check(b as Binding, c as Claims, audience as string, issuer as strin
     if (strings.trim($audience) == "") {
         return no("this registry has no trusted-publishing audience configured");
     }
-    if (not ($c.audience == $audience)) {
+    if (not lists.contains($c.audiences, $audience)) {
         return no("token audience is not this registry");
     }
     if (strings.trim($issuer) == "") {

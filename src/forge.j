@@ -26,6 +26,7 @@
 use json;
 use strings;
 use convert;
+use encoding;
 import "uri.j" as uri;
 
 /**
@@ -84,9 +85,9 @@ export def struct Permission {
  *     tag of this name? Used to detect a ref standing in front of the commit it
  *     is named after (see `refPresence`)
  * @field fileExists {func} `func(Config, url, commit, path) -> bool`: is there a
- *     file at this path at that commit? Never fetches the content: GitHub and
- *     Gitea read a listing of its directory, GitLab asks with a `HEAD`; throws
- *     when the forge will not say
+ *     file at this path at that commit? GitHub and Gitea ask the contents API
+ *     for the path itself (`isFile`), GitLab asks with a `HEAD`; throws when
+ *     the forge will not say
  * @field permission {func} `func(Config, url, callerToken) -> Permission`: may they push?
  *     Asked with the caller's own token, where identity and forge are one service
  * @field permissionFor {func} `func(Config, url, username) -> Permission`: may this
@@ -309,11 +310,12 @@ export func pathOf(url as string) {
         return "";
     }
     $rest = strings.substring($rest, $slash + 1, len($rest));
-    if (strings.endsWith($rest, ".git")) {
-        $rest = strings.substring($rest, 0, len($rest) - 4);
-    }
+    # The slash first: `o/r.git/` must read as `o/r`, not as `o/r.git`.
     if (strings.endsWith($rest, "/")) {
         $rest = strings.substring($rest, 0, len($rest) - 1);
+    }
+    if (strings.endsWith($rest, ".git")) {
+        $rest = strings.substring($rest, 0, len($rest) - 4);
     }
     return $rest;
 }
@@ -405,44 +407,44 @@ export func isPathSegment(seg as string) {
 }
 
 /**
- * A repository path split at its last `/` into directory and file name. Pure.
- * A path with no `/` lives at the top: `["", "deck.toml"]`.
- * @param p {string} a path inside the repository, such as `src/deck.j`
- * @return {list of string} the directory and the file name
+ * Whether a contents payload describes an ordinary file, as GitHub and Gitea
+ * answer `GET .../contents/<path>`: one object carrying `type`. Pure.
+ *
+ * A directory answers with a list, which is not a file; a submodule or symlink
+ * carries another `type`. Only `kind` counts (`file` on both).
+ * @param doc {json.Value} the decoded response
+ * @param kind {string} the type an ordinary file carries on this forge
+ * @return {bool} true when the path is a file
  */
-export func splitPath(p as string) {
-    def slash as int init strings.lastIndexOf($p, "/");
-    if ($slash < 0) {
-        return ["", $p];
+export func isFile(doc as json.Value, kind as string) {
+    if (not (json.typeOf($doc, "") == "map") or not json.has($doc, "/type")) {
+        return false;
     }
-    return [strings.substring($p, 0, $slash), strings.substring($p, $slash + 1, len($p))];
+    return json.typeOf($doc, "/type") == "string" and json.asString($doc, "/type") == $kind;
 }
 
 /**
- * The names of the files in a directory listing, as GitHub, Gitea and GitLab
- * return one: a JSON list of objects carrying `name` and `type`. Pure.
- *
- * Only entries of type `kind` count (`file` on GitHub and Gitea, `blob` on
- * GitLab), so a directory or submodule of the same name is not mistaken for a
- * file. A non-list (a forge's answer when the "directory" is a file) lists
- * nothing.
- * @param listing {json.Value} the decoded response
- * @param kind {string} the type an ordinary file carries on this forge
- * @return {list of string} the file names
+ * One path segment percent-encoded for a request target (RFC 3986), `/`
+ * included, so a tag or path can only address the segment it is placed in.
+ * @param s {string} the raw segment
+ * @return {string} the encoded segment
  */
-export func fileNames(listing as json.Value, kind as string) {
-    def out as list of string init [];
-    if (not (json.typeOf($listing, "") == "list")) {
-        return $out;
+export func encodeSegment(s as string) {
+    return encoding.toText(convert.bytesFromString($s, "utf-8"), "uri-percent");
+}
+
+/**
+ * A slash-separated name percent-encoded segment by segment, for a forge that
+ * routes a tag such as `release/v2` by its literal slashes.
+ * @param s {string} the raw name
+ * @return {string} the encoded name, slashes kept
+ */
+export func encodeSegments(s as string) {
+    def parts as list of string init [];
+    for (def part in strings.split($s, "/")) {
+        $parts[] = encodeSegment($part);
     }
-    for (def i in 0..json.length($listing, "")) {
-        def at as string init "/" + convert.toString($i);
-        if (json.has($listing, $at + "/name") and json.has($listing, $at + "/type") and
-            json.asString($listing, $at + "/type") == $kind) {
-            $out[] = json.asString($listing, $at + "/name");
-        }
-    }
-    return $out;
+    return strings.join($parts, "/");
 }
 
 /**
@@ -451,11 +453,17 @@ export func fileNames(listing as json.Value, kind as string) {
  * The tag is placed into forge API paths and must not change which path it
  * addresses. Git's ref-name rules refuse most of that (`..`, whitespace, control
  * characters, `?`, `[`, `\`); `%` and `#` are legal in git but would be decoded
- * or cut off on the way to a forge, so they are refused too. An inner `/` is
- * allowed.
+ * or cut off on the way to a forge, so they are refused too, as is anything
+ * outside printable ASCII and the URL delimiters a forge might read. An inner
+ * `/` is allowed. Adapters percent-encode the tag as well; this grammar is the
+ * first guard, not the only one.
  * @param tag {string} the tag named in the request
  * @return {string} the complaint, or ""
  */
+# The characters a tag may not carry: git's own refusals, then the URL
+# delimiters (`;&=,` and the sub-delims) a forge could read as structure.
+def const TAG_REFUSED as string init "~^:?*[\\%#;&=,'\"<>|\{\}`";
+
 export func tagProblem(tag as string) {
     if (strings.trim($tag) == "") {
         return "missing `tag`";
@@ -468,8 +476,8 @@ export func tagProblem(tag as string) {
         return "the tag " + $tag + " is not a valid git tag name";
     }
     for (def c in strings.chars($tag)) {
-        if (convert.toCodepoint($c) <= 32 or convert.toCodepoint($c) == 127 or
-            strings.contains('~^:?*[\%#', $c)) {
+        def cp as int init convert.toCodepoint($c);
+        if ($cp <= 32 or $cp >= 127 or strings.contains(TAG_REFUSED, $c)) {
             return "the tag " + $tag + " contains a character a tag cannot carry here";
         }
     }

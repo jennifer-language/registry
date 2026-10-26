@@ -396,6 +396,30 @@ func parsed(src as Source) {
     return manifest.parse($src.manifestText);
 }
 
+# manifestRefusal is the 400 for a manifest that did not validate (7, step 3).
+# Its detail quotes manifest content, which under `service` source authority
+# the registry may have read from a repository the caller cannot see, so it is
+# echoed only to a caller authorised for the name the manifest tries to give,
+# and logged otherwise.
+func manifestRefusal(db as flatdb.DB, src as Source, m as manifest.Manifest, authorised as bool) {
+    if ($authorised) {
+        return refuse($db, 400, $m.error);
+    }
+    def shown as string init manifest.FILENAME + " at " + $src.tag + " did not validate";
+    def out as PublishReply init refuse($db, 400, $shown);
+    $out.event = audit.publishRefused($shown + ": " + $m.error, 400);
+    return $out;
+}
+
+# mayReadErrors is whether a person is authorised for the scope of the name a
+# broken manifest still carries; "" (no readable name) authorises nobody.
+func mayReadErrors(db as flatdb.DB, who as identity.Subject, name as string) {
+    if ($name == "" or not store.hasNamespace($db, deckname.scopeOf($name))) {
+        return false;
+    }
+    return scope.authorise($db, $who, deckname.scopeOf($name)).allowed;
+}
+
 /**
  * Publish authorised by a bearer token: a person with a scope binding.
  *
@@ -414,7 +438,8 @@ export func byToken(db as flatdb.DB, who as identity.Subject, src as Source, now
     }
     def m as manifest.Manifest init parsed($src);
     if (not $m.ok) {
-        return refuse($db, 400, $m.error);
+        def name as string init manifest.nameOf($src.manifestText);
+        return manifestRefusal($db, $src, $m, mayReadErrors($db, $who, $name));
     }
     def deckComplaint as string init checkDeck($db, $m);
     if (not ($deckComplaint == "")) {
@@ -459,7 +484,10 @@ export func byCiToken(db as flatdb.DB, t as citoken.Token, src as Source, now as
     }
     def m as manifest.Manifest init parsed($src);
     if (not $m.ok) {
-        return refuse($db, 400, $m.error);
+        def name as string init manifest.nameOf($src.manifestText);
+        def covered as bool init not ($name == "") and
+            citoken.check($t, $name, convert.toInt($now)).allowed;
+        return manifestRefusal($db, $src, $m, $covered);
     }
     def deckComplaint as string init checkDeck($db, $m);
     if (not ($deckComplaint == "")) {
@@ -523,7 +551,10 @@ export func byTrustedPublisher(
     }
     def m as manifest.Manifest init parsed($src);
     if (not $m.ok) {
-        return refuse($db, 400, $m.error);
+        def name as string init manifest.nameOf($src.manifestText);
+        def bound as bool init not ($name == "") and not ($claims.repositoryId == "") and
+            store.bindingFor($db, $name).repositoryId == $claims.repositoryId;
+        return manifestRefusal($db, $src, $m, $bound);
     }
     def deckComplaint as string init checkDeck($db, $m);
     if (not ($deckComplaint == "")) {
@@ -666,6 +697,10 @@ export func newBinding(
     def pattern as string init strings.trim($refs);
     if ($pattern == "") {
         $pattern = "refs/tags/*";
+    }
+    def patternComplaint as string init trustpub.refPatternProblem($pattern);
+    if (not ($patternComplaint == "")) {
+        return bindingError($patternComplaint);
     }
     def b as trustpub.Binding init trustpub.Binding{
         provider: $provider,

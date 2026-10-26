@@ -38,6 +38,8 @@ func testPathOfKeepsNestedGroups() {
 
 func testPathOfToleratesATrailingSlash() {
     testing.assertEqual(pathOf("https://github.com/acme/deck/"), "acme/deck");
+    # the slash after `.git` once left `acme/deck.git`, a repository that does not exist
+    testing.assertEqual(pathOf("https://github.com/acme/deck.git/"), "acme/deck");
 }
 
 func testPathOfIsEmptyWithoutOne() {
@@ -112,25 +114,23 @@ func testAPathCannotMeanSomethingElse() {
 
 # --- paths, listings, tags ----------------------------------------------------
 
-func testSplitPathSplitsAtTheLastSlash() {
-    testing.assertEqual(splitPath("src/deck.j"), ["src", "deck.j"]);
-    testing.assertEqual(splitPath("a/b/c.j"), ["a/b", "c.j"]);
-    testing.assertEqual(splitPath("deck.toml"), ["", "deck.toml"]);
+func testAContentsPayloadIsAFileOnlyWhenItSaysSo() {
+    testing.assertTrue(isFile(
+        json.decode('{"name": "deck.j", "type": "file", "content": ""}'),
+        "file"));
+    # a directory answers with a listing, a submodule or symlink with another type
+    testing.assertFalse(isFile(json.decode('[{"name": "deck.j", "type": "file"}]'), "file"));
+    testing.assertFalse(isFile(json.decode('{"name": "deck.j", "type": "submodule"}'), "file"));
+    testing.assertFalse(isFile(json.decode('{"name": "deck.j", "type": "symlink"}'), "file"));
+    testing.assertFalse(isFile(json.decode('{"name": "deck.j"}'), "file"));
+    testing.assertFalse(isFile(json.decode('{"type": 3}'), "file"));
 }
 
-func testFileNamesListsOnlyOrdinaryFiles() {
-    # a directory or submodule named like the entry module is not the entry module
-    def listing as json.Value init json.decode('[' +
-        '{"name": "deck.j", "type": "file"}, {"name": "lib", "type": "dir"},' +
-        '{"name": "other.j", "type": "submodule"}, {"name": "x.j", "type": "blob"}]');
-    testing.assertEqual(fileNames($listing, "file"), ["deck.j"]);
-    testing.assertEqual(fileNames($listing, "blob"), ["x.j"]);
-}
-
-func testAFilesMetadataIsNotADirectory() {
-    # asked to list `src` when `src` is a file, a forge answers with one object
-    def single as json.Value init json.decode('{"name": "src", "type": "file"}');
-    testing.assertEqual(len(fileNames($single, "file")), 0);
+func testTagsAreEncodedIntoRequestPaths() {
+    testing.assertEqual(encodeSegment("release/v2"), "release%2Fv2");
+    testing.assertEqual(encodeSegments("release/v2"), "release/v2");
+    testing.assertEqual(encodeSegments("v1.0.0+build.5"), "v1.0.0%2Bbuild.5");
+    testing.assertEqual(encodeSegments("a b/c#d"), "a%20b/c%23d");
 }
 
 func testOrdinaryTagsAreAccepted() {
@@ -148,6 +148,21 @@ func testATagCannotChangeThePathItIsPlacedIn() {
     testing.assertContains(tagProblem("v1 x"), "character");
     testing.assertContains(tagProblem("/v1"), "valid");
     testing.assertContains(tagProblem("v1.lock"), "valid");
+    # URL delimiters and anything outside printable ASCII
+    for (def bad in [
+        "v1;x",
+        "v1&y=2",
+        "a,b",
+        "v'1",
+        "v\"1",
+        "v<1>",
+        "v|1",
+        "v\{1\}",
+        "v`1",
+        "v\u00e91"
+    ]) {
+        testing.assertContains(tagProblem($bad), "character");
+    }
 }
 
 # --- service-account permissions ----------------------------------------------

@@ -25,7 +25,6 @@
  */
 
 use json;
-use lists;
 use strings;
 use convert;
 import "http.j" as http;
@@ -35,6 +34,9 @@ def const HOSTED_HOST as string init "github.com";
 def const API_BASE as string init "https://api.github.com";
 def const TIMEOUT_MS as int init 10000;
 def const MAX_BYTES as int init 262144;
+# The contents API answers a file with its base64 body, so the entry-module
+# check reads up to this much; GitHub sends no body past 1 MB anyway.
+def const ENTRY_MAX_BYTES as int init 2097152;
 
 func jsonHeaders() {
     def h as map of string to string init {};
@@ -126,13 +128,17 @@ export func refTargetFrom(doc as json.Value) {
 }
 
 func get(cfg as forge.Config, path as string, callerToken as string) {
+    return getUpTo($cfg, $path, $callerToken, MAX_BYTES);
+}
+
+func getUpTo(cfg as forge.Config, path as string, callerToken as string, maxBytes as int) {
     def h as map of string to string init jsonHeaders();
     if (not ($callerToken == "")) {
         $h["Authorization"] = "Bearer " + $callerToken;
     } elseif (not ($cfg.apiToken == "")) {
         $h["Authorization"] = "Bearer " + $cfg.apiToken;
     }
-    return http.requestWith("GET", apiBase($cfg) + $path, $h, "", TIMEOUT_MS, MAX_BYTES);
+    return http.requestWith("GET", apiBase($cfg) + $path, $h, "", TIMEOUT_MS, $maxBytes);
 }
 
 func repoPath(url as string) {
@@ -144,7 +150,10 @@ func handles(cfg as forge.Config, url as string) {
 }
 
 func resolveTag(cfg as forge.Config, url as string, tag as string) {
-    def res as http.Response init get($cfg, repoPath($url) + "/git/ref/tags/" + $tag, "");
+    def res as http.Response init get(
+        $cfg,
+        repoPath($url) + "/git/ref/tags/" + forge.encodeSegments($tag),
+        "");
     if (not ($res.status == 200)) {
         throw Error{
             kind: "forge",
@@ -201,24 +210,27 @@ func refExists(cfg as forge.Config, url as string, name as string) {
     return forge.refPresence($tags.status);
 }
 
-# fileExists answers from a listing of the file's directory, which stays small
-# however large the file is. A `404` is absent; any other failure throws through
-# `refPresence`.
+# fileExists asks for the path itself: a file answers as one object, a
+# directory as a listing (`forge.isFile`), an absent path `404`; any other
+# failure throws through `refPresence`. Asking for the directory instead would
+# page out past 1,000 entries.
 func fileExists(cfg as forge.Config, url as string, commit as string, path as string) {
-    def parts as list of string init forge.splitPath($path);
-    def res as http.Response init get(
+    def res as http.Response init getUpTo(
         $cfg,
-        repoPath($url) + "/contents/" + $parts[0] + "?ref=" + $commit,
-        "");
+        repoPath($url) + "/contents/" + forge.encodeSegments($path) + "?ref=" + $commit,
+        "",
+        ENTRY_MAX_BYTES);
     if (not forge.refPresence($res.status)) {
         return false;
     }
-    return lists.contains(forge.fileNames(json.decode($res.body), "file"), $parts[1]);
+    return forge.isFile(json.decode($res.body), "file");
 }
 
+# permission asks with the caller's token only: substituting the registry's
+# own token would report its push access as the caller's.
 func permission(cfg as forge.Config, url as string, callerToken as string) {
-    if ($callerToken == "" and $cfg.apiToken == "") {
-        return forge.unknown("the registry holds no credential this forge accepts");
+    if ($callerToken == "") {
+        return forge.unknown("no caller credential to ask the forge with");
     }
     def res as http.Response init get($cfg, repoPath($url), $callerToken);
     if (not ($res.status == 200)) {

@@ -45,6 +45,27 @@ func testOnlyAPendingBindingExpires() {
     testing.assertTrue(pendingExpired($b, $late));
 }
 
+func testAnUnreadableTimestampReadsAsExpired() {
+    # a hand-edited record must not throw on every publish, nor pass as fresh
+    def b as Binding init binding();
+    $b.pending = true;
+    $b.createdAt = "yesterday";
+    testing.assertTrue(pendingExpired($b, 1700000000));
+}
+
+func testAnAudienceListMatchesOnAnyValue() {
+    def doc as json.Value init json.remove(token(), "/aud");
+    $doc = json.set($doc, "/aud", json.decode('["some-other-service", "' + AUD + '"]'));
+    def c as Claims init claimsFrom(GITHUB, $doc);
+    testing.assertEqual(len($c.audiences), 2);
+    testing.assertTrue(check(binding(), $c, AUD, GITHUB_ISSUER).allowed);
+    def other as Claims init claimsFrom(GITHUB, json.set($doc, "/aud", json.decode('["x", "y"]')));
+    testing.assertFalse(check(binding(), $other, AUD, GITHUB_ISSUER).allowed);
+    def none as Claims init claimsFrom(GITHUB, json.set($doc, "/aud", 42));
+    testing.assertEqual(len($none.audiences), 0);
+    testing.assertFalse(check(binding(), $none, AUD, GITHUB_ISSUER).allowed);
+}
+
 # A token GitHub Actions would mint for a tag build of that repository.
 func token() {
     def doc as json.Value init json.map();
@@ -205,6 +226,15 @@ func testRefPatterns() {
     testing.assertTrue(refMatches("*", "anything"));
     # an empty pattern is the permissive default a binding should narrow
     testing.assertTrue(refMatches("", "refs/heads/main"));
+}
+
+func testAPatternIsAFullRefWithAtMostATrailingStar() {
+    for (def ok in ["refs/tags/*", "refs/tags/v1.0.0", "refs/heads/release/*"]) {
+        testing.assertEqual(refPatternProblem($ok), "");
+    }
+    for (def bad in ["", "*", "v*", "tags/*", "refs/tags/*foo", "refs/*/v1", "refs/tags/**"]) {
+        testing.assertFalse(refPatternProblem($bad) == "");
+    }
 }
 
 func testAPrefixPatternDoesNotMatchASiblingPrefix() {

@@ -44,6 +44,16 @@ import "./constraint.j" as constraint;
 # The file a deck declares itself in, at the root of its repository.
 export def const FILENAME as string init "deck.toml";
 
+# Limits on what a manifest may carry into the record (specification 3).
+# Everything here is served in every `GET /deck` reply and held in the shared
+# index, so a manifest cannot be allowed to grow them without bound.
+export def const MAX_DESCRIPTION as int init 512;
+export def const MAX_LICENSE as int init 64;
+export def const MAX_CAPABILITIES as int init 32;
+export def const MAX_CAPABILITY as int init 64;
+export def const MAX_REQUIRES as int init 256;
+export def const MAX_ENGINES as int init 16;
+
 /**
  * A parsed `deck.toml`. When `ok` is false only `error` is meaningful.
  * @field ok {bool} whether the manifest parsed and validated
@@ -116,11 +126,53 @@ func table(doc as toml.Value, pointer as string, decks as bool) {
     return $out;
 }
 
+# isIdent is the grammar of an engine name or a capability: a lowercase letter,
+# then lowercase letters, digits and hyphens.
+func isIdent(s as string) {
+    if ($s == "") {
+        return false;
+    }
+    def first as bool init true;
+    for (def c in strings.chars($s)) {
+        def letter as bool init $c >= "a" and $c <= "z";
+        if ($first and not $letter) {
+            return false;
+        }
+        if (not ($letter or ($c >= "0" and $c <= "9") or $c == "-")) {
+            return false;
+        }
+        $first = false;
+    }
+    return true;
+}
+
+# keyProblem is why one key of a dependency table cannot be published, or "".
+# Under `[decks]` a key is a scoped deck name other than the deck itself; under
+# `[engines]` it is an engine name.
+func keyProblem(key as string, label as string, decks as bool, self as string) {
+    if ($decks) {
+        def folded as string init deckname.fold($key);
+        if (not deckname.isValid($folded) or not deckname.isScoped($folded)) {
+            return "not a deck name in " + $label + ": " + $key;
+        }
+        if ($folded == $self) {
+            return $self + " cannot require itself";
+        }
+        return "";
+    }
+    if (not isIdent($key)) {
+        return "not an engine name in " + $label + ": " + $key +
+            " (lowercase letters, digits and hyphens)";
+    }
+    return "";
+}
+
 # tableProblem is why a dependency table cannot be published, or "". Each entry
 # must be a constraint in the grammar (2.4); one outside it matches nothing.
 # Under `[decks]` each key must be a scoped deck name, and two spellings of one
 # folded name are refused, since they would be one dependency at two versions.
-func tableProblem(doc as toml.Value, pointer as string, decks as bool) {
+# `self` is the deck's own name, which it may not require.
+func tableProblem(doc as toml.Value, pointer as string, decks as bool, self as string) {
     def label as string init "[" + strings.substring($pointer, 1, len($pointer)) + "]";
     if (not toml.has($doc, $pointer)) {
         return "";
@@ -128,17 +180,26 @@ func tableProblem(doc as toml.Value, pointer as string, decks as bool) {
     if (not (toml.typeOf($doc, $pointer) == "map")) {
         return $label + " in " + FILENAME + " must be a table";
     }
+    def most as int init MAX_ENGINES;
+    if ($decks) {
+        $most = MAX_REQUIRES;
+    }
+    if (toml.length($doc, $pointer) > $most) {
+        return $label + " in " + FILENAME + " lists more than " + convert.toString($most) +
+            " entries";
+    }
     def seen as map of string to bool init {};
     for (def key in toml.keys($doc, $pointer)) {
         def at as string init $pointer + "/" + ptrEscape($key);
         if (not (toml.typeOf($doc, $at) == "string")) {
             return $label + " entry " + $key + " must be a version constraint in quotes";
         }
+        def wrongKey as string init keyProblem($key, $label, $decks, $self);
+        if (not ($wrongKey == "")) {
+            return $wrongKey;
+        }
         if ($decks) {
             def folded as string init deckname.fold($key);
-            if (not deckname.isValid($folded) or not deckname.isScoped($folded)) {
-                return "not a deck name in " + $label + ": " + $key;
-            }
             if (maps.has($seen, $folded)) {
                 return $key + " is listed twice in " + $label + ", under two spellings";
             }
@@ -180,6 +241,32 @@ func fieldProblem(doc as toml.Value, field as string) {
     return "";
 }
 
+# lengthProblem is why a text field is too long to record, or "".
+func lengthProblem(value as string, field as string, most as int) {
+    if (len($value) > $most) {
+        return "`" + $field + "` in " + FILENAME + " is longer than " +
+            convert.toString($most) + " characters";
+    }
+    return "";
+}
+
+# capabilitiesProblem is why the capability list cannot be recorded, or "":
+# too many, or one outside the name grammar or too long. Call after
+# `listProblem` has checked the shape.
+func capabilitiesProblem(caps as list of string) {
+    if (len($caps) > MAX_CAPABILITIES) {
+        return "`capabilities` in " + FILENAME + " lists more than " +
+            convert.toString(MAX_CAPABILITIES) + " entries";
+    }
+    for (def cap in $caps) {
+        if (len($cap) > MAX_CAPABILITY or not isIdent($cap)) {
+            return "not a capability name in " + FILENAME + ": " + $cap +
+                " (lowercase letters, digits and hyphens)";
+        }
+    }
+    return "";
+}
+
 # ptrEscape encodes one JSON Pointer reference token (RFC 6901). A scoped deck
 # name contains a "/", which would otherwise read as a path separator.
 func ptrEscape(token as string) {
@@ -202,6 +289,30 @@ func strList(doc as toml.Value, pointer as string) {
         }
     }
     return $out;
+}
+
+/**
+ * The scoped deck name a manifest tries to give, folded, whether or not the
+ * rest of it validates; "" when there is none readable. For deciding who may
+ * see a failed manifest's errors, never for publishing.
+ * @param text {string} the file's contents
+ * @return {string} the folded name, or ""
+ */
+export func nameOf(text as string) {
+    def doc as toml.Value;
+    try {
+        $doc = toml.decode($text);
+    } catch (err) {
+        return "";
+    }
+    if (not (fieldProblem($doc, "name") == "")) {
+        return "";
+    }
+    def name as string init deckname.fold(str($doc, "/package/name"));
+    if (not deckname.isValid($name) or not deckname.isScoped($name)) {
+        return "";
+    }
+    return $name;
 }
 
 /**
@@ -247,13 +358,19 @@ export func parse(text as string) {
             " (SemVer, with no number longer than 18 digits)");
     }
     for (def complaint in [
-        tableProblem($doc, "/decks", true),
-        tableProblem($doc, "/engines", false),
+        lengthProblem(str($doc, "/package/description"), "description", MAX_DESCRIPTION),
+        lengthProblem(str($doc, "/package/license"), "license", MAX_LICENSE),
+        tableProblem($doc, "/decks", true, $name),
+        tableProblem($doc, "/engines", false, $name),
         listProblem($doc, "/package/capabilities")
     ]) {
         if (not ($complaint == "")) {
             return bad($complaint);
         }
+    }
+    def capsComplaint as string init capabilitiesProblem(strList($doc, "/package/capabilities"));
+    if (not ($capsComplaint == "")) {
+        return bad($capsComplaint);
     }
     return Manifest{
         ok: true,

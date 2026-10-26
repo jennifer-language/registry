@@ -132,3 +132,14 @@ func testAFileIsAskedAboutAsOneSegment() {
         filePath("https://gitlab.com/acme/tool", "c0ffee", "src/tool.j"),
         "/projects/acme%2Ftool/repository/files/src%2Ftool.j?ref=c0ffee");
 }
+
+func testPermissionNeverAsksWithTheRegistrysOwnToken() {
+    # an empty caller token must not fall back to the service token, which would
+    # report the registry's push access as the caller's; answered before any request
+    def c as forge.Config init cfg();
+    $c.apiToken = "service-token";
+    def p as forge.Permission init permission($c, "https://github.com/acme/deck", "");
+    testing.assertFalse($p.known);
+    testing.assertFalse($p.push);
+    testing.assertContains($p.reason, "caller credential");
+}

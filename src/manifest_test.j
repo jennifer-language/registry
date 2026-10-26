@@ -226,3 +226,88 @@ func testABadKeywordNeverFailsAPublish() {
     testing.assertTrue($m.ok);
     testing.assertEqual(len($m.keywords), 2);
 }
+
+# --- limits ---------------------------------------------------------------------
+
+func testADeckCannotRequireItself() {
+    def m as Manifest init parse(withBody('[decks]
+"@ACME/Tool" = "^1"
+'));
+    testing.assertFalse($m.ok);
+    testing.assertContains($m.error, "cannot require itself");
+}
+
+func testLongTextFieldsAreRefused() {
+    def long as string init strings.repeat("x", MAX_DESCRIPTION + 1);
+    def d as Manifest init parse(withBody('description = "' + $long + '"
+'));
+    testing.assertFalse($d.ok);
+    testing.assertContains($d.error, "description");
+    def l as Manifest init parse(withBody('license = "' + strings.repeat("A", MAX_LICENSE + 1) +
+        '"
+'));
+    testing.assertFalse($l.ok);
+    testing.assertContains($l.error, "license");
+    testing.assertTrue(parse(withBody('description = "' + strings.repeat("x", MAX_DESCRIPTION) +
+        '"
+')).ok);
+}
+
+func testCapabilitiesAreNamesAndFew() {
+    testing.assertTrue(parse(withBody('capabilities = ["net", "exec", "sql"]
+')).ok);
+    def odd as Manifest init parse(withBody('capabilities = ["Net Work"]
+'));
+    testing.assertFalse($odd.ok);
+    testing.assertContains($odd.error, "capability");
+    def many as list of string init [];
+    for (def i in 0..MAX_CAPABILITIES + 1) {
+        $many[] = '"cap' + convert.toString($i) + '"';
+    }
+    def too as Manifest init parse(withBody('capabilities = [' + strings.join($many, ", ") + ']
+'));
+    testing.assertFalse($too.ok);
+    testing.assertContains($too.error, "more than");
+}
+
+func testEngineKeysAreNamesAndFew() {
+    def odd as Manifest init parse(withBody('[engines]
+"../weird" = ">=1"
+'));
+    testing.assertFalse($odd.ok);
+    testing.assertContains($odd.error, "engine name");
+    def lines as list of string init [];
+    for (def i in 0..MAX_ENGINES + 1) {
+        $lines[] = 'engine' + convert.toString($i) + ' = ">=1"';
+    }
+    def too as Manifest init parse(withBody('[engines]
+' + strings.join($lines, "\n") + '
+'));
+    testing.assertFalse($too.ok);
+    testing.assertContains($too.error, "more than");
+}
+
+func testTooManyDependenciesAreRefused() {
+    def lines as list of string init [];
+    for (def i in 0..MAX_REQUIRES + 1) {
+        $lines[] = '"@acme/dep' + convert.toString($i) + '" = "^1"';
+    }
+    def too as Manifest init parse(withBody('[decks]
+' + strings.join($lines, "\n") + '
+'));
+    testing.assertFalse($too.ok);
+    testing.assertContains($too.error, "more than");
+}
+
+func testNameOfReadsTheNameFromABrokenManifest() {
+    testing.assertEqual(nameOf(withBody('[decks]
+"@acme/net" = "~>1"
+')), "@acme/tool");
+    testing.assertEqual(nameOf("name = \nbroken"), "");
+    testing.assertEqual(nameOf('[package]
+name = "bare"
+'), "");
+    testing.assertEqual(nameOf('[package]
+name = 5
+'), "");
+}
