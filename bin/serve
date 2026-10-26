@@ -91,6 +91,8 @@ def envNames as list of string init [
     "REGISTRY_IDENTITY_SCOPES",
     "REGISTRY_ORG_MAX_AGE",
     "REGISTRY_AUTH_RATE_LIMIT",
+    "REGISTRY_WRITE_RATE_LIMIT",
+    "REGISTRY_READ_RATE_LIMIT",
     "REGISTRY_TOKEN_KEY",
     "REGISTRY_FORGE",
     "REGISTRY_FORGE_BASEURL",
@@ -219,7 +221,8 @@ def auth as authview.Config init authview.Config{
         baseUrl: $cfg.identityBaseUrl,
         clientId: $cfg.identityClientId,
         clientSecret: $cfg.identitySecret,
-        scopes: $cfg.identityScopes
+        scopes: $cfg.identityScopes,
+        metadata: ""
     },
     signingKey: convert.bytesFromString($cfg.tokenKey, "utf-8"),
     tokenTtl: TOKEN_TTL,
@@ -232,6 +235,30 @@ def authOn as bool init authview.enabled($auth);
 # per-address budget (`throttle`). With the setting at 0, `authThrottled` never
 # consults it.
 def authLimiter as ratelimit.Limiter init throttle.limiter($cfg.authRateLimit);
+
+# Section 11, the other two budgets: writes per authenticated subject (per
+# address until a credential is known), and the two reads that cost real CPU,
+# `/resolve-graph` and a full `/search` listing, per address. 0 turns one off.
+def writeRateLimit as int init $cfg.writeRateLimit;
+def readRateLimit as int init $cfg.readRateLimit;
+def writeLimiter as ratelimit.Limiter init throttle.limiter($writeRateLimit);
+def readLimiter as ratelimit.Limiter init throttle.limiter($readRateLimit);
+
+# The provider's discovery document, fetched once at boot (12.2) and carried in
+# the configuration, so a login makes no extra round trip. A provider that cannot
+# be asked gets no `auth` advertised: every login would fail, and the reason
+# belongs in the boot log, not in a poll's 502.
+if ($authOn) {
+    try {
+        $auth.providerConfig.metadata = $auth.provider.discover($auth.providerConfig);
+    } catch (err) {
+        io.printf(
+            "warning: could not read the discovery document of %s (%s); logins are off\n",
+            $providerName,
+            $err.message);
+        $authOn = false;
+    }
+}
 
 # selectForge maps the configured forge name onto its vtable. Identity and forge
 # are configured separately (specification 12.1).
@@ -340,6 +367,12 @@ def hits as kv.Store init kv.open();
 # How often the accumulated counts are folded into the store.
 def const FLUSH_SECONDS as int init 60;
 
+# How long a counter lives after it was created. A deck-hour counter is only
+# incremented during its hour and the flush reads it within a minute, so three
+# hours is slack; the TTL exists so a counter the sweep no longer visits (a
+# removed deck, a flush that kept failing) does not stay in memory forever.
+def const COUNTER_TTL_SECONDS as int init 10800;
+
 # countLookup records one metadata lookup against a deck.
 #
 # Keyed by deck and hour, so a flush attributes a lookup to the hour it happened.
@@ -351,7 +384,7 @@ func countLookup(name as string) {
     }
     def key as string init hitKey(deckname.fold($name), stats.hourKey(nowSeconds()));
     if (kv.incr($hits, $key, 1) == -1) {
-        if (not kv.add($hits, $key, "1", 0)) {
+        if (not kv.add($hits, $key, "1", COUNTER_TTL_SECONDS)) {
             kv.incr($hits, $key, 1);
         }
     }
@@ -449,11 +482,19 @@ func apiIndex(ctx as web.Context) {
 func apiSearch(ctx as web.Context) {
     def query as string init web.query($ctx, "q");
     if (webapi.wants($ctx) == "html") {
-        def page as webview.Page init webview.results(sharedIndex(), $query, pageOf($ctx));
+        def page as webview.Page init webview.resultsIn(
+            sharedIndex(),
+            sharedLowered(),
+            $query,
+            pageOf($ctx));
         web.html($ctx, $page.status, $page.body);
         return;
     }
-    def reply as view.Reply init view.search(sharedIndex(), $query);
+    # An empty query serialises the whole index (about 1 MB at 5,000 decks).
+    if (strings.trim($query) == "" and readThrottled($ctx)) {
+        return;
+    }
+    def reply as view.Reply init view.searchIn(sharedIndex(), sharedLowered(), $query);
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
@@ -464,9 +505,16 @@ func apiSearch(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func siteDeck(ctx as web.Context) {
-    def db as flatdb.DB init sharedStore();
     def name as string init "@" + web.param($ctx, "scope") + "/" + web.param($ctx, "deck");
-    def page as webview.Page init webview.deck($db, $name, nowSeconds());
+    # One URL per deck: a differently cased spelling is redirected to the folded
+    # one rather than rendered as a second page.
+    def folded as string init deckname.fold($name);
+    def canonical as string init "/deck/" + strings.substring($folded, 1, len($folded));
+    if (not (web.path($ctx) == $canonical)) {
+        web.redirect($ctx, 301, $canonical);
+        return;
+    }
+    def page as webview.Page init webview.deck(sharedStore(), $folded, nowSeconds());
     web.html($ctx, $page.status, $page.body);
 }
 
@@ -489,7 +537,7 @@ func siteBrowse(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func siteTags(ctx as web.Context) {
-    def page as webview.Page init webview.tags(sharedIndex());
+    def page as webview.Page init webview.tagsFrom(sharedTagMap());
     web.html($ctx, $page.status, $page.body);
 }
 
@@ -499,7 +547,7 @@ func siteTags(ctx as web.Context) {
  */
 func siteTag(ctx as web.Context) {
     def name as string init web.param($ctx, "name");
-    def page as webview.Page init webview.tag(sharedIndex(), $name, pageOf($ctx));
+    def page as webview.Page init webview.tagIn(sharedIndex(), sharedTagMap(), $name, pageOf($ctx));
     web.html($ctx, $page.status, $page.body);
 }
 
@@ -509,7 +557,12 @@ func siteTag(ctx as web.Context) {
  */
 func siteScope(ctx as web.Context) {
     def name as string init web.param($ctx, "name");
-    def page as webview.Page init webview.scope(sharedStore(), sharedIndex(), $name, pageOf($ctx));
+    def page as webview.Page init webview.scopeIn(
+        sharedStore(),
+        sharedIndex(),
+        sharedScopeMap(),
+        $name,
+        pageOf($ctx));
     web.html($ctx, $page.status, $page.body);
 }
 
@@ -618,7 +671,7 @@ func sharedStore() {
         return store.open($dbPath);
     }
     def key as string init "db " + fileVersion();
-    if (kv.has($shared, $key) or awaitParse($key)) {
+    if (kv.has($shared, $key) or awaitBuild($key, $key)) {
         try {
             return flatdb.DB{path: $dbPath, data: kv.getValue($shared, $key), version: ""};
         } catch (err) { # lint-disable: L103
@@ -630,18 +683,42 @@ func sharedStore() {
     return flatdb.DB{path: $dbPath, data: $db.data, version: ""};
 }
 
-# sharedIndex is the deck index (`search.index`) of the registry as of now, built
-# once per change of the file and shared like the store. Every listing and search
-# reads it; building it sorts every deck's versions (about 0.7 s at 5,000 decks).
+# The four shared read values: the deck index (`search.index`) and the three
+# lookups derived from it (`search.lowered`, `tagMap`, `scopeMap`), built once
+# per change of the file and shared like the store. Every listing and search
+# reads them; building the index sorts every deck's versions (about 0.7 s at
+# 5,000 decks), the three lookups add about 0.1 s and turn the per-request scans
+# of the index (13 to 44 ms each at that size) into lookups.
 #
-# Filed under the file version it was asked for; `sharedStore` may return a newer
-# copy, which only makes the index newer than its key.
+# All four are built from one index and filed under one file version, so the
+# positions a lookup holds refer to the index served with it. `sharedStore` may
+# return a newer copy, which only makes the index newer than its key.
 func sharedIndex() {
+    return sharedPart("index");
+}
+
+func sharedLowered() {
+    return sharedPart("lowered");
+}
+
+func sharedTagMap() {
+    return sharedPart("tags");
+}
+
+func sharedScopeMap() {
+    return sharedPart("scopes");
+}
+
+# sharedPart is one of the four by name. One reader builds all four while the
+# rest wait on the index's marker; a part missing after the build (expired
+# between two calls) is rebuilt from the index that was just filed.
+func sharedPart(name as string) {
     if (not fs.exists($dbPath)) {
-        return search.index(store.open($dbPath));
+        return partOf($name, search.index(store.open($dbPath)));
     }
-    def key as string init "index " + fileVersion();
-    if (kv.has($shared, $key) or awaitParse($key)) {
+    def version as string init fileVersion();
+    def key as string init $name + " " + $version;
+    if (kv.has($shared, $key) or awaitBuild("index " + $version, $key)) {
         try {
             return kv.getValue($shared, $key);
         } catch (err) { # lint-disable: L103
@@ -649,7 +726,20 @@ func sharedIndex() {
         }
     }
     def index as json.Value init search.index(sharedStore());
-    keepShared("current index", $key, $index);
+    keepShared("current index", "index " + $version, $index);
+    for (def part in ["lowered", "tags", "scopes"]) {
+        keepShared("current " + $part, $part + " " + $version, partOf($part, $index));
+    }
+    return partOf($name, $index);
+}
+
+# partOf builds one shared part from an index; "index" is the index itself.
+func partOf(name as string, index as json.Value) {
+    match ($name) {
+        when "lowered" { return search.lowered($index); }
+        when "tags" { return search.tagMap($index); }
+        when "scopes" { return search.scopeMap($index); }
+    }
     return $index;
 }
 
@@ -677,14 +767,15 @@ func keepShared(slot as string, key as string, value as json.Value) {
 def const PARSE_WAIT_MS as int init 5000;
 def const PARSE_POLL_MS as int init 20;
 
-# awaitParse makes one reader the parser of a new file version (or builder of
-# its index) while the rest wait for its copy, so a burst of readers after a
-# write does not parse a copy each (measured: most of the peak memory under
-# load). Returns true when the copy is ready to share, false when this reader
-# must build it: it won the marker, or the builder took too long. A builder that
-# throws leaves its marker to expire.
-func awaitParse(key as string) {
-    if (kv.add($shared, "parsing " + $key, "1", 10)) {
+# awaitBuild makes one reader the parser of a new file version (or builder of
+# its index and lookups) while the rest wait for its copy, so a burst of readers
+# after a write does not parse a copy each (measured: most of the peak memory
+# under load). `marker` names the build, `key` the value waited for; the index
+# and its lookups share one marker. Returns true when the copy is ready to
+# share, false when this reader must build it: it won the marker, or the builder
+# took too long. A builder that throws leaves its marker to expire.
+func awaitBuild(marker as string, key as string) {
+    if (kv.add($shared, "parsing " + $marker, "1", 10)) {
         return false;
     }
     def waited as int init 0;
@@ -743,25 +834,58 @@ func requestText(ctx as web.Context) {
     return convert.stringFromBytes(web.body($ctx), "utf-8");
 }
 
-# authThrottled answers `429` with `Retry-After` and returns true when this
-# client address has used its `/auth` budget for the window.
-func authThrottled(ctx as web.Context, stage as string) {
-    if ($cfg.authRateLimit == 0) {
+# throttled answers `429` with `Retry-After` and returns true when `key` has
+# used its budget in `limiter` for the window; a limit of 0 is no budget. `what`
+# names the budget in the reply and the log.
+func throttled(
+    ctx as web.Context,
+    limiter as ratelimit.Limiter,
+    limit as int,
+    key as string,
+    what as string) {
+    if ($limit == 0) {
         return false;
     }
-    def client as string init audit.clientOf(forwardedFor($ctx), web.remoteAddr($ctx));
-    def got as ratelimit.Result init ratelimit.check($authLimiter, throttle.keyOf($client));
+    def got as ratelimit.Result init ratelimit.check($limiter, $key);
     if ($got.allowed) {
         return false;
     }
-    audit.write($logSink, audit.loginRefused($stage, 429, "rate limit exceeded"));
+    def fields as map of string to string init {
+        "budget": $what,
+        "path": web.path($ctx),
+        "key": $key
+    };
+    # Debug: under a flood this is one line per refused request.
+    audit.write($logSink, audit.event("debug", "rate limited", $fields));
     web.setHeader($ctx, "Retry-After", convert.toString($got.retryAfter));
     webapi.fail(
         $ctx,
         429,
-        "too many login requests; retry in " +
+        "too many " + $what + " requests; retry in " +
             convert.toString($got.retryAfter) + " s");
     return true;
+}
+
+# clientKey is the budget a connection's client counts against (`throttle.keyOf`
+# over the address, with the trusted header honoured).
+func clientKey(ctx as web.Context) {
+    return throttle.keyOf(audit.clientOf(forwardedFor($ctx), web.remoteAddr($ctx)));
+}
+
+# authThrottled is the `/auth` budget per client address.
+func authThrottled(ctx as web.Context) {
+    return throttled($ctx, $authLimiter, $cfg.authRateLimit, clientKey($ctx), "login");
+}
+
+# writeThrottled is the write budget, per authenticated subject where one is
+# known (the caller passes the key), else per client address.
+func writeThrottled(ctx as web.Context, key as string) {
+    return throttled($ctx, $writeLimiter, $writeRateLimit, $key, "write");
+}
+
+# readThrottled is the budget for the two reads that cost real CPU, per address.
+func readThrottled(ctx as web.Context) {
+    return throttled($ctx, $readLimiter, $readRateLimit, clientKey($ctx), "read");
 }
 
 /**
@@ -770,7 +894,7 @@ func authThrottled(ctx as web.Context, stage as string) {
  * @param ctx {web.Context} the request context
  */
 func apiAuthDevice(ctx as web.Context) {
-    if (authThrottled($ctx, "device")) {
+    if (authThrottled($ctx)) {
         return;
     }
     # Writes nothing, so no lock is held across the provider call.
@@ -783,7 +907,7 @@ func apiAuthDevice(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiAuthToken(ctx as web.Context) {
-    if (authThrottled($ctx, "issued")) {
+    if (authThrottled($ctx)) {
         return;
     }
     # Provider calls run unlocked; the lock covers only recording the refresh token.
@@ -832,12 +956,12 @@ func apiAuthToken(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiAuthRefresh(ctx as web.Context) {
-    if (authThrottled($ctx, "refreshed")) {
+    if (authThrottled($ctx)) {
         return;
     }
     def body as string init requestText($ctx);
     # 8.5: the provider is asked before the lock, as in `apiAuthToken`.
-    def grant as string init authview.checkGrant($auth, store.open($dbPath), $body);
+    def grant as string init authview.checkGrant($auth, sharedStore(), $body);
     def held as store.Lock init lockedStore();
     defer store.unlock($held);
     def db as flatdb.DB init store.open($dbPath);
@@ -860,6 +984,11 @@ func publishRequestProblem(repository as string, tag as string) {
     def originComplaint as string init forge.originProblem($repository, $forgeConfig.baseUrl);
     if (not ($originComplaint == "")) {
         return $originComplaint;
+    }
+    # 3.1, before any forge call: `checkSource` refuses this too, but only after
+    # the round trips.
+    if (store.isObjectIdLike($tag)) {
+        return "the tag " + $tag + " is shaped like a git object id, which cannot be a pin";
     }
     return forge.tagProblem($tag);
 }
@@ -1034,9 +1163,10 @@ func answerPublish(ctx as web.Context, out as publishview.PublishReply) {
     webapi.sendJson($ctx, $out.status, $out.body);
 }
 
-# fieldOf reads a string member of a request body, or "" when it is absent.
+# fieldOf reads a string member of a request body, or "" when it is absent or
+# not a string, so a malformed body gets the missing-field 400, not a 500.
 func fieldOf(body as json.Value, pointer as string) {
-    if (not json.has($body, $pointer)) {
+    if (not json.has($body, $pointer) or not (json.typeOf($body, $pointer) == "string")) {
         return "";
     }
     return json.asString($body, $pointer);
@@ -1046,8 +1176,9 @@ func fieldOf(body as json.Value, pointer as string) {
 # in place of a bearer token and told apart by its issuer, or in the
 # `identityToken` body field.
 func identityTokenOf(body as json.Value, presented as string) {
-    if (json.has($body, "/identityToken")) {
-        return json.asString($body, "/identityToken");
+    def inBody as string init fieldOf($body, "/identityToken");
+    if (not ($inBody == "")) {
+        return $inBody;
     }
     if ($tpOn and trustpub.isIdentityToken($presented, $tpIssuer)) {
         return $presented;
@@ -1118,6 +1249,9 @@ func apiPublish(ctx as web.Context) {
         }
     }
 
+    if (writeThrottled($ctx, publishBudgetKey($ctx, $mode, $who, $ciRec))) {
+        return;
+    }
     def requestComplaint as string init publishRequestProblem($repository, $tag);
     if (not ($requestComplaint == "")) {
         webapi.fail($ctx, 400, $requestComplaint);
@@ -1165,6 +1299,21 @@ func apiPublish(ctx as web.Context) {
     }
 }
 
+# publishBudgetKey is what a publish counts against: the subject or the CI
+# token, once known; the client address for trusted publishing, whose caller is
+# a workflow.
+func publishBudgetKey(
+    ctx as web.Context,
+    mode as string,
+    who as identity.Subject,
+    ciRec as citoken.Token) {
+    match ($mode) {
+        when "token" { return "subject " + $who.id; }
+        when "ci" { return "ci " + $ciRec.fingerprint; }
+    }
+    return clientKey($ctx);
+}
+
 # yankArgs reads the two fields both yank routes take.
 func yankArgs(ctx as web.Context) {
     def out as map of string to string init {"name": "", "version": ""};
@@ -1191,6 +1340,9 @@ func answerYank(ctx as web.Context, yanked as bool) {
     def who as identity.Subject init callerOf($ctx);
     if ($who.id == "") {
         webapi.unauthorized($ctx, "a bearer token is required");
+        return;
+    }
+    if (writeThrottled($ctx, "subject " + $who.id)) {
         return;
     }
     def args as map of string to string init yankArgs($ctx);
@@ -1239,6 +1391,26 @@ func bodyField(ctx as web.Context, name as string) {
     return "";
 }
 
+# bodyFields reads several string members of a JSON body in one decode. A
+# missing member, a non-string, or an unreadable body read as "".
+func bodyFields(ctx as web.Context, names as list of string) {
+    def out as map of string to string init {};
+    for (def name in $names) {
+        $out[$name] = "";
+    }
+    try {
+        def doc as json.Value init json.decode(requestText($ctx));
+        for (def name in $names) {
+            if (json.has($doc, "/" + $name) and json.typeOf($doc, "/" + $name) == "string") {
+                $out[$name] = json.asString($doc, "/" + $name);
+            }
+        }
+    } catch (err) {
+        return $out;
+    }
+    return $out;
+}
+
 /**
  * POST /claim: claim a scope for the authenticated caller (8.2).
  * @param ctx {web.Context} the request context
@@ -1247,6 +1419,9 @@ func apiClaim(ctx as web.Context) {
     def who as identity.Subject init callerOf($ctx);
     if ($who.id == "") {
         webapi.unauthorized($ctx, "a bearer token is required to claim a scope");
+        return;
+    }
+    if (writeThrottled($ctx, "subject " + $who.id)) {
         return;
     }
     def held as store.Lock init lockedStore();
@@ -1273,6 +1448,9 @@ func apiOwners(ctx as web.Context) {
         webapi.unauthorized($ctx, "a bearer token is required to change owners");
         return;
     }
+    if (writeThrottled($ctx, "subject " + $who.id)) {
+        return;
+    }
     def held as store.Lock init lockedStore();
     defer store.unlock($held);
     answerScope(
@@ -1297,10 +1475,12 @@ func apiPublishers(ctx as web.Context) {
         webapi.unauthorized($ctx, "a bearer token is required to change trusted publishers");
         return;
     }
-    def fields as map of string to string init {};
-    for (def name in ["provider", "repositoryId", "repository", "workflow", "refs"]) {
-        $fields[$name] = bodyField($ctx, $name);
+    if (writeThrottled($ctx, "subject " + $who.id)) {
+        return;
     }
+    def fields as map of string to string init bodyFields(
+        $ctx,
+        ["target", "action", "provider", "repositoryId", "repository", "workflow", "refs"]);
     def held as store.Lock init lockedStore();
     defer store.unlock($held);
     answerScope(
@@ -1308,9 +1488,9 @@ func apiPublishers(ctx as web.Context) {
         scopeview.publishers(
             store.open($dbPath),
             $who,
-            bodyField($ctx, "target"),
+            $fields["target"],
             $fields,
-            not (bodyField($ctx, "action") == "remove"),
+            not ($fields["action"] == "remove"),
             convert.toString(token.now())));
 }
 
@@ -1338,8 +1518,7 @@ func apiHealth(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiListDecks(ctx as web.Context) {
-    def db as flatdb.DB init sharedStore();
-    def reply as view.Reply init view.listDecks($db, pageOf($ctx));
+    def reply as view.Reply init view.listDecksFrom(sharedIndex(), pageOf($ctx));
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 
@@ -1408,6 +1587,9 @@ func apiResolve(ctx as web.Context) {
  * @param ctx {web.Context} the request context
  */
 func apiResolveGraph(ctx as web.Context) {
+    if (readThrottled($ctx)) {
+        return;
+    }
     def db as flatdb.DB init sharedStore();
     def reply as view.Reply init view.resolveGraph($db, web.query($ctx, "roots"));
     webapi.sendJson($ctx, $reply.status, $reply.body);
@@ -1490,10 +1672,11 @@ func apiGuard(ctx as web.Context) {
 }
 
 # forwardedFor reads the header the deployment configured as carrying the client
-# address, or "" when none is configured. Only trust it behind a proxy; without
-# one, a client can forge it.
+# address, or "" when none is configured or the connection did not come from a
+# proxy: only a loopback or private peer can be one, and a public peer sending
+# the header is a client naming its own address (`throttle.isTrustedPeer`).
 func forwardedFor(ctx as web.Context) {
-    if ($cfg.clientIpHeader == "") {
+    if ($cfg.clientIpHeader == "" or not throttle.isTrustedPeer(web.remoteAddr($ctx))) {
         return "";
     }
     return web.header($ctx, $cfg.clientIpHeader);
@@ -1593,13 +1776,16 @@ func siteNotFound(ctx as web.Context) {
 def pagePolicy as string init webview.contentSecurityPolicy();
 
 # securityHeaders sets: no MIME sniffing, no framing (clickjacking), no full URL
-# in the Referer, and the Content-Security-Policy, so an escaping slip has no
-# script to run. The books under /manual, /reference and /specs carry
-# grimoire's own scripts, so they get everything but the policy.
+# in the Referer, HSTS when TLS is on, and the Content-Security-Policy, so an
+# escaping slip has no script to run. The books under /manual, /reference and
+# /specs carry grimoire's own scripts, so they get everything but the policy.
 func securityHeaders(ctx as web.Context) {
     web.setHeader($ctx, "X-Content-Type-Options", "nosniff");
     web.setHeader($ctx, "X-Frame-Options", "DENY");
     web.setHeader($ctx, "Referrer-Policy", "strict-origin-when-cross-origin");
+    if ($cfg.tls.enabled) {
+        web.setHeader($ctx, "Strict-Transport-Security", "max-age=31536000");
+    }
     def p as string init web.path($ctx);
     for (def book in ["/manual/", "/reference/", "/specs/"]) {
         if (strings.startsWith($p, $book)) {
@@ -1652,9 +1838,11 @@ def counter as task of int init spawn {
     return 0;
 };
 
-# Listeners. With TLS, the plain listener starts first in a spawned task and the
+# Listeners. With TLS, a plain listener starts first in a spawned task and the
 # certificate is obtained after: HTTP-01 needs the CA to reach port 80, so the
-# reverse order deadlocks on a first run.
+# reverse order deadlocks on a first run. That listener serves only the
+# challenge responder, `/health` and a redirect to the TLS origin: the full app
+# takes bearer and refresh tokens, which must not travel in clear.
 io.printf(
     "jvc deck repository listening on %s (db: %s, log: %s)\n",
     config.displayUrl("http", $addr),
@@ -1688,8 +1876,36 @@ if (config.isStaging($cfg.tls.directory)) {
     io.printf("note: using the ACME staging directory; certificates will not be trusted\n");
 }
 
+# httpsOrigin is where the plain listener sends every other request: the first
+# certificate name, with the TLS port when it is not 443.
+func httpsOrigin() {
+    def colon as int init strings.lastIndexOf($cfg.tls.addr, ":");
+    def port as string init strings.substring($cfg.tls.addr, $colon + 1, len($cfg.tls.addr));
+    def origin as string init "https://" + $cfg.tls.domains[0];
+    if (not ($port == "443" or $port == "")) {
+        $origin = $origin + ":" + $port;
+    }
+    return $origin;
+}
+
+/**
+ * The plain listener's answer to anything but a challenge or a health check
+ * when TLS is on: a permanent redirect to the same path on the TLS origin. The
+ * query string is not carried (`web` exposes parameters, not the raw string).
+ * @param ctx {web.Context} the request context
+ */
+func toHttps(ctx as web.Context) {
+    web.redirect($ctx, 301, httpsOrigin() + web.path($ctx));
+}
+
+def plainApp as web.App init web.new();
+$plainApp = web.before($plainApp, accessLog);
+$plainApp = web.notFound($plainApp, toHttps);
+$plainApp = web.get($plainApp, "/.well-known/acme-challenge/*rest", acmeChallenge);
+$plainApp = web.get($plainApp, "/health", apiHealth);
+
 def plain as task of int init spawn {
-    web.serveOn($app, httpd.listenWith($addr, $limits));
+    web.serveOn($plainApp, httpd.listenWith($addr, $limits));
     return 0;
 };
 
@@ -1704,8 +1920,10 @@ try {
     audit.write(
         $logSink,
         audit.certificateFailed(strings.join($cfg.tls.domains, ", "), $err.message));
-    # Keep serving on plain HTTP rather than exit.
-    io.eprintf("continuing on plain HTTP only\n");
+    # The plain listener keeps answering the challenge and /health, so a restart
+    # can retry; it serves nothing else, since the full app would carry
+    # credentials in clear.
+    io.eprintf("serving only the ACME responder and /health on plain HTTP until restarted\n");
     # Wait on the running listener; starting a second on the same address fails
     # to bind and ends the process.
     task.wait($plain);

@@ -18,8 +18,8 @@
  * @module token
  * @example
  * import "./token.j" as token;
- * def t as string init token.mint($key, 1234567, "alice", $orgs, $now, 3600, $now);
- * def who as token.Identity init token.verify($key, $t);
+ * def t as string init token.mint($key, "github", "1234567", "alice", $orgs, $now, 3600, $now);
+ * def who as token.Identity init token.verify($key, "github", $t);
  */
 
 use json;
@@ -64,7 +64,12 @@ export def struct Identity {
 
 /**
  * Mint a signed bearer token for an account.
+ *
+ * `iss` names the identity provider the subject belongs to, so a token minted
+ * under one provider cannot authenticate as the same subject id under another
+ * (a deployment that switches providers, or two registries sharing a key).
  * @param key {bytes} the HMAC signing secret
+ * @param issuer {string} the identity provider's name, the token's `iss`
  * @param subject {string} the provider's subject id
  * @param login {string} the provider login, carried as a display label
  * @param orgs {map of string to string} the organisations the account actively
@@ -77,6 +82,7 @@ export def struct Identity {
  */
 export func mint(
     key as bytes,
+    issuer as string,
     subject as string,
     login as string,
     orgs as map of string to string,
@@ -84,6 +90,7 @@ export func mint(
     ttl as int,
     now as int) {
     def claims as json.Value init json.map();
+    $claims = json.set($claims, "/iss", $issuer);
     $claims = json.set($claims, "/sub", $subject);
     $claims = json.set($claims, "/login", $login);
     $claims = json.set($claims, "/iat", $now);
@@ -99,19 +106,21 @@ export func mint(
 
 /**
  * Verify a bearer token and return who it authenticates. Rejects a bad
- * signature, a token signed with a different algorithm, an expired one, and one
- * with no `exp` (which `jwt.verify` alone would accept for ever).
+ * signature, a token signed with a different algorithm, an expired one, one
+ * with no `exp` (which `jwt.verify` alone would accept for ever), and one
+ * issued for another identity provider.
  * @param key {bytes} the HMAC signing secret
+ * @param issuer {string} the identity provider's name the token must carry as `iss`
  * @param token {string} the compact JWT
  * @return {Identity} the authenticated identity
- * @throws {Error} when the token is malformed, forged, or expired
+ * @throws {Error} when the token is malformed, forged, expired, or foreign
  */
-export func verify(key as bytes, token as string) {
+export func verify(key as bytes, issuer as string, token as string) {
     def claims as json.Value init jwt.verifyWith(
         $token,
         $key,
         ALG,
-        jwt.Policy{iss: "", aud: "", requireExp: true});
+        jwt.Policy{iss: $issuer, aud: "", requireExp: true});
     def orgs as map of string to string init {};
     if (json.has($claims, "/orgs")) {
         for (def name in json.keys($claims, "/orgs")) {

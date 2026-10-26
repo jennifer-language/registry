@@ -32,13 +32,16 @@ use strings;
  * @field clientId {string} the OAuth application id
  * @field clientSecret {string} the OAuth application secret ("" where the flow needs none)
  * @field scopes {string} the scopes to request, space-separated
+ * @field metadata {string} the provider's discovery document, as fetched once at
+ *     boot by `Provider.discover` ("" for a provider that publishes none)
  */
 export def struct Config {
     name as string,
     baseUrl as string,
     clientId as string,
     clientSecret as string,
-    scopes as string
+    scopes as string,
+    metadata as string
 };
 
 /**
@@ -79,12 +82,14 @@ export def struct Device {
 
 /**
  * The outcome of one poll.
- * @field state {string} "ok", "pending", "slowDown", "denied", or "expired"
+ * @field state {string} one of the STATE_ constants
  * @field accessToken {string} the provider token, set only when state is "ok"
+ * @field detail {string} the provider's `error` code ("" when it sent none)
  */
 export def struct Poll {
     state as string,
-    accessToken as string
+    accessToken as string,
+    detail as string
 };
 
 /**
@@ -132,6 +137,9 @@ export func rejectionKind(status as int) {
  * closures, so `provider()` takes nothing and returns a vtable, and the caller
  * passes the configuration on each call.
  * @field name {string} the provider name, advertised in discovery
+ * @field discover {func} `func(Config) -> string`: the provider's discovery
+ *     document, fetched once at boot and carried in `Config.metadata`; "" for a
+ *     provider with fixed endpoints. Throws when it cannot be read.
  * @field flow {func} `func(Config) -> string`: "device" or "authcode" (12.2)
  * @field startDevice {func} `func(Config) -> Device`: begin a device authorization
  * @field poll {func} `func(Config, deviceCode) -> Poll`: poll once for approval
@@ -150,6 +158,7 @@ export func rejectionKind(status as int) {
  */
 export def struct Provider {
     name as string,
+    discover as func,
     flow as func,
     startDevice as func,
     poll as func,
@@ -167,13 +176,19 @@ export def const STATE_PENDING as string init "pending";
 export def const STATE_SLOWDOWN as string init "slowDown";
 export def const STATE_DENIED as string init "denied";
 export def const STATE_EXPIRED as string init "expired";
+# The device code is not one the provider issued (400).
+export def const STATE_INVALID as string init "invalid";
+# An error code outside the grant's vocabulary: a misconfigured client id, a
+# disabled flow, or a provider fault; the code is carried in `Poll.detail` (502).
+export def const STATE_FAILED as string init "failed";
 
 /**
  * Map the OAuth device-grant error vocabulary (RFC 8628) onto the states this
  * registry serves, shared by every provider speaking the standard grant.
  *
  * An unrecognised error is terminal: treating it as pending would spin a client
- * until its device code expired.
+ * until its device code expired. It is not a denial either, since the user did
+ * nothing; `STATE_FAILED` tells the operator to look at the configuration.
  * @param code {string} the provider's `error` field ("" when the exchange succeeded)
  * @return {string} one of the STATE_ constants
  */
@@ -184,8 +199,9 @@ export func pollState(code as string) {
         when "slow_down" { return STATE_SLOWDOWN; }
         when "access_denied" { return STATE_DENIED; }
         when "expired_token" { return STATE_EXPIRED; }
+        when "incorrect_device_code" { return STATE_INVALID; }
     }
-    return STATE_DENIED;
+    return STATE_FAILED;
 }
 
 /**

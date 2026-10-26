@@ -15,7 +15,8 @@ func cfg() {
         baseUrl: "",
         clientId: "Iv1.abc",
         clientSecret: "",
-        scopes: ""
+        scopes: "",
+        metadata: ""
     };
 }
 
@@ -81,7 +82,8 @@ func testEnterpriseOverridesTheBase() {
         baseUrl: "https://gh.corp.test",
         clientId: "x",
         clientSecret: "",
-        scopes: ""
+        scopes: "",
+        metadata: ""
     };
     testing.assertEqual(endpointFor($ent, "device"), "https://gh.corp.test/login/device/code");
 }
@@ -93,7 +95,8 @@ func testScopesDefaultButAreOverridable() {
         baseUrl: "",
         clientId: "x",
         clientSecret: "",
-        scopes: "read:user"
+        scopes: "read:user",
+        metadata: ""
     };
     testing.assertEqual(scopesFor($custom), "read:user");
 }
@@ -174,4 +177,8 @@ func testTheMembershipsEndpointAsksForActiveOnly() {
     def url as string init endpointFor(cfg(), "memberships");
     testing.assertContains($url, "/user/memberships/orgs");
     testing.assertContains($url, "state=active");
+}
+
+func testFixedEndpointsNeedNoDiscovery() {
+    testing.assertEqual(provider().discover(cfg()), "");
 }

@@ -15,7 +15,8 @@ func cfg() {
         baseUrl: "https://git.corp.test",
         clientId: "registry",
         clientSecret: "",
-        scopes: ""
+        scopes: "",
+        metadata: ""
     };
 }
 
@@ -32,7 +33,8 @@ func throwsWithoutABase() {
         baseUrl: "",
         clientId: "x",
         clientSecret: "",
-        scopes: ""
+        scopes: "",
+        metadata: ""
     };
     endpointFor($blank, "user");
 }
@@ -62,3 +64,17 @@ func testTheProviderCanBeBuilt() {
     testing.assertEqual(len($p.memberships(cfg(), "any-token")), 0);
 }
 
+func testTheClientSecretIsSentOnlyWhenConfigured() {
+    # RFC 6749 2.3.1: a confidential client authenticates at the token endpoint
+    def public as identity.Config init cfg();
+    testing.assertEqual(clientFields($public), "client_id=" + $public.clientId);
+    def confidential as identity.Config init $public;
+    $confidential.clientSecret = "s3cret&x";
+    testing.assertEqual(
+        clientFields($confidential),
+        "client_id=" + $public.clientId + "&client_secret=s3cret%26x");
+}
+
+func testFixedEndpointsNeedNoDiscovery() {
+    testing.assertEqual(provider().discover(cfg()), "");
+}

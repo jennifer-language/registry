@@ -115,7 +115,7 @@ export func bodyField(body as string, field as string) {
  * @param state {string} an `identity.Poll` state other than "ok"
  * @return {AuthReply} the reply for that state
  */
-export func stateReply(db as flatdb.DB, state as string) {
+export func stateReply(db as flatdb.DB, state as string, detail as string) {
     match ($state) {
         when "pending" { return pending($db); }
         when "slowDown" {
@@ -123,8 +123,17 @@ export func stateReply(db as flatdb.DB, state as string) {
         }
         when "denied" { return fail($db, 403, "the request was denied by the identity provider"); }
         when "expired" { return fail($db, 410, "this device code expired; start the login again"); }
+        when "invalid" {
+            return fail($db, 400, "the identity provider does not know this device code");
+        }
     }
-    return fail($db, 403, "the login could not be completed");
+    # Not in the grant's vocabulary: the provider, or the registry's client
+    # configuration, is at fault, not the user. The code is what the operator
+    # needs to see (`incorrect_client_credentials`, `device_flow_disabled`).
+    return fail(
+        $db,
+        502,
+        "the identity provider answered the poll with an unexpected error: " + $detail);
 }
 
 /**
@@ -151,6 +160,7 @@ export func issue(
     now as int) {
     def bearer as string init token.mint(
         $cfg.signingKey,
+        $cfg.providerConfig.name,
         $subject,
         $login,
         $orgs,
@@ -301,7 +311,7 @@ export func login(cfg as Config, body as string) {
             $err.message));
     }
     if (not ($result.state == "ok")) {
-        return early(stateReply(noStore(), $result.state));
+        return early(stateReply(noStore(), $result.state, $result.detail));
     }
     return identify($cfg, $result.accessToken);
 }
@@ -579,7 +589,8 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int, 
             $ended,
             401,
             "this login is older than " +
-                convert.toString(MAX_SESSION_SECONDS / 86400) + " days; log in again");
+                convert.toString(convert.toInt(MAX_SESSION_SECONDS / 86400)) +
+                " days; log in again");
         return AuthReply{status: $over.status, body: $over.body, db: $ended, changed: true};
     }
     # 8.7: memberships older than the window must not reach a write. Refusing the
@@ -590,7 +601,7 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int, 
             $stale,
             401,
             "the organisation memberships of this login are older than " +
-                convert.toString($cfg.orgMaxAge / 3600) +
+                convert.toString(convert.toInt($cfg.orgMaxAge / 3600)) +
                 " hours; log in again to read them afresh");
         return AuthReply{status: $aged.status, body: $aged.body, db: $stale, changed: true};
     }
@@ -625,9 +636,10 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int, 
  * @throws {Error} when the header is absent, malformed, or the token is invalid
  */
 export func authenticate(cfg as Config, header as string) {
-    if (not strings.startsWith($header, "Bearer ")) {
+    # The scheme is case-insensitive (RFC 7235 2.1); the token is not.
+    if (len($header) < 8 or not (strings.lower(strings.substring($header, 0, 7)) == "bearer ")) {
         throw Error{kind: "auth", message: "missing bearer token", file: "", line: 0, col: 0};
     }
     def bearer as string init strings.substring($header, 7, len($header));
-    return token.verify($cfg.signingKey, $bearer);
+    return token.verify($cfg.signingKey, $cfg.providerConfig.name, $bearer);
 }

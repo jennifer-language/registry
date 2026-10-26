@@ -236,6 +236,24 @@ orgMaxAge = 24
     testing.assertContains(problem($c), "orgMaxAge");
 }
 
+func testTheWriteAndReadBudgetsReadFileAndEnvironment() {
+    testing.assertEqual(defaults().writeRateLimit, 60);
+    testing.assertEqual(defaults().readRateLimit, 120);
+    def file as Config init applyToml(defaults(), 'writeRateLimit = 10
+readRateLimit = 0
+');
+    testing.assertEqual($file.writeRateLimit, 10);
+    testing.assertEqual($file.readRateLimit, 0);
+    def env as map of string to string init {"REGISTRY_READ_RATE_LIMIT": "5"};
+    testing.assertEqual(applyEnv($file, $env).readRateLimit, 5);
+    def c as Config init defaults();
+    $c.writeRateLimit = -1;
+    testing.assertContains(problem($c), "writeRateLimit");
+    $c.writeRateLimit = 0;
+    $c.readRateLimit = -3;
+    testing.assertContains(problem($c), "readRateLimit");
+}
+
 func testTheAuthRateLimitReadsFileAndEnvironment() {
     testing.assertEqual(defaults().authRateLimit, 30);
     def file as Config init applyToml(defaults(), '[identity]
@@ -394,5 +412,40 @@ func testAShortTokenKeyIsRefusedAtBoot() {
     $c.tokenKey = "secret";
     testing.assertContains(problem($c), "at least 32");
     $c.tokenKey = strings.repeat("k", 32);
+    testing.assertEqual(problem($c), "");
+}
+
+func testAPlainHttpBaseUrlIsRefusedUnlessLoopback() {
+    # provider and forge tokens travel to these hosts
+    def c as Config init defaults();
+    $c.identityBaseUrl = "http://auth.corp.test";
+    testing.assertContains(problem($c), "identity.baseUrl must be an https URL");
+    $c.identityBaseUrl = "https://auth.corp.test";
+    $c.forgeBaseUrl = "HTTP://git.corp.test:3000/api/v1";
+    testing.assertContains(problem($c), "forge.baseUrl");
+    for (def ok in ["http://localhost:8080", "http://127.0.0.1/", "http://[::1]:9000/x", ""]) {
+        $c.forgeBaseUrl = $ok;
+        testing.assertEqual(problem($c), "");
+    }
+}
+
+func testTheRenewalWindowIsBounded() {
+    def env as map of string to string init {
+        "REGISTRY_TLS": "1",
+        "REGISTRY_TLS_DOMAINS": "a.test",
+        "REGISTRY_TLS_EMAIL": "ops@a.test",
+        "REGISTRY_ACME_AGREE_TOS": "1"
+    };
+    def c as Config init applyEnv(defaults(), $env);
+    testing.assertEqual(problem($c), "");
+    $c.tls.renewBeforeDays = 0;
+    testing.assertContains(problem($c), "renewBeforeDays");
+    $c.tls.renewBeforeDays = 89;
+    testing.assertContains(problem($c), "renewBeforeDays");
+    $c.tls.renewBeforeDays = 88;
+    testing.assertEqual(problem($c), "");
+    # irrelevant while TLS is off
+    $c.tls.renewBeforeDays = -1;
+    $c.tls.enabled = false;
     testing.assertEqual(problem($c), "");
 }

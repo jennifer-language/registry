@@ -224,8 +224,18 @@ export def const DECKS_PAGE_SIZE as int init 1000;
  * @return {Reply} a 200 reply with `{ "decks": [...], "page", "pages", "total" }`
  */
 export func listDecks(db as flatdb.DB, page as int) {
-    def names as list of string init lists.sort(store.listDecks($db));
-    def total as int init len($names);
+    return listDecksFrom(search.index($db), $page);
+}
+
+/**
+ * The deck-listing response read from the deck index, which is already sorted,
+ * so a page costs only its own entries. The server passes its shared index.
+ * @param index {json.Value} the registry's deck index, from `search.index`
+ * @param page {int} the 1-based page; past the last one gives an empty list
+ * @return {Reply} a 200 reply with `{ "decks": [...], "page", "pages", "total" }`
+ */
+export func listDecksFrom(index as json.Value, page as int) {
+    def total as int init json.length($index, "");
     def pages as int init convert.toInt(($total + DECKS_PAGE_SIZE - 1) / DECKS_PAGE_SIZE);
     if ($pages < 1) {
         $pages = 1;
@@ -238,7 +248,7 @@ export func listDecks(db as flatdb.DB, page as int) {
             $upto = $total;
         }
         for (def i in $from..$upto) {
-            $slice[] = $names[$i];
+            $slice[] = json.asString($index, "/" + convert.toString($i) + "/name");
         }
     }
     def body as json.Value init json.map();
@@ -261,13 +271,25 @@ export func listDecks(db as flatdb.DB, page as int) {
  * @return {Reply} a 200 reply with `{ query, count, results }`, or a 400
  */
 export func search(index as json.Value, query as string) {
+    return searchIn($index, search.lowered($index), $query);
+}
+
+/**
+ * The search response from a prebuilt `search.lowered`, which the server shares
+ * between requests instead of lower-casing every entry per query.
+ * @param index {json.Value} the registry's deck index, from `search.index`
+ * @param lowered {json.Value} from `search.lowered` over that index
+ * @param query {string} the search query ("" for everything)
+ * @return {Reply} a 200 reply with `{ query, count, results }`, or a 400
+ */
+export func searchIn(index as json.Value, lowered as json.Value, query as string) {
     if (len($query) > search.MAX_QUERY) {
         return errorReply(
             400,
             "query longer than " + convert.toString(search.MAX_QUERY) +
                 " characters");
     }
-    def found as list of int init search.select($index, $query);
+    def found as list of int init search.selectIn($lowered, $query);
     # everything, in index order: the index itself is the answer, uncopied
     def results as json.Value init $index;
     if (not (strings.trim($query) == "")) {

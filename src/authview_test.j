@@ -35,7 +35,8 @@ func providerCfg(clientId as string) {
         baseUrl: "",
         clientId: $clientId,
         clientSecret: "",
-        scopes: ""
+        scopes: "",
+        metadata: ""
     };
 }
 
@@ -332,21 +333,21 @@ func testMissingFieldsAre400() {
 
 func testPollStatesMapToStatusCodes() {
     def db as flatdb.DB init emptyDb();
-    testing.assertEqual(stateReply($db, "pending").status, 202);
-    testing.assertEqual(stateReply($db, "slowDown").status, 429);
-    testing.assertEqual(stateReply($db, "denied").status, 403);
-    testing.assertEqual(stateReply($db, "expired").status, 410);
+    testing.assertEqual(stateReply($db, "pending", "").status, 202);
+    testing.assertEqual(stateReply($db, "slowDown", "").status, 429);
+    testing.assertEqual(stateReply($db, "denied", "").status, 403);
+    testing.assertEqual(stateReply($db, "expired", "").status, 410);
 }
 
 func testPendingCarriesAStatusBody() {
-    def out as AuthReply init stateReply(emptyDb(), "pending");
+    def out as AuthReply init stateReply(emptyDb(), "pending", "");
     testing.assertEqual(json.asString($out.body, "/status"), "pending");
     testing.assertFalse($out.changed);
 }
 
 func testAnUnknownStateIsTerminalNotPending() {
     # treating it as pending would spin a client until its code expired
-    testing.assertEqual(stateReply(emptyDb(), "something-new").status, 403);
+    testing.assertEqual(stateReply(emptyDb(), "something-new", "x").status, 502);
 }
 
 # --- issuing ----------------------------------------------------------------
@@ -361,6 +362,7 @@ func testIssueReturnsAUsableTokenPair() {
     # the bearer token verifies, and carries the identity
     def who as token.Identity init token.verify(
         config().signingKey,
+        "github",
         json.asString($out.body, "/token"));
     testing.assertEqual($who.subject, ACCOUNT);
     testing.assertEqual($who.login, "alice");
@@ -616,6 +618,79 @@ func testAnOpaqueSubjectLogsIn() {
     testing.assertFalse(json.has($out.body, "/accountId"));
     def who as token.Identity init token.verify(
         config().signingKey,
+        "github",
         json.asString($out.body, "/token"));
     testing.assertEqual($who.subject, $uuid);
+}
+
+func testAnUnexpectedPollErrorIsAProviderFaultWithItsCode() {
+    # a misconfigured client id must reach the operator, not read as a denial
+    def out as AuthReply init stateReply(emptyDb(), "failed", "incorrect_client_credentials");
+    testing.assertEqual($out.status, 502);
+    testing.assertContains(json.asString($out.body, "/error"), "incorrect_client_credentials");
+    testing.assertEqual(stateReply(emptyDb(), "invalid", "incorrect_device_code").status, 400);
+}
+
+func testTheRefusalMessagesCountWholeDays() {
+    def start as int init nowish();
+    # a refresh token that outlives the 30-day cap, so the cap is what refuses
+    def c as Config init config();
+    $c.refreshTtl = 40 * 86400;
+    def first as AuthReply init issue(
+        $c,
+        emptyDb(),
+        ACCOUNT,
+        "alice",
+        {"acme": "7"},
+        $start,
+        $start);
+    def given as string init json.asString($first.body, "/refreshToken");
+    def over as AuthReply init refresh(
+        $c,
+        $first.db,
+        refreshBody($given),
+        $start + 31 * 86400,
+        GRANT_VALID);
+    testing.assertContains(json.asString($over.body, "/error"), "30 days");
+    def again as AuthReply init issue(
+        config(),
+        emptyDb(),
+        ACCOUNT,
+        "alice",
+        {"acme": "7"},
+        $start,
+        $start);
+    def next as string init json.asString($again.body, "/refreshToken");
+    def aged as AuthReply init refresh(
+        config(),
+        $again.db,
+        refreshBody($next),
+        $start + ORG_MAX_AGE + 60,
+        GRANT_VALID);
+    testing.assertContains(json.asString($aged.body, "/error"), "168 hours");
+}
+
+func testTheBearerSchemeIsCaseInsensitive() {
+    def out as AuthReply init issue(config(), emptyDb(), ACCOUNT, "alice", {}, 0, nowish());
+    def bearer as string init json.asString($out.body, "/token");
+    testing.assertEqual(authenticate(config(), "bearer " + $bearer).subject, ACCOUNT);
+    testing.assertEqual(authenticate(config(), "BEARER " + $bearer).subject, ACCOUNT);
+}
+
+func throwsOnAForeignProvidersToken() {
+    def foreign as string init token.mint(
+        config().signingKey,
+        "gitlab",
+        ACCOUNT,
+        "alice",
+        {},
+        0,
+        TOKEN_TTL,
+        nowish());
+    authenticate(config(), "Bearer " + $foreign);
+}
+
+func testATokenFromAnotherProviderDoesNotAuthenticate() {
+    # same key, same subject id, another identity provider: not this account
+    testing.assertThrows("throwsOnAForeignProvidersToken", "value");
 }

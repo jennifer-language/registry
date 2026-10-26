@@ -18,7 +18,8 @@ func cfg() {
         baseUrl: "https://auth.corp.test",
         clientId: "registry",
         clientSecret: "",
-        scopes: ""
+        scopes: "",
+        metadata: ""
     };
 }
 
@@ -92,3 +93,25 @@ func testTheProviderCanBeBuilt() {
     testing.assertEqual(len($p.memberships(cfg(), "any-token")), 0);
 }
 
+func testTheClientSecretIsSentOnlyWhenConfigured() {
+    # RFC 6749 2.3.1: Keycloak's default client is confidential
+    testing.assertEqual(clientFields(cfg()), "client_id=registry");
+    def confidential as identity.Config init cfg();
+    $confidential.clientSecret = "s3cret";
+    testing.assertEqual(clientFields($confidential), "client_id=registry&client_secret=s3cret");
+}
+
+func testANumericSubIsStoredAsItsText() {
+    def s as identity.Subject init subjectFrom(cfg(), doc('{"sub":42,"preferred_username":"x"}'));
+    testing.assertEqual($s.id, "42");
+}
+
+func testTheDiscoveryDocumentFromBootIsUsedWithoutAFetch() {
+    # the server fetches once and carries the text; every later call reads it
+    def c as identity.Config init cfg();
+    $c.metadata = '{"token_endpoint":"https://auth.corp.test/t",' +
+        '"device_authorization_endpoint":"https://auth.corp.test/d"}';
+    testing.assertEqual(endpointFrom(metadata($c), "token_endpoint"), "https://auth.corp.test/t");
+    testing.assertEqual(flowOf($c), "device");
+    testing.assertEqual(authorize($c), "");
+}

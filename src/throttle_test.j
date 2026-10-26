@@ -42,3 +42,15 @@ func testTheLimiterRefusesPastTheLimitPerKey() {
 func testALimitOfZeroStillBuildsALimiter() {
     testing.assertEqual(limiter(0).limit, 1);
 }
+
+func testOnlyLoopbackAndPrivatePeersMayNameTheClient() {
+    testing.assertTrue(isTrustedPeer("127.0.0.1:40000"));
+    testing.assertTrue(isTrustedPeer("[::1]:40000"));
+    testing.assertTrue(isTrustedPeer("10.1.2.3:5"));
+    testing.assertTrue(isTrustedPeer("172.16.0.9:5"));
+    testing.assertTrue(isTrustedPeer("192.168.1.1:5"));
+    testing.assertFalse(isTrustedPeer("203.0.113.7:51234"));
+    testing.assertFalse(isTrustedPeer("[2001:db8::1]:443"));
+    testing.assertFalse(isTrustedPeer("unix-socket"));
+    testing.assertFalse(isTrustedPeer(""));
+}

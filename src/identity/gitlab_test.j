@@ -15,7 +15,8 @@ func hosted() {
         baseUrl: "",
         clientId: "app",
         clientSecret: "",
-        scopes: ""
+        scopes: "",
+        metadata: ""
     };
 }
 
@@ -25,7 +26,8 @@ func selfHosted() {
         baseUrl: "https://gl.corp.test/",
         clientId: "app",
         clientSecret: "",
-        scopes: ""
+        scopes: "",
+        metadata: ""
     };
 }
 
@@ -56,3 +58,17 @@ func testTheProviderCanBeBuilt() {
     testing.assertEqual(len($p.memberships(hosted(), "any-token")), 0);
 }
 
+func testTheClientSecretIsSentOnlyWhenConfigured() {
+    # RFC 6749 2.3.1: a confidential client authenticates at the token endpoint
+    def public as identity.Config init hosted();
+    testing.assertEqual(clientFields($public), "client_id=" + $public.clientId);
+    def confidential as identity.Config init $public;
+    $confidential.clientSecret = "s3cret&x";
+    testing.assertEqual(
+        clientFields($confidential),
+        "client_id=" + $public.clientId + "&client_secret=s3cret%26x");
+}
+
+func testFixedEndpointsNeedNoDiscovery() {
+    testing.assertEqual(provider().discover(hosted()), "");
+}

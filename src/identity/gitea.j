@@ -164,11 +164,12 @@ export func pollFrom(doc as json.Value) {
     }
     def state as string init identity.pollState($code);
     if (not ($state == identity.STATE_OK)) {
-        return identity.Poll{state: $state, accessToken: ""};
+        return identity.Poll{state: $state, accessToken: "", detail: $code};
     }
     return identity.Poll{
         state: identity.STATE_OK,
-        accessToken: json.asString($doc, "/access_token")
+        accessToken: json.asString($doc, "/access_token"),
+        detail: ""
     };
 }
 
@@ -183,18 +184,34 @@ func post(url as string, body as string) {
     return json.decode($res.body);
 }
 
+# clientFields is the client authentication of a token-endpoint body: the client
+# id, and the secret when the application is confidential (RFC 6749 2.3.1). A
+# public client (the default) sends the id alone.
+func clientFields(cfg as identity.Config) {
+    def out as string init formField("client_id", $cfg.clientId);
+    if (not (strings.trim($cfg.clientSecret) == "")) {
+        $out = $out + "&" + formField("client_secret", $cfg.clientSecret);
+    }
+    return $out;
+}
+
+# discoverOf: this provider's endpoints are fixed, so there is nothing to fetch.
+func discoverOf(cfg as identity.Config) {
+    return "";
+}
+
 func flowOf(cfg as identity.Config) {
     return "device";
 }
 
 func start(cfg as identity.Config) {
-    def body as string init formField("client_id", $cfg.clientId) + "&" +
+    def body as string init clientFields($cfg) + "&" +
         formField("scope", scopesFor($cfg));
     return deviceFrom(post(endpointFor($cfg, "device"), $body));
 }
 
 func pollOnce(cfg as identity.Config, deviceCode as string) {
-    def body as string init formField("client_id", $cfg.clientId) + "&" +
+    def body as string init clientFields($cfg) + "&" +
         formField("device_code", $deviceCode) + "&" +
         formField("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
     return pollFrom(post(endpointFor($cfg, "token"), $body));
@@ -205,7 +222,7 @@ func authorize(cfg as identity.Config) {
 }
 
 func exchange(cfg as identity.Config, code as string, verifier as string, redirectUri as string) {
-    def body as string init formField("client_id", $cfg.clientId) + "&" +
+    def body as string init clientFields($cfg) + "&" +
         formField("grant_type", "authorization_code") + "&" +
         formField("code", $code) + "&" +
         formField("code_verifier", $verifier) + "&" +
@@ -251,6 +268,7 @@ func membershipsOf(cfg as identity.Config, accessToken as string) {
 export func provider() {
     return identity.Provider{
         name: "gitea",
+        discover: discoverOf,
         flow: flowOf,
         startDevice: start,
         poll: pollOnce,

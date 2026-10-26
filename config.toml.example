@@ -33,6 +33,11 @@
 # Seconds a request may take before the server answers 503 itself. Keep it above
 # the slowest publish, which waits on several forge calls of up to 10 s each.
 # respondTimeout = 120              # REGISTRY_RESPOND_TIMEOUT
+# Requests a minute before a 429 with Retry-After: writes per authenticated
+# subject, and the two expensive reads (/resolve-graph, a full /search listing)
+# per client address. 0 turns one off. The login budget is identity.rateLimit.
+# writeRateLimit = 60               # REGISTRY_WRITE_RATE_LIMIT
+# readRateLimit = 120               # REGISTRY_READ_RATE_LIMIT
 
 # The HMAC key the registry signs its own bearer tokens with. A secret; prefer
 # REGISTRY_TOKEN_KEY over writing it here. At least 32 characters; generate with:

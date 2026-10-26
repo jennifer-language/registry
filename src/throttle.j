@@ -62,6 +62,23 @@ export func keyOf(client as string) {
     }
 }
 
+/**
+ * Whether a connection peer is one whose client-address header may be believed:
+ * a loopback or private address, where a reverse proxy sits. A public peer, or
+ * one that does not parse, is a client speaking for itself, and its header is
+ * ignored.
+ * @param peer {string} the address, as `web.remoteAddr` reports it
+ * @return {bool} true for loopback and private peers
+ */
+export func isTrustedPeer(peer as string) {
+    try {
+        def addr as ipnet.Address init ipnet.parseAddress(hostOf(strings.trim($peer)));
+        return ipnet.isLoopback($addr) or ipnet.isPrivate($addr);
+    } catch (err) {
+        return false;
+    }
+}
+
 # hostOf strips a port: `[v6]:port` and `v4:port` lose it, a bare IPv6 address
 # (more than one colon, no brackets) is left whole.
 func hostOf(s as string) {

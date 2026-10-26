@@ -23,10 +23,14 @@ func testTerminalStatesAreDistinguished() {
     testing.assertEqual(pollState("expired_token"), STATE_EXPIRED);
 }
 
+func testAnUnknownDeviceCodeIsInvalidNotDenied() {
+    testing.assertEqual(pollState("incorrect_device_code"), STATE_INVALID);
+}
+
 func testAnUnrecognisedErrorIsTerminal() {
     # treating it as pending would spin a client until its device code expired
-    testing.assertEqual(pollState("incorrect_client_credentials"), STATE_DENIED);
-    testing.assertEqual(pollState("something_added_later"), STATE_DENIED);
+    testing.assertEqual(pollState("incorrect_client_credentials"), STATE_FAILED);
+    testing.assertEqual(pollState("something_added_later"), STATE_FAILED);
 }
 
 func testEndpointUsesTheFallbackWhenUnset() {

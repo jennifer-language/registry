@@ -143,11 +143,20 @@ export func subjectFrom(cfg as identity.Config, doc as json.Value) {
     }
     return identity.Subject{
         provider: $name,
-        id: json.asString($doc, "/sub"),
+        id: subText($doc),
         login: $login,
         orgs: {},
         orgsCheckedAt: ""
     };
+}
+
+# subText is the `sub` claim as text. OIDC Core 2 makes it a string, but some
+# providers emit a number; stored as its decimal text, it compares the same.
+func subText(doc as json.Value) {
+    if (json.typeOf($doc, "/sub") == "int") {
+        return convert.toString(json.asInt($doc, "/sub"));
+    }
+    return json.asString($doc, "/sub");
 }
 
 /**
@@ -193,11 +202,12 @@ export func pollFrom(doc as json.Value) {
     }
     def state as string init identity.pollState($code);
     if (not ($state == identity.STATE_OK)) {
-        return identity.Poll{state: $state, accessToken: ""};
+        return identity.Poll{state: $state, accessToken: "", detail: $code};
     }
     return identity.Poll{
         state: identity.STATE_OK,
-        accessToken: json.asString($doc, "/access_token")
+        accessToken: json.asString($doc, "/access_token"),
+        detail: ""
     };
 }
 
@@ -208,16 +218,52 @@ func scopesFor(cfg as identity.Config) {
     return $cfg.scopes;
 }
 
-# metadata fetches and decodes the provider's discovery document.
-func metadata(cfg as identity.Config) {
+# clientFields is the client authentication of a token-endpoint body: the client
+# id, and the secret when the application is confidential (RFC 6749 2.3.1). A
+# public client (the default) sends the id alone.
+func clientFields(cfg as identity.Config) {
+    def out as string init formField("client_id", $cfg.clientId);
+    if (not (strings.trim($cfg.clientSecret) == "")) {
+        $out = $out + "&" + formField("client_secret", $cfg.clientSecret);
+    }
+    return $out;
+}
+
+# discoverOf fetches the discovery document and returns its text. The server
+# calls it once at boot and carries the result in `Config.metadata`, so a login
+# makes no extra round trip and a provider that is down at boot is reported
+# there rather than at every poll.
+func discoverOf(cfg as identity.Config) {
+    def url as string init discoveryUrl($cfg);
     def res as http.Response init http.requestWith(
         "GET",
-        discoveryUrl($cfg),
+        $url,
         jsonHeaders(),
         "",
         TIMEOUT_MS,
         MAX_BYTES);
-    return json.decode($res.body);
+    if (not ($res.status == 200)) {
+        throw Error{
+            kind: "identity",
+            message: "the discovery document at " + $url + " answered HTTP " +
+                convert.toString($res.status),
+            file: "",
+            line: 0,
+            col: 0
+        };
+    }
+    # Decoded once here so a malformed document fails at boot, not at a login.
+    json.decode($res.body);
+    return $res.body;
+}
+
+# metadata is the decoded discovery document: the copy fetched at boot, or a
+# fresh fetch when the configuration carries none (tests, a bare vtable call).
+func metadata(cfg as identity.Config) {
+    if (not ($cfg.metadata == "")) {
+        return json.decode($cfg.metadata);
+    }
+    return json.decode(discoverOf($cfg));
 }
 
 func post(url as string, body as string) {
@@ -246,13 +292,13 @@ func start(cfg as identity.Config) {
             col: 0
         };
     }
-    def body as string init formField("client_id", $cfg.clientId) + "&" +
+    def body as string init clientFields($cfg) + "&" +
         formField("scope", scopesFor($cfg));
     return deviceFrom(post($url, $body));
 }
 
 func pollOnce(cfg as identity.Config, deviceCode as string) {
-    def body as string init formField("client_id", $cfg.clientId) + "&" +
+    def body as string init clientFields($cfg) + "&" +
         formField("device_code", $deviceCode) + "&" +
         formField("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
     return pollFrom(post(endpointFrom(metadata($cfg), "token_endpoint"), $body));
@@ -263,7 +309,7 @@ func authorize(cfg as identity.Config) {
 }
 
 func exchange(cfg as identity.Config, code as string, verifier as string, redirectUri as string) {
-    def body as string init formField("client_id", $cfg.clientId) + "&" +
+    def body as string init clientFields($cfg) + "&" +
         formField("grant_type", "authorization_code") + "&" +
         formField("code", $code) + "&" +
         formField("code_verifier", $verifier) + "&" +
@@ -304,6 +350,7 @@ func membershipsOf(cfg as identity.Config, accessToken as string) {
 export func provider() {
     return identity.Provider{
         name: "oidc",
+        discover: discoverOf,
         flow: flowOf,
         startDevice: start,
         poll: pollOnce,

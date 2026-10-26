@@ -14,6 +14,7 @@ use strings;
 # are minted around now; only the expiry test uses this past instant.
 def const PAST as int init 1700000000;
 def const ACCOUNT as string init "1234567";
+def const ISSUER as string init "github";
 
 func nowish() {
     return now();
@@ -30,38 +31,38 @@ func otherKey() {
 # --- minting and verifying --------------------------------------------------
 
 func testRoundTripCarriesTheIdentity() {
-    def token as string init mint(key(), ACCOUNT, "alice", {}, 0, 3600, nowish());
-    def who as Identity init verify(key(), $token);
+    def token as string init mint(key(), ISSUER, ACCOUNT, "alice", {}, 0, 3600, nowish());
+    def who as Identity init verify(key(), ISSUER, $token);
     testing.assertEqual($who.subject, ACCOUNT);
     testing.assertEqual($who.login, "alice");
     testing.assertEqual($who.expiresAt, nowish() + 3600);
 }
 
 func testTokenIsACompactJwt() {
-    def token as string init mint(key(), ACCOUNT, "alice", {}, 0, 3600, nowish());
+    def token as string init mint(key(), ISSUER, ACCOUNT, "alice", {}, 0, 3600, nowish());
     # header.payload.signature
     testing.assertEqual(len(strings.split($token, ".")), 3);
 }
 
 func testSubjectIsTheAccountIdNotTheLogin() {
     # a login can be re-registered after a rename, so ownership binds to the id
-    def a as string init mint(key(), ACCOUNT, "alice", {}, 0, 3600, nowish());
-    def b as string init mint(key(), ACCOUNT, "alice-renamed", {}, 0, 3600, nowish());
-    testing.assertEqual(verify(key(), $a).subject, verify(key(), $b).subject);
+    def a as string init mint(key(), ISSUER, ACCOUNT, "alice", {}, 0, 3600, nowish());
+    def b as string init mint(key(), ISSUER, ACCOUNT, "alice-renamed", {}, 0, 3600, nowish());
+    testing.assertEqual(verify(key(), ISSUER, $a).subject, verify(key(), ISSUER, $b).subject);
 }
 
 # The zero-argument shims assertThrows dispatches by name.
 func throwsOnForeignKey() {
-    verify(otherKey(), mint(key(), ACCOUNT, "alice", {}, 0, 3600, nowish()));
+    verify(otherKey(), ISSUER, mint(key(), ISSUER, ACCOUNT, "alice", {}, 0, 3600, nowish()));
 }
 
 func throwsOnTamperedToken() {
-    def token as string init mint(key(), ACCOUNT, "alice", {}, 0, 3600, nowish());
-    verify(key(), strings.substring($token, 0, len($token) - 2) + "xy");
+    def token as string init mint(key(), ISSUER, ACCOUNT, "alice", {}, 0, 3600, nowish());
+    verify(key(), ISSUER, strings.substring($token, 0, len($token) - 2) + "xy");
 }
 
 func throwsOnGarbage() {
-    verify(key(), "not-a-token");
+    verify(key(), ISSUER, "not-a-token");
 }
 
 func testAForeignKeyIsRejected() {
@@ -78,10 +79,10 @@ func testGarbageIsRejected() {
 
 func testExpiryIsEnforced() {
     # minted with a one-second life, then verified a minute later
-    def token as string init mint(key(), ACCOUNT, "alice", {}, 0, 1, PAST);
+    def token as string init mint(key(), ISSUER, ACCOUNT, "alice", {}, 0, 1, PAST);
     def threw as bool init false;
     try {
-        verify(key(), $token);
+        verify(key(), ISSUER, $token);
     } catch (err) {
         $threw = true;
     }
@@ -91,9 +92,10 @@ func testExpiryIsEnforced() {
 # throwsOnNoExpiry signs, with the right key, a token that never expires.
 func throwsOnNoExpiry() {
     def claims as json.Value init json.map();
+    $claims = json.set($claims, "/iss", ISSUER);
     $claims = json.set($claims, "/sub", ACCOUNT);
     $claims = json.set($claims, "/login", "alice");
-    verify(key(), jwt.sign($claims, key(), ALG));
+    verify(key(), ISSUER, jwt.sign($claims, key(), ALG));
 }
 
 func testATokenWithoutExpiryIsRejected() {
@@ -120,4 +122,15 @@ func testFingerprintIsStableAndNotTheToken() {
 
 func testDifferentTokensFingerprintDifferently() {
     testing.assertFalse(fingerprint(newRefresh()) == fingerprint(newRefresh()));
+}
+
+# --- the issuer -------------------------------------------------------------
+
+func throwsOnForeignIssuer() {
+    verify(key(), "gitlab", mint(key(), ISSUER, ACCOUNT, "alice", {}, 0, 3600, nowish()));
+}
+
+func testATokenMintedForAnotherProviderIsRejected() {
+    # the same subject id under another provider is another account
+    testing.assertThrows("throwsOnForeignIssuer", "value");
 }

@@ -542,13 +542,26 @@ export func browse(index as json.Value, page as int) {
  * @return {Page} a 200 page, or a 400 for a query over `search.MAX_QUERY`
  */
 export func results(index as json.Value, query as string, page as int) {
+    return resultsIn($index, search.lowered($index), $query, $page);
+}
+
+/**
+ * The search results page from a prebuilt `search.lowered`, which the server
+ * shares between requests instead of lower-casing every entry per query.
+ * @param index {json.Value} the registry's deck index, from `search.index`
+ * @param lowered {json.Value} from `search.lowered` over that index
+ * @param query {string} the search query ("" for everything)
+ * @param page {int} which page of results, 1-based
+ * @return {Page} a 200 page, or a 400 for a query over `search.MAX_QUERY`
+ */
+export func resultsIn(index as json.Value, lowered as json.Value, query as string, page as int) {
     if (len($query) > search.MAX_QUERY) {
         def body as string init '<h1>Search</h1>' + searchForm("") +
             '<p class="lede">A search can be at most ' +
             convert.toString(search.MAX_QUERY) + ' characters long.</p>';
         return Page{status: 400, body: layout("Search decks", $body)};
     }
-    def found as list of int init search.select($index, $query);
+    def found as list of int init search.selectIn($lowered, $query);
     def count as int init len($found);
     def q as string init strings.trim($query);
     def heading as string init "All decks";
@@ -613,7 +626,8 @@ func listCell(items as list of string) {
 
 # versionRows renders one table row per published version, newest first.
 func versionRows(db as flatdb.DB, name as string) {
-    def out as string init "";
+    # Joined once: appending to a growing string is quadratic in the versions.
+    def rows as list of string init [];
     for (def version in store.listVersionsDescending($db, $name)) {
         def v as store.DeckVersion init store.getVersionRecord($db, $name, $version);
         def status as string init '<span class="ok">live</span>';
@@ -622,7 +636,7 @@ func versionRows(db as flatdb.DB, name as string) {
             $status = '<span class="pill yanked">yanked</span>';
             $rowClass = ' class="is-yanked"';
         }
-        $out = $out + '<tr' + $rowClass + '><td class="mono">' +
+        $rows[] = '<tr' + $rowClass + '><td class="mono">' +
             esc($v.version) + '</td>' +
             '<td>' + $status + '</td>' +
             '<td class="mono">' + esc($v.kind) + '</td>' +
@@ -631,7 +645,7 @@ func versionRows(db as flatdb.DB, name as string) {
             '<td>' + mapCell($v.engines) + '</td>' +
             '<td>' + listCell($v.capabilities) + '</td></tr>';
     }
-    return $out;
+    return strings.join($rows, "");
 }
 
 /**
@@ -913,11 +927,30 @@ export func readmeSection(db as flatdb.DB, name as string) {
  * @return {Page} the scope page at 200, or a 404 page
  */
 export func scope(db as flatdb.DB, index as json.Value, name as string, page as int) {
+    return scopeIn($db, $index, search.scopeMap($index), $name, $page);
+}
+
+/**
+ * A scope's page from a prebuilt scope map, which the server shares between
+ * requests instead of scanning the index per request.
+ * @param db {flatdb.DB} the registry to read
+ * @param index {json.Value} the registry's deck index, from `search.index`
+ * @param groups {json.Value} from `search.scopeMap` over that index
+ * @param name {string} the scope, with or without its leading "@"
+ * @param page {int} which page of its decks, 1-based
+ * @return {Page} the scope page at 200, or a 404 page
+ */
+export func scopeIn(
+    db as flatdb.DB,
+    index as json.Value,
+    groups as json.Value,
+    name as string,
+    page as int) {
     def folded as string init deckname.fold(strings.trim($name));
     if (strings.startsWith($folded, "@")) {
         $folded = strings.substring($folded, 1, len($folded));
     }
-    def decks as list of int init search.under($index, $folded);
+    def decks as list of int init search.positionsIn($groups, $folded);
     def count as int init len($decks);
     if (not store.hasNamespace($db, $folded) and $count == 0) {
         return notFound("No scope named @" + $folded + " is registered here.");
@@ -1019,7 +1052,19 @@ export func sectionMissing(title as string, root as string, config as string) {
  * @return {Page} a 200 page
  */
 export func tags(index as json.Value) {
-    def counts as map of string to int init tagCounts($index);
+    return tagsFrom(search.tagMap($index));
+}
+
+/**
+ * The tag index from a prebuilt tag map, which the server shares between
+ * requests instead of recounting per request.
+ * @param groups {json.Value} from `search.tagMap`
+ * @return {Page} a 200 page
+ */
+export func tagsFrom(groups as json.Value) {
+    # Only each deck's newest version counts, so a dropped keyword stops grouping
+    # the deck and a deck counts once, not once per release.
+    def counts as map of string to int init search.countsIn($groups);
     def names as list of string init lists.sort(maps.keys($counts));
     if (len($names) == 0) {
         return Page{
@@ -1041,19 +1086,18 @@ export func tags(index as json.Value) {
     def body as string init '<h1>Tags</h1><p class="lede">' +
         convert.toString(len($names)) + ' tags across the registry. A deck ' +
         'carries up to ' + convert.toString(keywords.LIMIT) + '.</p>';
-    $body = $body + '<h2>Cloud</h2><p class="cloud">';
+    # Joined once per list: appending to a growing string is quadratic in the
+    # tags (measured 19 s at 10,000 tags, 0.1 s joined).
+    def cloud as list of string init [];
+    def all as list of string init [];
     for (def name in $names) {
-        $body = $body +
-            tagLink(
-            $name,
-            $counts[$name],
-            'cloud-' + convert.toString(cloudStep($counts[$name], $most)));
+        def step as string init 'cloud-' + convert.toString(cloudStep($counts[$name], $most));
+        $cloud[] = tagLink($name, $counts[$name], $step);
+        $all[] = '<li>' + tagLink($name, $counts[$name], "") + '</li>';
     }
-    $body = $body + '</p><h2>All tags</h2><ul class="taglist">';
-    for (def name in $names) {
-        $body = $body + '<li>' + tagLink($name, $counts[$name], "") + '</li>';
-    }
-    return Page{status: 200, body: layout("Tags", $body + '</ul>')};
+    $body = $body + '<h2>Cloud</h2><p class="cloud">' + strings.join($cloud, "") +
+        '</p><h2>All tags</h2><ul class="taglist">' + strings.join($all, "") + '</ul>';
+    return Page{status: 200, body: layout("Tags", $body)};
 }
 
 # cloudStep buckets a count into 1..5 for the cloud's font size.
@@ -1080,23 +1124,6 @@ func tagLink(name as string, count as int, extra as string) {
         '<span class="count">' + convert.toString($count) + '</span></a>';
 }
 
-# tagCounts maps each tag in use to how many decks carry it.
-# Only each deck's newest version counts, so a dropped keyword stops grouping
-# the deck and a deck counts once, not once per release.
-func tagCounts(index as json.Value) {
-    def out as map of string to int init {};
-    for (def i in lists.range(0, json.length($index, ""))) {
-        for (def tag in search.keywordsAt($index, $i)) {
-            if (maps.has($out, $tag)) {
-                $out[$tag] = $out[$tag] + 1;
-            } else {
-                $out[$tag] = 1;
-            }
-        }
-    }
-    return $out;
-}
-
 # latestKeywords returns the newest version's keywords, or none.
 func latestKeywords(db as flatdb.DB, name as string) {
     def all as list of string init store.listVersionsDescending($db, $name);
@@ -1114,13 +1141,26 @@ func latestKeywords(db as flatdb.DB, name as string) {
  * @return {Page} the tag page at 200, or a 404 page
  */
 export func tag(index as json.Value, name as string, page as int) {
+    return tagIn($index, search.tagMap($index), $name, $page);
+}
+
+/**
+ * One tag's page from a prebuilt tag map, which the server shares between
+ * requests instead of scanning the index per request.
+ * @param index {json.Value} the registry's deck index, from `search.index`
+ * @param groups {json.Value} from `search.tagMap` over that index
+ * @param name {string} the tag
+ * @param page {int} which page, 1-based
+ * @return {Page} the tag page at 200, or a 404 page
+ */
+export func tagIn(index as json.Value, groups as json.Value, name as string, page as int) {
     def folded as string init keywords.fold($name);
     # A refused or malformed tag cannot have been stored; a 404 also avoids
     # echoing an arbitrary string into the page.
     if (not keywords.isWellFormed($folded) or keywords.isBlocked($folded)) {
         return notFound("That is not a tag used here.");
     }
-    def found as list of int init search.tagged($index, $folded);
+    def found as list of int init search.positionsIn($groups, $folded);
     if (len($found) == 0) {
         return notFound("No decks are tagged " + $folded + ".");
     }

@@ -16,6 +16,8 @@ use json;
 # 2026-08-17T19:20:00Z. Fixed: the counts on a deck page are relative to now.
 def const NOW as int init 1786994400;
 use strings;
+use time;
+use convert;
 
 def const COMMIT as string init "9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f70819293";
 def const CHECKSUM as string init "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; # lint-disable: L203
@@ -689,4 +691,45 @@ func testThePolicyAdmitsOnlyTheThemeScript() {
     # an inline handler would need unsafe-inline, so there must be none
     testing.assertFalse(strings.contains(home(emptyDb()).body, "onclick"));
     testing.assertContains(home(emptyDb()).body, "<script>" + THEME_SCRIPT + "</script>");
+}
+
+# --- shared maps and page size ----------------------------------------------
+
+func testThePagesBuiltFromSharedMapsMatchTheIndexOnes() {
+    def db as flatdb.DB init taggedDb();
+    def all as json.Value init search.index($db);
+    testing.assertEqual(tagsFrom(search.tagMap($all)).body, tags($all).body);
+    testing.assertEqual(tagIn($all, search.tagMap($all), "cli", 1).body, tag($all, "cli", 1).body);
+    testing.assertEqual(tagIn($all, search.tagMap($all), "nothing", 1).status, 404);
+    def viaMap as Page init scopeIn($db, $all, search.scopeMap($all), "acme", 1);
+    testing.assertEqual($viaMap.body, scope($db, $all, "acme", 1).body);
+    def found as Page init resultsIn($all, search.lowered($all), "ONE", 1);
+    testing.assertEqual($found.body, results($all, "ONE", 1).body);
+    testing.assertContains($found.body, "@acme/one");
+    testing.assertFalse(strings.contains($found.body, "@acme/two"));
+}
+
+func testAHugeTagIndexRendersInLinearTime() {
+    # 2,000 tags; the page once grew quadratically (0.9 s here, 112 s at 25,000)
+    def groups as json.Value init json.map();
+    for (def i in 0..2000) {
+        $groups = json.set($groups, "/tag" + convert.toString($i), json.list([$i]));
+    }
+    def t0 as int init time.unixMillis(time.now());
+    def page as Page init tagsFrom($groups);
+    def took as int init time.unixMillis(time.now()) - $t0;
+    testing.assertEqual($page.status, 200);
+    testing.assertContains($page.body, "/tag/tag1999");
+    testing.assertContains($page.body, "2000 tags");
+    testing.assertTrue($took < 500);
+}
+
+func testADeckWithManyVersionsRendersEveryRow() {
+    def db as flatdb.DB init emptyDb();
+    for (def i in 0..300) {
+        $db = store.putVersion($db, "@acme/many", "d", gitVer("1." + convert.toString($i) + ".0"));
+    }
+    def page as Page init deck($db, "@acme/many", NOW);
+    testing.assertContains($page.body, "1.299.0");
+    testing.assertContains($page.body, "1.0.0");
 }

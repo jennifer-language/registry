@@ -440,3 +440,28 @@ func testAnOverlongSearchIsRefused() {
     testing.assertEqual(search(search.index(seeded()), strings.repeat("a", 201)).status, 400);
     testing.assertEqual(search(search.index(seeded()), strings.repeat("a", 200)).status, 200);
 }
+
+func testListDecksFromTheIndexMatchesTheStoreListing() {
+    def db as flatdb.DB init seeded();
+    $db = store.putVersion($db, "csv", "rfc 4180", version("0.4.0", "u"));
+    def all as json.Value init search.index($db);
+    testing.assertEqual(
+        json.encode(listDecksFrom($all, 1).body),
+        json.encode(listDecks($db, 1).body));
+    testing.assertEqual(json.length(listDecksFrom($all, 2).body, "/decks"), 0);
+    testing.assertEqual(json.asInt(listDecksFrom(search.index(emptyStore()), 1).body, "/pages"), 1);
+}
+
+func testSearchInMatchesSearch() {
+    def all as json.Value init search.index(seeded());
+    def low as json.Value init search.lowered($all);
+    testing.assertEqual(
+        json.encode(searchIn($all, $low, "ANSI").body),
+        json.encode(search($all, "ANSI").body));
+    testing.assertEqual(
+        json.encode(searchIn($all, $low, "").body),
+        json.encode(search($all, "").body));
+    testing.assertEqual(
+        searchIn($all, $low, strings.repeat("x", search.MAX_QUERY + 1)).status,
+        400);
+}

@@ -28,8 +28,11 @@ use time;
 import "http.j" as http;
 import "../identity.j" as identity;
 
-# The hosted endpoints. A GitHub Enterprise instance overrides `baseUrl`; the
-# API host is derived from it, since Enterprise serves both from one root.
+# The hosted endpoints. A GitHub Enterprise instance overrides `baseUrl`, and
+# the API is then addressed from the same root. Unverified: GitHub Enterprise
+# Server documents its REST API under `https://HOST/api/v3/`, so a deployment
+# may need that suffix in `baseUrl` for the API calls, which would then break
+# the web endpoints. Test against an instance before relying on it.
 def const WEB_BASE as string init "https://github.com";
 def const API_BASE as string init "https://api.github.com";
 
@@ -156,11 +159,12 @@ export func pollFrom(doc as json.Value) {
     }
     def state as string init identity.pollState($code);
     if (not ($state == identity.STATE_OK)) {
-        return identity.Poll{state: $state, accessToken: ""};
+        return identity.Poll{state: $state, accessToken: "", detail: $code};
     }
     return identity.Poll{
         state: identity.STATE_OK,
-        accessToken: json.asString($doc, "/access_token")
+        accessToken: json.asString($doc, "/access_token"),
+        detail: ""
     };
 }
 
@@ -229,7 +233,8 @@ export func endpointFor(cfg as identity.Config, which as string) {
     }
     if ($which == "memberships") {
         # Filtered to `active` by the API too, for fewer rows; `membershipsFrom`
-        # still checks.
+        # still checks. One page of 100: an account in more organisations than
+        # that has the rest silently left out.
         return identity.endpoint(
             $cfg.baseUrl,
             API_BASE,
@@ -263,6 +268,11 @@ func post(url as string, body as string) {
 }
 
 # --- the Provider vtable ----------------------------------------------------
+
+# discoverOf: GitHub's endpoints are fixed, so there is nothing to fetch.
+func discoverOf(cfg as identity.Config) {
+    return "";
+}
 
 # flowOf reports the flow this provider supports.
 func flowOf(cfg as identity.Config) {
@@ -349,6 +359,7 @@ func membershipsOf(cfg as identity.Config, accessToken as string) {
 export func provider() {
     return identity.Provider{
         name: "github",
+        discover: discoverOf,
         flow: flowOf,
         startDevice: start,
         poll: pollOnce,

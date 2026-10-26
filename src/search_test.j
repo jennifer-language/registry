@@ -150,3 +150,40 @@ func testEntriesFollowTheSelectionOrder() {
     testing.assertEqual(json.asString(json.get($picked, "/0/name")), "@zeta/ansi");
     testing.assertEqual(json.asString(json.get($picked, "/1/name")), "@acme/terminal");
 }
+
+func testSelectInRanksLikeSelectAndReadsTheLoweredText() {
+    def all as json.Value init index(seeded());
+    def low as json.Value init lowered($all);
+    testing.assertEqual(json.length($low, ""), json.length($all, ""));
+    testing.assertEqual(len(selectIn($low, "")), json.length($all, ""));
+    testing.assertEqual(
+        strings.join(lists.map(selectIn($low, "ROUTER"), str), ","),
+        strings.join(lists.map(select($all, "ROUTER"), str), ","));
+    testing.assertEqual(len(selectIn($low, "nothing-here")), 0);
+    # a query with a newline cannot straddle name and description
+    testing.assertEqual(len(selectIn($low, "s\nMikro")), 0);
+}
+
+func str(i as int) {
+    return convert.toString($i);
+}
+
+func testTheTagAndScopeMapsAnswerLikeTheScans() {
+    def db as flatdb.DB init seeded();
+    def v as store.DeckVersion init ver("3.0.0");
+    $v.keywords = ["net", "cli"];
+    $db = store.putVersion($db, "@acme/net", "", $v);
+    def all as json.Value init index($db);
+    def tags as json.Value init tagMap($all);
+    def scopes as json.Value init scopeMap($all);
+    testing.assertEqual(
+        strings.join(lists.map(positionsIn($tags, "cli"), str), ","),
+        strings.join(lists.map(tagged($all, "cli"), str), ","));
+    testing.assertEqual(
+        strings.join(lists.map(positionsIn($scopes, "acme"), str), ","),
+        strings.join(lists.map(under($all, "acme"), str), ","));
+    testing.assertEqual(len(positionsIn($tags, "nothing")), 0);
+    testing.assertEqual(len(positionsIn($scopes, "nobody")), 0);
+    testing.assertEqual(countsIn($tags)["cli"], 1);
+    testing.assertEqual(countsIn($scopes)["acme"], 2);
+}

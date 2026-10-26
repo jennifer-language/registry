@@ -102,6 +102,10 @@ export def struct Tls {
  *     before a refresh is refused (8.7); 0 turns the check off
  * @field authRateLimit {int} requests per minute one client address may make to
  *     the `/auth` routes together; 0 turns the limit off
+ * @field writeRateLimit {int} writes per minute per authenticated subject (per
+ *     client address for trusted publishing); 0 turns the limit off
+ * @field readRateLimit {int} `/resolve-graph` and full `/search` listings per
+ *     minute per client address; 0 turns the limit off
  * @field respondTimeoutSeconds {int} how long a request may take before the
  *     engine answers `503` itself; above the slowest publish (forge calls)
  * @field sourceAuthority {string} how a publish proves push access to its
@@ -137,6 +141,8 @@ export def struct Config {
     respondTimeoutSeconds as int,
     orgMaxAgeHours as int,
     authRateLimit as int,
+    writeRateLimit as int,
+    readRateLimit as int,
     trustpubAudience as string,
     trustpubProvider as string,
     trustpubIssuer as string,
@@ -175,6 +181,8 @@ export func defaults() {
         respondTimeoutSeconds: 120,
         orgMaxAgeHours: 168,
         authRateLimit: 30,
+        writeRateLimit: 60,
+        readRateLimit: 120,
         trustpubAudience: "",
         trustpubProvider: "github-actions",
         trustpubIssuer: "",
@@ -269,6 +277,8 @@ export func applyToml(base as Config, text as string) {
     $out.clientIpHeader = str($doc, "/clientIpHeader", $out.clientIpHeader);
     $out.addr = str($doc, "/addr", $out.addr);
     $out.maxInFlight = count($doc, "/maxInFlight", $out.maxInFlight);
+    $out.writeRateLimit = count($doc, "/writeRateLimit", $out.writeRateLimit);
+    $out.readRateLimit = count($doc, "/readRateLimit", $out.readRateLimit);
     $out.respondTimeoutSeconds = count($doc, "/respondTimeout", $out.respondTimeoutSeconds);
     $out.dbPath = str($doc, "/db", $out.dbPath);
     $out.logFile = str($doc, "/log/file", $out.logFile);
@@ -407,6 +417,8 @@ export func applyEnv(base as Config, env as map of string to string) {
         "REGISTRY_TLS_RENEW_BEFORE_DAYS",
         $out.tls.renewBeforeDays);
     $out.maxInFlight = envInt($env, "REGISTRY_MAX_IN_FLIGHT", $out.maxInFlight);
+    $out.writeRateLimit = envInt($env, "REGISTRY_WRITE_RATE_LIMIT", $out.writeRateLimit);
+    $out.readRateLimit = envInt($env, "REGISTRY_READ_RATE_LIMIT", $out.readRateLimit);
     $out.orgMaxAgeHours = envInt($env, "REGISTRY_ORG_MAX_AGE", $out.orgMaxAgeHours);
     $out.authRateLimit = envInt($env, "REGISTRY_AUTH_RATE_LIMIT", $out.authRateLimit);
     $out.respondTimeoutSeconds = envInt(
@@ -486,6 +498,12 @@ export func problem(cfg as Config) {
     if ($cfg.authRateLimit < 0) {
         return "identity.rateLimit must be 0 (off) or requests per minute";
     }
+    if ($cfg.writeRateLimit < 0) {
+        return "writeRateLimit must be 0 (off) or requests per minute";
+    }
+    if ($cfg.readRateLimit < 0) {
+        return "readRateLimit must be 0 (off) or requests per minute";
+    }
     if ($cfg.respondTimeoutSeconds < 1) {
         return "respondTimeout must be at least 1 second";
     }
@@ -499,11 +517,21 @@ export func problem(cfg as Config) {
     if (not ($authority == "")) {
         return $authority;
     }
+    def base as string init baseUrlProblem($cfg);
+    if (not ($base == "")) {
+        return $base;
+    }
     if (not $cfg.tls.enabled) {
         return "";
     }
     if (len($cfg.tls.domains) == 0) {
         return "tls.enabled is set but no tls.domains are configured";
+    }
+    # Below 1 the renewal would follow the expiry; from 89 up every boot after
+    # the first day re-issues, into the CA's duplicate-certificate limit.
+    if ($cfg.tls.renewBeforeDays < MIN_RENEW_DAYS or $cfg.tls.renewBeforeDays > MAX_RENEW_DAYS) {
+        return "tls.renewBeforeDays must be between " + convert.toString(MIN_RENEW_DAYS) +
+            " and " + convert.toString(MAX_RENEW_DAYS);
     }
     if (strings.trim($cfg.tls.email) == "") {
         return "tls.enabled is set but tls.email is empty; a CA requires a contact";
@@ -541,6 +569,57 @@ export func sourceAuthorityOf(cfg as Config) {
         return "login";
     }
     return "service";
+}
+
+# The bounds on `tls.renewBeforeDays`, against a 90-day certificate lifetime.
+def const MIN_RENEW_DAYS as int init 1;
+def const MAX_RENEW_DAYS as int init 88;
+
+# baseUrlProblem refuses a provider or forge base URL that would carry tokens
+# in clear: anything but `https`, unless the host is the machine itself.
+func baseUrlProblem(cfg as Config) {
+    if (not secureBase($cfg.identityBaseUrl)) {
+        return "identity.baseUrl must be an https URL (http is allowed for a loopback host only)";
+    }
+    if (not secureBase($cfg.forgeBaseUrl)) {
+        return "forge.baseUrl must be an https URL (http is allowed for a loopback host only)";
+    }
+    return "";
+}
+
+# secureBase accepts "" (the module default), any `https://` URL, and an
+# `http://` URL whose host is loopback (a provider on the same machine, tests).
+func secureBase(url as string) {
+    def u as string init strings.lower(strings.trim($url));
+    if ($u == "" or strings.startsWith($u, "https://")) {
+        return true;
+    }
+    if (not strings.startsWith($u, "http://")) {
+        return false;
+    }
+    return lists.contains(["localhost", "127.0.0.1", "[::1]"], hostOf($u));
+}
+
+# hostOf is the host of a lowercased URL: between `//` and the first `/`, with
+# a port removed (a bracketed IPv6 host keeps its brackets).
+func hostOf(url as string) {
+    def rest as string init strings.substring($url, strings.indexOf($url, "//") + 2, len($url));
+    def slash as int init strings.indexOf($rest, "/");
+    if ($slash >= 0) {
+        $rest = strings.substring($rest, 0, $slash);
+    }
+    if (strings.startsWith($rest, "[")) {
+        def close as int init strings.indexOf($rest, "]");
+        if ($close >= 0) {
+            return strings.substring($rest, 0, $close + 1);
+        }
+        return $rest;
+    }
+    def colon as int init strings.indexOf($rest, ":");
+    if ($colon >= 0) {
+        return strings.substring($rest, 0, $colon);
+    }
+    return $rest;
 }
 
 # sameService reports whether the identity provider and the forge are one
