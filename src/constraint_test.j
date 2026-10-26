@@ -312,3 +312,77 @@ func testOnlyAsciiSpaceAndTabAroundAConstraintAreIgnored() {
         testing.assertFalse(satisfies("1.4.0", $c));
     }
 }
+
+# --- 2026-10-26 audit: G9 ----------------------------------------------------
+
+# The parse-once path is the same predicate as satisfies, over every form.
+func testMatchesAgreesWithSatisfies() {
+    def versions as list of string init [
+        "0.0.3",
+        "0.2.3",
+        "1.0.0",
+        "1.2.3",
+        "1.2.4",
+        "1.3.0",
+        "2.0.0",
+        "1.0.0-rc.1",
+        "1.0.0+b",
+        "v1.0.0",
+        "1.0",
+        "01.0.0"
+    ];
+    def constraints as list of string init [
+        "*",
+        "",
+        "any",
+        "^1.2.0",
+        "^0.2",
+        "^0",
+        "~1.2.3",
+        "~1",
+        ">=1.0.0",
+        "<=1.2.3",
+        ">1.0.0",
+        "<2.0.0",
+        "=1.2.3",
+        "1.2.3",
+        ">=1.0.0-rc.0",
+        " ^1.2 ",
+        "^abc",
+        ">= 1.0.0"
+    ];
+    for (def c in $constraints) {
+        def r as Range init parseRange($c);
+        testing.assertEqual($r.valid, isValidConstraint($c));
+        for (def v in $versions) {
+            def u as Usable init usable($v);
+            def viaParsed as bool init $u.ok and matches($u.version, $r);
+            testing.assertEqual($viaParsed, satisfies($v, $c));
+        }
+        testing.assertEqual(bestOf($versions, [$c]), best($versions, $c));
+    }
+}
+
+func testBestOfAppliesEveryConstraint() {
+    def versions as list of string init ["1.0.0", "1.4.0", "1.9.0", "2.0.0"];
+    testing.assertEqual(bestOf($versions, ["^1.0.0", "<1.5.0"]), "1.4.0");
+    testing.assertEqual(bestOf($versions, ["^1.0.0", ">=3.0.0"]), "");
+    testing.assertTrue(satisfiesEvery("1.4.0", ["^1.0.0", "<1.5.0"]));
+    testing.assertFalse(satisfiesEvery("1.9.0", ["^1.0.0", "<1.5.0"]));
+}
+
+# Versions SemVer calls equal (build metadata only) are ordered the same way
+# whatever order they arrive in: no metadata first, then the smaller text.
+func testEqualVersionsAreOrderedDeterministically() {
+    testing.assertEqual(highest(["1.0.0+b", "1.0.0"]), "1.0.0");
+    testing.assertEqual(highest(["1.0.0", "1.0.0+b"]), "1.0.0");
+    testing.assertEqual(highest(["1.0.0+b", "1.0.0+a"]), "1.0.0+a");
+    testing.assertEqual(best(["1.0.0+b", "1.0.0"], "*"), "1.0.0");
+}
+
+func testAVersionTooLongToHoldIsStillRefused() {
+    testing.assertFalse(isUsableVersion("1.0.1234567890123456789"));
+    testing.assertFalse(isUsableVersion("1.0.0-1234567890123456789"));
+    testing.assertTrue(isUsableVersion("1.0.0-123456789012345678"));
+    testing.assertTrue(isUsableVersion("1.0.0+12345678901234567890"));
+}

@@ -121,26 +121,62 @@ func isNumber(s as string) {
  * @return {bool} true when it can be ordered and matched safely
  */
 export func isUsableVersion(v as string) {
-    if (not semver.isValid($v)) {
-        return false;
+    return usable($v).ok;
+}
+
+# Usable is a version read once: whether it is usable (`isUsableVersion`) and,
+# when it is, its parsed form.
+def struct Usable {
+    ok as bool,
+    version as semver.Version
+};
+
+# usable parses a version once and checks it fits (`isUsableVersion`).
+# `semver.parse` runs the SemVer grammar a single time and throws on anything
+# outside it; checking with `semver.isValid` first and parsing after ran the
+# regex twice, and every caller then parsed a third time.
+func usable(v as string) {
+    def none as Usable init Usable{ok: false, version: version(0, 0, 0)};
+    def parsed as semver.Version init version(0, 0, 0);
+    try {
+        $parsed = semver.parse($v);
+    } catch (err) {
+        return $none;
+    }
+    if (not fitsDigits($v)) {
+        return $none;
+    }
+    return Usable{ok: true, version: $parsed};
+}
+
+# fitsDigits reports whether every numeric identifier of a valid version's core
+# and prerelease is at most MAX_DIGITS long. Build metadata is never compared.
+func fitsDigits(v as string) {
+    # No identifier can be longer than the whole text, which settles nearly
+    # every version without splitting it.
+    if (len($v) <= MAX_DIGITS) {
+        return true;
     }
     def body as string init $v;
     def plus as int init strings.indexOf($body, "+");
     if ($plus >= 0) {
         $body = strings.substring($body, 0, $plus);
     }
-    def ids as list of string init [];
+    # One list, appended to in place: it was reassigned per branch before,
+    # which copied it on every call.
     def dash as int init strings.indexOf($body, "-");
-    if ($dash < 0) {
-        $ids = strings.split($body, ".");
-    } else {
-        $ids = strings.split(strings.substring($body, 0, $dash), ".");
+    def core as string init $body;
+    if ($dash >= 0) {
+        $core = strings.substring($body, 0, $dash);
+    }
+    def ids as list of string init strings.split($core, ".");
+    if ($dash >= 0) {
         for (def id in strings.split(rest($body, $dash + 1), ".")) {
             $ids[] = $id;
         }
     }
     for (def id in $ids) {
-        if (isDigits($id) and len($id) > MAX_DIGITS) {
+        if (len($id) > MAX_DIGITS and isDigits($id)) {
             return false;
         }
     }
@@ -151,6 +187,9 @@ export func isUsableVersion(v as string) {
 # grammar allows that much padding and no other, and `strings.trim` would also
 # strip Unicode whitespace.
 func trimAscii(s as string) {
+    if (not padded($s)) {
+        return $s;
+    }
     def chars as list of string init strings.chars($s);
     def lo as int init 0;
     def hi as int init len($chars);
@@ -163,10 +202,26 @@ func trimAscii(s as string) {
     return strings.join($chars[$lo..$hi], "");
 }
 
+# padded reports whether s starts or ends with an ASCII space or tab, the only
+# padding trimAscii removes; most constraints have none, and return at once.
+func padded(s as string) {
+    if ($s == "") {
+        return false;
+    }
+    def first as string init strings.substring($s, 0, 1);
+    def last as string init strings.substring($s, len($s) - 1, len($s));
+    return $first == " " or $first == "\t" or $last == " " or $last == "\t";
+}
+
 # isPartial reports whether s is the `partial` of the grammar: one to three
-# numbers joined by dots, and nothing else.
+# numbers joined by dots, and nothing else. The split goes straight into the
+# check: bound to a variable first, it was copied on every call.
 func isPartial(s as string) {
-    def parts as list of string init strings.split($s, ".");
+    return partsArePartial(strings.split($s, "."));
+}
+
+# partsArePartial is isPartial over the dot-separated parts.
+func partsArePartial(parts as list of string) {
     if (len($parts) < 1 or len($parts) > 3) {
         return false;
     }
@@ -204,6 +259,204 @@ export func isValidConstraint(constraint as string) {
         }
     }
     return isUsableVersion($c);
+}
+
+/**
+ * A constraint read once, for matching against many versions (`matches`).
+ * `satisfies` parses its constraint on every call; a caller testing a list of
+ * versions against the same constraints parses each constraint once here.
+ * @field valid {bool} false for a constraint outside the grammar, which matches nothing
+ * @field any {bool} true for a wildcard
+ * @field op {string} `^`, `~`, `>=`, `<=`, `>`, `<` or `=` (an exact version is `=`)
+ * @field lower {semver.Version} a range's inclusive lower bound, or a comparator's operand
+ * @field upper {semver.Version} a caret or tilde range's exclusive upper bound
+ * @field pre {bool} true when the constraint names a prerelease, which opts that core in
+ */
+export def struct Range {
+    valid as bool,
+    any as bool,
+    op as string,
+    lower as semver.Version,
+    upper as semver.Version,
+    pre as bool
+};
+
+/**
+ * Read a constraint once (`Range`). A constraint outside the grammar
+ * (`isValidConstraint`) comes back with `valid` false.
+ * @param constraint {string} the constraint expression
+ * @return {Range} the parsed constraint
+ */
+export func parseRange(constraint as string) {
+    def zero as semver.Version init version(0, 0, 0);
+    def out as Range init Range{
+        valid: false,
+        any: false,
+        op: "",
+        lower: $zero,
+        upper: $zero,
+        pre: false
+    };
+    def c as string init trimAscii($constraint);
+    if ($c == "" or $c == "*" or $c == "any") {
+        $out.valid = true;
+        $out.any = true;
+        return $out;
+    }
+    if (strings.startsWith($c, "^") or strings.startsWith($c, "~")) {
+        if (not isPartial(rest($c, 1))) {
+            return $out;
+        }
+        def core as Core init parseCore(rest($c, 1));
+        $out.valid = true;
+        $out.op = strings.substring($c, 0, 1);
+        $out.lower = coreLower($core);
+        $out.upper = tildeUpper($core);
+        if ($out.op == "^") {
+            $out.upper = caretUpper($core);
+        }
+        return $out;
+    }
+    $out.op = "=";
+    def operand as string init $c;
+    for (def op in [">=", "<=", ">", "<", "="]) {
+        if (strings.startsWith($c, $op)) {
+            $out.op = $op;
+            $operand = rest($c, len($op));
+            break;
+        }
+    }
+    def u as Usable init usable($operand);
+    if (not $u.ok) {
+        return $out;
+    }
+    $out.valid = true;
+    $out.lower = $u.version;
+    $out.pre = semver.isPrerelease($u.version);
+    return $out;
+}
+
+/**
+ * Report whether a parsed, usable version satisfies a parsed constraint, by
+ * exactly the rules of `satisfies` (prerelease opt-in included).
+ * @param v {semver.Version} the version, already parsed and usable
+ * @param r {Range} the constraint, from `parseRange`
+ * @return {bool} true when v satisfies r
+ */
+export func matches(v as semver.Version, r as Range) {
+    if (not $r.valid) {
+        return false;
+    }
+    # One gate for every form: wildcard, exact, comparator, caret and tilde. A
+    # caret or tilde partial never names a prerelease.
+    #
+    # **A prerelease is opt-in, and the opt-in has to name it** (server
+    # specification 2.4). `0.2.0-dev` sorts above `0.1.0` and below `0.2.0`,
+    # which is what SemVer requires of *ordering*; using that ordering as a
+    # membership test is what silently promotes an unreleased version over the
+    # last real one for every consumer who wrote `*` or `>=0.1.0`. So the
+    # candidate's core must be named by a constraint that is itself a
+    # prerelease: `>=0.2.0-dev` reaches `0.2.0-rc.1`, and nothing reaches
+    # `0.3.0-alpha` but a constraint naming a 0.3.0 prerelease. A constraint
+    # here is a single expression, so there is one version in it, and either it
+    # carries a prerelease on the candidate's core or it does not.
+    if (semver.isPrerelease($v) and not ($r.pre and sameCore($v, $r.lower))) {
+        return false;
+    }
+    if ($r.any) {
+        return true;
+    }
+    if ($r.op == "^" or $r.op == "~") {
+        return rangeMatch($v, $r.lower, $r.upper);
+    }
+    def c as int init semver.compare($v, $r.lower);
+    if ($r.op == ">=") {
+        return $c >= 0;
+    }
+    if ($r.op == "<=") {
+        return $c <= 0;
+    }
+    if ($r.op == ">") {
+        return $c > 0;
+    }
+    if ($r.op == "<") {
+        return $c < 0;
+    }
+    return $c == 0;
+}
+
+/**
+ * Report whether a version satisfies every constraint in a list, reading the
+ * version once rather than once per constraint.
+ * @param version {string} the version
+ * @param constraints {list of string} the constraints, all of which must hold
+ * @return {bool} true when every constraint is satisfied
+ */
+export func satisfiesEvery(version as string, constraints as list of string) {
+    def u as Usable init usable($version);
+    if (not $u.ok) {
+        return false;
+    }
+    for (def c in $constraints) {
+        if (not matches($u.version, parseRange($c))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * The highest version in a list satisfying every constraint, or "" when none
+ * does: `satisfiesEvery` and `highest` in one pass, with each constraint and
+ * each version read once. The resolver picks with this.
+ * @param versions {list of string} the candidate versions
+ * @param constraints {list of string} the constraints, all of which must hold
+ * @return {string} the highest version satisfying all of them, or ""
+ */
+export func bestOf(versions as list of string, constraints as list of string) {
+    def ranges as list of Range init [];
+    for (def c in $constraints) {
+        $ranges[] = parseRange($c);
+    }
+    def chosen as string init "";
+    def bestVer as semver.Version init version(0, 0, 0);
+    for (def ver in $versions) {
+        def u as Usable init usable($ver);
+        if (not $u.ok or not matchesAll($u.version, $ranges)) {
+            continue;
+        }
+        if ($chosen == "" or outranks($u.version, $ver, $bestVer, $chosen)) {
+            $bestVer = $u.version;
+            $chosen = $ver;
+        }
+    }
+    return $chosen;
+}
+
+# matchesAll reports whether v satisfies every range.
+func matchesAll(v as semver.Version, ranges as list of Range) {
+    for (def r in $ranges) {
+        if (not matches($v, $r)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+# outranks reports whether a candidate should replace the best so far. SemVer
+# orders first; versions it calls equal differ only in build metadata, which
+# SemVer leaves unordered, so the one without build metadata wins, then the
+# lexically smaller text. Taking whichever came first locked `1.0.0` or
+# `1.0.0+b` depending on the order a registry listed them.
+func outranks(v as semver.Version, text as string, best as semver.Version, bestText as string) {
+    def c as int init semver.compare($v, $best);
+    if (not ($c == 0)) {
+        return $c > 0;
+    }
+    if (not (($v.build == "") == ($best.build == ""))) {
+        return $v.build == "";
+    }
+    return $text < $bestText;
 }
 
 # version builds a release semver.Version (no prerelease / build) from parts.
@@ -252,7 +505,7 @@ func inRange(v as semver.Version, lower as semver.Version, upper as semver.Versi
 }
 
 # rangeMatch evaluates a caret / tilde range against v. A numeric range never
-# matches a prerelease. `satisfies` already refuses one before this runs, since
+# matches a prerelease. `matches` already refuses one before this runs, since
 # a partial cannot name a prerelease (`isPartial` refuses `^0.2.0-rc.1`); the
 # check keeps this function correct on its own.
 func rangeMatch(v as semver.Version, lower as semver.Version, upper as semver.Version) {
@@ -262,78 +515,10 @@ func rangeMatch(v as semver.Version, lower as semver.Version, upper as semver.Ve
     return inRange($v, $lower, $upper);
 }
 
-# constraintVersion returns the version text a constraint carries, with its
-# operator stripped. A wildcard carries none, and a caret or tilde operand is a
-# partial, which `isPartial` keeps free of any prerelease: in both cases no
-# prerelease is named.
-func constraintVersion(constraint as string) {
-    def c as string init trimAscii($constraint);
-    if ($c == "" or $c == "*" or $c == "any") {
-        return "";
-    }
-    for (def op in [">=", "<=", ">", "<", "=", "^", "~"]) {
-        if (strings.startsWith($c, $op)) {
-            return trimAscii(rest($c, len($op)));
-        }
-    }
-    return $c;
-}
-
 # sameCore reports whether two versions share a major.minor.patch, ignoring
 # whatever prerelease or build metadata either carries.
 func sameCore(a as semver.Version, b as semver.Version) {
     return $a.major == $b.major and $a.minor == $b.minor and $a.patch == $b.patch;
-}
-
-# prereleaseAllowed decides whether a prerelease candidate may be considered at
-# all for this constraint.
-#
-# **A prerelease is opt-in, and the opt-in has to name it** (server
-# specification 2.4). `0.2.0-dev` sorts above `0.1.0` and below `0.2.0`, which
-# is what SemVer requires of *ordering*; using that ordering as a membership
-# test is what silently promotes an unreleased version over the last real one
-# for every consumer who wrote `*` or `>=0.1.0`. So the candidate's core must be
-# named by a constraint that is itself a prerelease: `>=0.2.0-dev` reaches
-# `0.2.0-rc.1`, and nothing reaches `0.3.0-alpha` but a constraint naming a
-# 0.3.0 prerelease.
-#
-# Because a constraint here is a single expression with no compound ranges,
-# this needs no per-comparator bookkeeping: there is one version in the
-# constraint, and either it carries a prerelease on the candidate's core or it
-# does not.
-func prereleaseAllowed(v as semver.Version, constraint as string) {
-    def operand as string init constraintVersion($constraint);
-    if (not semver.isValid($operand)) {
-        return false;
-    }
-    def o as semver.Version init semver.parse($operand);
-    if (not semver.isPrerelease($o)) {
-        return false;
-    }
-    return sameCore($v, $o);
-}
-
-# cmpMatch evaluates a comparator (">=1.0.0" etc.): parse the operand strictly
-# and compare. An unparseable operand never matches.
-func cmpMatch(v as semver.Version, operand as string, op as string) {
-    def o as string init trimAscii($operand);
-    if (not semver.isValid($o)) {
-        return false;
-    }
-    def c as int init semver.compare($v, semver.parse($o));
-    if ($op == ">=") {
-        return $c >= 0;
-    }
-    if ($op == "<=") {
-        return $c <= 0;
-    }
-    if ($op == ">") {
-        return $c > 0;
-    }
-    if ($op == "<") {
-        return $c < 0;
-    }
-    return $c == 0;
 }
 
 # rest returns s with its first n characters dropped.
@@ -357,44 +542,15 @@ func rest(s as string, n as int) {
  * @return {bool} true when version satisfies constraint
  */
 export func satisfies(version as string, constraint as string) {
-    def c as string init trimAscii($constraint);
-    if (not isUsableVersion($version) or not isValidConstraint($c)) {
+    def r as Range init parseRange($constraint);
+    if (not $r.valid) {
         return false;
     }
-    def v as semver.Version init semver.parse($version);
-    # One gate for every form: wildcard, exact, comparator, caret and tilde. An
-    # unnamed prerelease would outrank the release before it, since it sorts
-    # above it.
-    if (semver.isPrerelease($v) and not prereleaseAllowed($v, $c)) {
+    def u as Usable init usable($version);
+    if (not $u.ok) {
         return false;
     }
-    if ($c == "" or $c == "*" or $c == "any") {
-        return true;
-    }
-    if (strings.startsWith($c, "^")) {
-        def core as Core init parseCore(rest($c, 1));
-        return rangeMatch($v, coreLower($core), caretUpper($core));
-    }
-    if (strings.startsWith($c, "~")) {
-        def core as Core init parseCore(rest($c, 1));
-        return rangeMatch($v, coreLower($core), tildeUpper($core));
-    }
-    if (strings.startsWith($c, ">=")) {
-        return cmpMatch($v, rest($c, 2), ">=");
-    }
-    if (strings.startsWith($c, "<=")) {
-        return cmpMatch($v, rest($c, 2), "<=");
-    }
-    if (strings.startsWith($c, ">")) {
-        return cmpMatch($v, rest($c, 1), ">");
-    }
-    if (strings.startsWith($c, "<")) {
-        return cmpMatch($v, rest($c, 1), "<");
-    }
-    if (strings.startsWith($c, "=")) {
-        return cmpMatch($v, rest($c, 1), "=");
-    }
-    return cmpMatch($v, $c, "=");
+    return matches($u.version, $r);
 }
 
 /**
@@ -414,15 +570,12 @@ export func newestPrerelease(versions as list of string) {
     def have as bool init false;
     def bestVer as semver.Version;
     for (def ver in $versions) {
-        if (not isUsableVersion($ver)) {
+        def u as Usable init usable($ver);
+        if (not $u.ok or not semver.isPrerelease($u.version)) {
             continue;
         }
-        def parsed as semver.Version init semver.parse($ver);
-        if (not semver.isPrerelease($parsed)) {
-            continue;
-        }
-        if (not $have or semver.compare($parsed, $bestVer) > 0) {
-            $bestVer = $parsed;
+        if (not $have or outranks($u.version, $ver, $bestVer, $chosen)) {
+            $bestVer = $u.version;
             $chosen = $ver;
             $have = true;
         }
@@ -457,7 +610,8 @@ export func prereleaseHint(versions as list of string) {
 /**
  * The highest version in a list, under SemVer ordering, with no constraint and
  * no prerelease rule applied: a prerelease competes like any other version.
- * Versions that `isUsableVersion` refuses are skipped. This is for a caller
+ * Versions that `isUsableVersion` refuses are skipped, and versions equal under
+ * SemVer are ordered as in `best`. This is for a caller
  * that has already filtered the list itself (the resolver keeps only versions
  * satisfying every constraint on a deck); `best(list, "*")` is not a substitute,
  * because `*` refuses every prerelease, including one a constraint named.
@@ -469,12 +623,12 @@ export func highest(versions as list of string) {
     def have as bool init false;
     def bestVer as semver.Version;
     for (def ver in $versions) {
-        if (not isUsableVersion($ver)) {
+        def u as Usable init usable($ver);
+        if (not $u.ok) {
             continue;
         }
-        def parsed as semver.Version init semver.parse($ver);
-        if (not $have or semver.compare($parsed, $bestVer) > 0) {
-            $bestVer = $parsed;
+        if (not $have or outranks($u.version, $ver, $bestVer, $chosen)) {
+            $bestVer = $u.version;
             $chosen = $ver;
             $have = true;
         }
@@ -486,24 +640,13 @@ export func highest(versions as list of string) {
  * Pick the highest version from a list that satisfies the constraint. Skipped:
  * versions that are not valid SemVer, unusable ones (a numeric identifier over
  * 18 digits), and prereleases the constraint does not name (`satisfies`).
- * Returns "" when none match.
+ * Returns "" when none match. Versions SemVer orders equal (they differ only in
+ * build metadata) are told apart by `outranks`: no build metadata first, then
+ * the lexically smaller.
  * @param versions {list of string} the candidate versions
  * @param constraint {string} the constraint expression
  * @return {string} the highest satisfying version, or "" if none match
  */
 export func best(versions as list of string, constraint as string) {
-    def chosen as string init "";
-    def have as bool init false;
-    def bestVer as semver.Version;
-    for (def ver in $versions) {
-        if (satisfies($ver, $constraint)) {
-            def parsed as semver.Version init semver.parse($ver);
-            if (not $have or semver.compare($parsed, $bestVer) > 0) {
-                $bestVer = $parsed;
-                $chosen = $ver;
-                $have = true;
-            }
-        }
-    }
-    return $chosen;
+    return bestOf($versions, [$constraint]);
 }

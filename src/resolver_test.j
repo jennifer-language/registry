@@ -510,3 +510,63 @@ func testAConflictReachedThroughAReplacementStillFails() {
     testing.assertEqual(len($g.missing), 0);
     testing.assertContains($g.error, "no version of c satisfies ^1.0.0, ^2.0.0");
 }
+
+# --- 2026-10-26 audit: G9 ----------------------------------------------------
+
+# A yanked version that alone would have fitted is named, rather than the
+# failure reading as if it had never been published.
+func testAYankedExactMatchIsNamed() {
+    def cat as catalog.Catalog init plain(catalog.empty(), "@acme/a", "0.9.0");
+    $cat = yank($cat, "@acme/a", "1.0.0");
+    def g as GraphResult init resolveGraph($cat, {"@acme/a": "=1.0.0"});
+    testing.assertFalse($g.ok);
+    testing.assertContains($g.error, "no version of @acme/a satisfies =1.0.0");
+    testing.assertContains($g.error, "1.0.0 would, but is yanked");
+}
+
+# A requirement naming no deck is a failure, never a name handed back to fetch.
+func testAnInvalidRequirementNameIsNotMissing() {
+    def cat as catalog.Catalog init put(catalog.empty(), "@acme/a", "1.0.0", {"../../etc": "*"});
+    def g as GraphResult init resolveGraph($cat, {"@acme/a": "*"});
+    testing.assertFalse($g.ok);
+    testing.assertEqual(len($g.missing), 0);
+    testing.assertContains($g.error, "../../etc, which is not a valid deck name");
+}
+
+# Equal under SemVer, `1.0.0` and `1.0.0+b` are told apart the same way
+# whichever the catalog lists first.
+func testBuildMetadataDoesNotDependOnOrder() {
+    def first as catalog.Catalog init plain(catalog.empty(), "@acme/a", "1.0.0+b");
+    $first = plain($first, "@acme/a", "1.0.0");
+    def second as catalog.Catalog init plain(catalog.empty(), "@acme/a", "1.0.0");
+    $second = plain($second, "@acme/a", "1.0.0+b");
+    def roots as map of string to string init {"@acme/a": "*"};
+    testing.assertEqual(findVer(resolveGraph($first, $roots).resolved, "@acme/a"), "1.0.0");
+    testing.assertEqual(findVer(resolveGraph($second, $roots).resolved, "@acme/a"), "1.0.0");
+}
+
+# The round bound grows with the catalog, so a chain deeper than the fixed
+# bound converges (verified by hand at 1,100 decks; too slow for the suite).
+func testTheRoundLimitGrowsWithTheCatalog() {
+    def cat as catalog.Catalog init plain(catalog.empty(), "@acme/a", "1.0.0");
+    $cat = plain($cat, "@acme/b", "1.0.0");
+    testing.assertEqual(roundLimit(indexOf($cat)), MAX_ROUNDS + 4);
+}
+
+# The index keeps catalog order within a deck, whether its entries are
+# contiguous or not, and a deck with thousands of versions indexes quickly.
+func testTheIndexKeepsOrderAcrossRuns() {
+    def cat as catalog.Catalog init plain(catalog.empty(), "@acme/a", "1.0.0");
+    $cat = plain($cat, "@acme/b", "1.0.0");
+    $cat = plain($cat, "@acme/a", "1.1.0");
+    $cat = yank($cat, "@acme/a", "1.2.0");
+    def idx as Index init indexOf($cat);
+    testing.assertEqual(len($idx.versions["@acme/a"]), 2);
+    testing.assertEqual($idx.versions["@acme/a"][1], "1.1.0");
+    def many as list of catalog.Candidate init [];
+    for (def v in 0..6000) {
+        $many[] = catalog.candidate("@big/one", "1." + convert.toString($v) + ".0");
+    }
+    def big as Index init indexOf(catalog.addAll(catalog.empty(), $many));
+    testing.assertEqual(len($big.versions["@big/one"]), 6000);
+}

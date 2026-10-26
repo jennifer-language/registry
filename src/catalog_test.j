@@ -168,3 +168,18 @@ func testARepeatedVersionKeepsTheFirst() {
     testing.assertEqual(len($batched.entries), 1);
     testing.assertFalse(get($batched, "ansi", "1.0.0").yanked);
 }
+
+# Two spellings of one deck at one version are one candidate, as the resolver
+# reads them; the first added wins.
+func testARepeatInAnotherCaseKeepsTheFirst() {
+    def cat as Catalog init add(empty(), candidate("@acme/app", "1.0.0"));
+    $cat = add($cat, candidate("@Acme/App", "1.0.0"));
+    testing.assertEqual(len($cat.entries), 1);
+    def pair as list of Candidate init [
+        candidate("@acme/app", "1.0.0"),
+        candidate("@ACME/app", "1.0.0")
+    ];
+    def batch as Catalog init addAll(empty(), $pair);
+    testing.assertEqual(len($batch.entries), 1);
+    testing.assertEqual($batch.entries[0].name, "@acme/app");
+}

@@ -68,8 +68,11 @@ import "./catalog.j" as catalog;
 import "./constraint.j" as constraint;
 import "./deckname.j" as deckname;
 
-# The most resolution rounds before declaring non-convergence (a safety bound far
-# above any real graph; each round either changes a choice or terminates).
+# The resolution rounds allowed beyond the catalog's own size before declaring
+# non-convergence. A chain of decks needs one round per level (a deck reached
+# for the first time is chosen the round after), so the bound is this plus two
+# per deck the catalog knows: a fixed 1000 failed every graph deeper than about
+# 998 as "did not converge". A cycle is caught by the state check long before.
 def const MAX_ROUNDS as int init 1000;
 
 /**
@@ -129,28 +132,19 @@ func joinConstraints(items as list of string) {
 # satisfiesAll reports whether a version satisfies *every* constraint in the
 # list, stopping at the first one it fails.
 func satisfiesAll(version as string, constraints as list of string) {
-    for (def c in $constraints) {
-        if (not constraint.satisfies($version, $c)) {
-            return false;
-        }
-    }
-    return true;
+    return constraint.satisfiesEvery($version, $constraints);
 }
 
 # bestSatisfyingAll returns the highest known version satisfying *every*
 # constraint in the list, or "" when none does.
 func bestSatisfyingAll(versions as list of string, constraints as list of string) {
-    def kept as list of string init [];
-    for (def v in $versions) {
-        if (satisfiesAll($v, $constraints)) {
-            $kept[] = $v;
-        }
-    }
-    # The filter above is the whole test, prerelease opt-in included. Asking
-    # `best` for the top of the survivors under `*` re-applied the prerelease
-    # rule with nothing to opt in, so `=1.0.0-rc.1` kept 1.0.0-rc.1 and then
-    # threw it away.
-    return constraint.highest($kept);
+    # One pass, each constraint and each version read once. Filtering with
+    # `satisfies` per (version, constraint) re-parsed both every time, which
+    # was most of a resolution's cost. The prerelease opt-in is applied by the
+    # filter alone: asking `best` for the top of the survivors under `*`
+    # re-applied it with nothing to opt in, so `=1.0.0-rc.1` kept 1.0.0-rc.1
+    # and then threw it away.
+    return constraint.bestOf($versions, $constraints);
 }
 
 # Index is the catalog read once into maps for the rounds to look things up in.
@@ -172,10 +166,18 @@ def struct Index {
 # it is fetched. A (name, version) seen before is skipped, so the first entry
 # wins, as it does in `catalog.get`; letting a later duplicate's requirements
 # overwrite the first one's made the round and the locked set disagree.
+#
+# A deck's versions are gathered as a run while its entries are contiguous,
+# which is how every filler adds them, and stored once per run. Copying the
+# deck's list out of the map and back for every entry was quadratic in its
+# versions: 8,000 of one deck took 7.9 s to index.
 func indexOf(cat as catalog.Catalog) {
-    def versions as map of string to list of string init {};
     def present as map of string to bool init {};
     def requires as map of string to map of string to string init {};
+    def runNames as list of string init [];
+    def runs as list of list of string init [];
+    def runName as string init "";
+    def run as list of string init [];
     for (def e in $cat.entries) {
         def name as string init deckname.fold($e.name);
         def key as string init $name + "@" + $e.version;
@@ -187,14 +189,55 @@ func indexOf(cat as catalog.Catalog) {
         if ($e.yanked) {
             continue;
         }
-        def cur as list of string init [];
-        if (maps.has($versions, $name)) {
-            $cur = $versions[$name];
+        if (not ($name == $runName) and len($run) > 0) {
+            $runNames[] = $runName;
+            $runs[] = $run;
+            $run = [];
         }
-        $cur[] = $e.version;
-        $versions[$name] = $cur;
+        $runName = $name;
+        $run[] = $e.version;
     }
-    return Index{versions: $versions, present: $present, requires: $requires};
+    if (len($run) > 0) {
+        $runNames[] = $runName;
+        $runs[] = $run;
+    }
+    return Index{versions: joinRuns($runNames, $runs), present: $present, requires: $requires};
+}
+
+# joinRuns turns the runs indexOf gathered into one version list per deck. A
+# deck with two runs (its entries not contiguous in the catalog, which no
+# filler produces) has the second appended to the first; that copy is the rare
+# case.
+func joinRuns(names as list of string, runs as list of list of string) {
+    def out as map of string to list of string init {};
+    for (def i as int init 0; $i < len($names); $i = $i + 1) {
+        if (not maps.has($out, $names[$i])) {
+            $out[$names[$i]] = $runs[$i];
+            continue;
+        }
+        def merged as list of string init $out[$names[$i]];
+        for (def v in $runs[$i]) {
+            $merged[] = $v;
+        }
+        $out[$names[$i]] = $merged;
+    }
+    return $out;
+}
+
+# roundLimit is how many rounds a resolution over this index may take before it
+# is declared non-convergent (see MAX_ROUNDS).
+func roundLimit(idx as Index) {
+    return MAX_ROUNDS + 2 * len($idx.present);
+}
+
+# versionsOf is a deck's selectable versions from the index, empty when it has
+# none.
+func versionsOf(idx as Index, name as string) {
+    if (maps.has($idx.versions, $name)) {
+        return $idx.versions[$name];
+    }
+    def none as list of string init [];
+    return $none;
 }
 
 # foldReqs returns a requirements map with every deck name folded. Two keys
@@ -318,7 +361,17 @@ func failed(message as string) {
 }
 
 # needsFetch builds a GraphResult reporting decks the catalog does not hold yet.
+# A name that is no deck name is a hard failure instead: it came from a root or
+# a version's `requires`, which a publisher controls, and handed back as
+# "missing" it would reach the caller's fetch (and, in the registry, its
+# storage lookups) as `../../etc` or worse. Every caller refused it already;
+# this does not depend on that.
 func needsFetch(names as list of string) {
+    for (def name in $names) {
+        if (not deckname.isValid($name)) {
+            return failed("a requirement names " + $name + ", which is not a valid deck name");
+        }
+    }
     def noDecks as list of catalog.Candidate init [];
     return GraphResult{ok: false, resolved: $noDecks, missing: $names, error: ""};
 }
@@ -384,6 +437,7 @@ func missingFrom(present as map of string to bool, cons as map of string to list
 # fits. Fetch first: a missing deck's requirements are not known yet, and
 # knowing them may change the round.
 func noPick(
+    cat as catalog.Catalog,
     name as string,
     cons as list of string,
     open as list of string,
@@ -392,7 +446,26 @@ func noPick(
         return needsFetch($missing);
     }
     return failed("no version of " + $name + " satisfies " + joinConstraints($cons) +
-        invalidHint($cons) + constraint.prereleaseHint($open));
+        invalidHint($cons) + yankedHint($cat, $name, $cons) +
+        constraint.prereleaseHint($open));
+}
+
+# yankedHint names the yanked versions that would have satisfied every
+# constraint, or returns "". Without it `=1.0.0` on a yanked 1.0.0 read as "no
+# version satisfies", as if 1.0.0 had never been published. Only the failure
+# path pays for the scan.
+func yankedHint(cat as catalog.Catalog, name as string, cons as list of string) {
+    def hits as list of string init [];
+    for (def e in $cat.entries) {
+        if ($e.yanked and deckname.fold($e.name) == $name and
+            not listContains($hits, $e.version) and satisfiesAll($e.version, $cons)) {
+            $hits[] = $e.version;
+        }
+    }
+    if (len($hits) == 0) {
+        return "";
+    }
+    return " (" + strings.join($hits, ", ") + " would, but is yanked)";
 }
 
 # settledResult is the result once the choices have stopped changing: the
@@ -452,7 +525,8 @@ export func resolveGraph(cat as catalog.Catalog, roots as map of string to strin
     def idx as Index init indexOf($cat);
     def picked as map of string to string init {};
     def noSkip as map of string to bool init {};
-    for (def round as int init 0; $round < MAX_ROUNDS; $round = $round + 1) {
+    def limit as int init roundLimit($idx);
+    for (def round as int init 0; $round < $limit; $round = $round + 1) {
         def cons as map of string to list of string init accumulate(
             $idx,
             $rootReqs,
@@ -492,14 +566,13 @@ export func resolveGraph(cat as catalog.Catalog, roots as map of string to strin
             if (not maps.has($idx.present, $name)) {
                 continue;
             }
-            def open as list of string init [];
-            if (maps.has($idx.versions, $name)) {
-                $open = $idx.versions[$name];
-            }
             # A pick depends only on the deck and its constraint set, which seldom
             # changes between rounds, so each distinct pair is worked out once.
+            # The deck's versions are passed straight from the index: bound to
+            # a variable, they were copied for every deck in every round,
+            # cached pick or not.
             if (not maps.has($picked, $keys[$name])) {
-                $picked[$keys[$name]] = bestSatisfyingAll($open, $cons[$name]);
+                $picked[$keys[$name]] = bestSatisfyingAll(versionsOf($idx, $name), $cons[$name]);
             }
             def pick as string init $picked[$keys[$name]];
             # Unsettled, a deck with nothing that fits is left unchosen for now:
@@ -510,7 +583,7 @@ export func resolveGraph(cat as catalog.Catalog, roots as map of string to strin
                 continue;
             }
             if ($pick == "") {
-                return noPick($name, $cons[$name], $open, $missing);
+                return noPick($cat, $name, $cons[$name], versionsOf($idx, $name), $missing);
             }
             $next[$name] = $pick;
         }

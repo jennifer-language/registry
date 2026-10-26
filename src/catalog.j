@@ -37,6 +37,7 @@
  */
 
 use maps;
+import "./deckname.j" as deckname;
 
 /**
  * One published deck version and everything a resolution or an install needs to
@@ -124,14 +125,17 @@ export func candidate(name as string, version as string) {
 
 # entryKey is the identity of a candidate within a catalog. A deck name holds
 # no "@" after its first character and a version holds none at all, so the
-# join is unambiguous.
+# join is unambiguous. The name is folded, as the resolver folds it: keyed by
+# spelling, `@Acme/App` and `@acme/app` at one version were two entries here
+# and one deck there, and which one's requirements counted depended on order.
 func entryKey(name as string, version as string) {
-    return $name + "@" + $version;
+    return deckname.fold($name) + "@" + $version;
 }
 
 /**
  * Return a fresh catalog with one more candidate appended. A (name, version)
- * the catalog already holds is ignored, so the first one added wins; that is
+ * the catalog already holds, the name compared folded, is ignored, so the first
+ * one added wins; that is
  * the one `get` returned anyway, and ignoring the repeat keeps every reader in
  * agreement about which candidate a version means.
  *
@@ -142,8 +146,11 @@ func entryKey(name as string, version as string) {
  * @return {Catalog} a fresh catalog including cand
  */
 export func add(cat as Catalog, cand as Candidate) {
-    if (hasVersion($cat, $cand.name, $cand.version)) {
-        return $cat;
+    def key as string init entryKey($cand.name, $cand.version);
+    for (def e in $cat.entries) {
+        if (entryKey($e.name, $e.version) == $key) {
+            return $cat;
+        }
     }
     def out as list of Candidate init $cat.entries;
     $out[] = $cand;
@@ -153,8 +160,8 @@ export func add(cat as Catalog, cand as Candidate) {
 /**
  * Return a fresh catalog with a whole batch of candidates appended, in order,
  * copying the catalog once rather than once per candidate. As with `add`, a
- * (name, version) already present (in the catalog or earlier in the batch) is
- * ignored, so the first one wins.
+ * (name, version) already present (in the catalog or earlier in the batch,
+ * the name compared folded) is ignored, so the first one wins.
  * @param cat {Catalog} the catalog to extend
  * @param candidates {list of Candidate} the candidates to add, in order
  * @return {Catalog} a fresh catalog including every new candidate
