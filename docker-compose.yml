@@ -72,6 +72,10 @@ services:
       REGISTRY_IDENTITY: "github"
       REGISTRY_IDENTITY_CLIENTID: "${REGISTRY_IDENTITY_CLIENTID:-}"
       REGISTRY_TOKEN_KEY: "${REGISTRY_TOKEN_KEY:-}"
+      # Every REGISTRY_* variable is also read from <NAME>_FILE, a file holding
+      # the value, so a secret need not sit in the environment (visible in
+      # `docker inspect` and to every child process). With a compose secret:
+      # REGISTRY_TOKEN_KEY_FILE: /run/secrets/registry_token_key
 
       # Which forge a publish reads repositories from: resolving a tag to a
       # commit and reading deck.toml at it. Independent of identity above; the

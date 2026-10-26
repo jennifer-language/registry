@@ -1095,3 +1095,84 @@ func testRemovingADeckRemovesItsTrustedPublisher() {
     testing.assertTrue($r.ok);
     testing.assertFalse(store.hasBinding($r.db, "@acme/ansi"));
 }
+
+# --- audit fixes (2026-10-26) ------------------------------------------------
+
+func testRegrantingToTheSameOwnerKeepsTheCoOwners() {
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def argv as list of string init ["deckadmin", "register-namespace", "acme", "--owner", "1000"];
+    $argv[] = "--login";
+    $argv[] = "alice";
+    $argv[] = "--org";
+    def r as AdminResult init dispatch($db, $argv);
+    testing.assertTrue($r.ok);
+    testing.assertEqual(store.getNamespace($r.db, "acme").kind, store.SCOPE_ORG);
+    testing.assertEqual(strings.join(store.getNamespace($r.db, "acme").coOwners, ","), "2000");
+    testing.assertContains($r.message, "1 co-owner(s) were kept");
+}
+
+func testAHandoverDropsTheCoOwners() {
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def r as AdminResult init dispatch(
+        $db,
+        ["deckadmin", "register-namespace", "acme", "--owner", "3000", "--login", "carol"]);
+    testing.assertTrue($r.ok);
+    testing.assertEqual(len(store.getNamespace($r.db, "acme").coOwners), 0);
+    testing.assertContains($r.message, "were dropped");
+}
+
+func testAnOwnerThatIsNotASubjectIdIsRefused() {
+    def r as AdminResult init dispatch(
+        emptyStore(),
+        ["deckadmin", "register-namespace", "acme", "--owner", "has space"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "not a subject id");
+    testing.assertFalse(store.hasNamespace($r.db, "acme"));
+}
+
+func testAnUnknownProviderIsRefused() {
+    def r as AdminResult init dispatch(
+        emptyStore(),
+        ["deckadmin", "register-namespace", "acme", "--owner", "1000", "--provider", "gihub"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "unknown identity provider");
+    testing.assertContains($r.message, "gitlab");
+}
+
+func testACoOwnerThatIsNotASubjectIdIsRefused() {
+    def r as AdminResult init dispatch(owned(), ["deckadmin", "add-owner", "acme", "x y"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "not a subject id");
+    testing.assertEqual(len(store.getNamespace($r.db, "acme").coOwners), 0);
+}
+
+func testMintTokenDaysMustBeAWholeNumber() {
+    def neg as AdminResult init dispatch(
+        owned(),
+        ["deckadmin", "mint-token", "acme", "--days", "-5"]);
+    testing.assertFalse($neg.ok);
+    testing.assertContains($neg.message, "--days");
+    def bad as AdminResult init dispatch(
+        owned(),
+        ["deckadmin", "mint-token", "acme", "--days", "abc"]);
+    testing.assertFalse($bad.ok);
+    testing.assertContains($bad.message, "--days");
+    def never as AdminResult init dispatch(
+        owned(),
+        ["deckadmin", "mint-token", "acme", "--days", "0"]);
+    testing.assertTrue($never.ok);
+    testing.assertContains($never.message, "never");
+}
+
+func testListingIsOneLinePerDeck() {
+    def db as flatdb.DB init registered();
+    $db = dispatch($db, gitAdd("@acme/ansi", "1.0.0", "https://x/u1")).db;
+    $db = dispatch($db, gitAdd("@acme/ansi", "1.1.0", "https://x/u2")).db;
+    $db = dispatch($db, gitAdd("@acme/net", "0.1.0", "https://x/u3")).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "list"]);
+    testing.assertEqual(
+        $r.message,
+        "decks:\n  @acme/ansi (2 version(s))\n  @acme/net (1 version(s))");
+    def one as AdminResult init dispatch($db, ["deckadmin", "list", "@acme/ansi"]);
+    testing.assertEqual($one.message, "versions of @acme/ansi:\n  1.0.0\n  1.1.0");
+}

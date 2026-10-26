@@ -225,3 +225,13 @@ func testControlCharactersNeverReachTheLog() {
     def ev as Event init cleaned(requestSeen("GET", "/x\u001b]0;pwned\u0007", "1.2.3.4"));
     testing.assertFalse(strings.contains($ev.fields["path"], "\u001b"));
 }
+
+func testC1ControlsAndLineSeparatorsAreEscapedToo() {
+    # C1 controls (U+0080..U+009F) are terminal commands on some emulators, and
+    # U+2028 / U+2029 break a line without being a newline
+    testing.assertEqual(printable("a\u0085b"), "a\\xc2\\x85b");
+    testing.assertEqual(printable("a\u009bb"), "a\\xc2\\x9bb");
+    testing.assertEqual(printable("a b"), "a\\xe2\\x80\\xa8b");
+    testing.assertEqual(printable("a b"), "a\\xe2\\x80\\xa9b");
+    testing.assertEqual(printable("a bé"), "a bé");
+}

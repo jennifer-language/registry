@@ -223,9 +223,10 @@ func cleaned(ev as Event) {
     return $out;
 }
 
-# The characters `printable` escapes besides C0 and DEL: the bidirectional
-# embeddings, overrides and isolates, which reorder how a line displays.
-def const BIDI as string init "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069";
+# The characters `printable` escapes besides C0, C1 and DEL: the bidirectional
+# embeddings, overrides and isolates, which reorder how a line displays, and the
+# Unicode line and paragraph separators, which some terminals break a line on.
+def const BIDI as string init "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u2028\u2029";
 
 /**
  * Text with its control characters escaped as `\xNN` per UTF-8 byte, and
@@ -237,7 +238,7 @@ export func printable(s as string) {
     def parts as list of string init [];
     def changed as bool init false;
     for (def ch in strings.chars($s)) {
-        if ($ch < " " or $ch == "\u007f" or strings.contains(BIDI, $ch)) {
+        if ($ch < " " or ($ch >= "\u007f" and $ch <= "\u009f") or strings.contains(BIDI, $ch)) {
             def hex as string init encoding.toText(convert.bytesFromString($ch, "utf-8"), "hex");
             for (def at in 0..convert.toInt(len($hex) / 2)) {
                 $parts[] = "\\x" + strings.substring($hex, $at * 2, $at * 2 + 2);

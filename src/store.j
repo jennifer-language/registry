@@ -359,48 +359,66 @@ func coreAbove(a as list of int, b as list of int) {
     return false;
 }
 
+# plainOrder is the positions of `cores` highest first, by selection: each pass
+# takes the highest not yet taken, the earliest of equals first, so the sort is
+# stable and moves ints only; the cores stay where they were.
+func plainOrder(cores as list of list of int) {
+    def taken as list of bool init [];
+    for (def c in $cores) {
+        $taken[] = false;
+    }
+    def order as list of int init [];
+    for (def k in 0..len($cores)) {
+        def best as int init -1;
+        for (def i in 0..len($cores)) {
+            if (not $taken[$i] and ($best < 0 or coreAbove($cores[$i], $cores[$best]))) {
+                $best = $i;
+            }
+        }
+        $taken[$best] = true;
+        $order[] = $best;
+    }
+    return $order;
+}
+
 # plainDescending orders versions that are all plainCore, highest first, or
 # returns none when any is not, for the general path to handle.
 func plainDescending(all as list of string) {
     def none as list of string init [];
-    def out as list of string init [];
     def cores as list of list of int init [];
     for (def v in $all) {
         def core as list of int init plainCore($v);
         if (len($core) == 0) {
             return $none;
         }
-        def nextV as list of string init [];
-        def nextC as list of list of int init [];
-        def placed as bool init false;
-        for (def i in 0..len($cores)) {
-            if (not $placed and coreAbove($core, $cores[$i])) {
-                $nextV[] = $v;
-                $nextC[] = $core;
-                $placed = true;
-            }
-            $nextV[] = $out[$i];
-            $nextC[] = $cores[$i];
-        }
-        if (not $placed) {
-            $nextV[] = $v;
-            $nextC[] = $core;
-        }
-        $out = $nextV;
-        $cores = $nextC;
+        $cores[] = $core;
+    }
+    def out as list of string init [];
+    for (def i in plainOrder($cores)) {
+        $out[] = $all[$i];
     }
     return $out;
 }
 
-# rankOf is where `p` goes in a list ordered highest first: before the first
-# version it is above, or at the end.
-func rankOf(parsed as list of semver.Version, p as semver.Version) {
-    for (def i in 0..len($parsed)) {
-        if (semver.compare($p, $parsed[$i]) > 0) {
-            return $i;
-        }
+# semverOrder is `plainOrder` over parsed versions, by SemVer precedence.
+func semverOrder(parsed as list of semver.Version) {
+    def taken as list of bool init [];
+    for (def p in $parsed) {
+        $taken[] = false;
     }
-    return len($parsed);
+    def order as list of int init [];
+    for (def k in 0..len($parsed)) {
+        def best as int init -1;
+        for (def i in 0..len($parsed)) {
+            if (not $taken[$i] and
+                ($best < 0 or semver.compare($parsed[$i], $parsed[$best]) > 0)) {
+                $best = $i;
+            }
+        }
+        $taken[$best] = true;
+        $order[] = $best;
+    }
+    return $order;
 }
 
 /**
@@ -408,8 +426,9 @@ func rankOf(parsed as list of semver.Version, p as semver.Version) {
  * `[0]` is the latest release. A version that is not usable SemVer sorts last,
  * in document order, so a malformed record stays visible.
  *
- * Each version is parsed once, then insertion-sorted; parsing inside the
- * comparison was the most expensive step of every listing.
+ * Each version is parsed once, then positions are sorted; parsing inside the
+ * comparison, and later rebuilding the parsed list per insertion, were the most
+ * expensive steps of every listing.
  * @param db {flatdb.DB} the store to read
  * @param name {string} the deck name
  * @return {list of string} the version strings, highest first
@@ -433,29 +452,17 @@ export func listVersionsDescending(db as flatdb.DB, name as string) {
             $unusable[] = $v;
             continue;
         }
-        def p as semver.Version init semver.parse($v);
-        def at as int init rankOf($parsed, $p);
-        def nextV as list of string init [];
-        def nextP as list of semver.Version init [];
-        for (def i in 0..len($parsed)) {
-            if ($i == $at) {
-                $nextV[] = $v;
-                $nextP[] = $p;
-            }
-            $nextV[] = $usable[$i];
-            $nextP[] = $parsed[$i];
-        }
-        if ($at == len($parsed)) {
-            $nextV[] = $v;
-            $nextP[] = $p;
-        }
-        $usable = $nextV;
-        $parsed = $nextP;
-    }
-    for (def v in $unusable) {
+        $parsed[] = semver.parse($v);
         $usable[] = $v;
     }
-    return $usable;
+    def out as list of string init [];
+    for (def i in semverOrder($parsed)) {
+        $out[] = $usable[$i];
+    }
+    for (def v in $unusable) {
+        $out[] = $v;
+    }
+    return $out;
 }
 
 /**
@@ -545,6 +552,11 @@ export func getVersionRecord(db as flatdb.DB, name as string, version as string)
  * Insert or replace a deck version, creating the deck record if needed, and
  * returning a fresh DB. A non-empty `description` updates the deck's own
  * description; an empty one leaves an existing description untouched.
+ *
+ * Over an existing record the publish provenance (`repoId`, `repoOwnerId`,
+ * `repoOwner`) is carried over, and so are `yanked`, `license` and `keywords`
+ * when `ver` leaves them unset: `deckadmin update` replaces the pin, not the
+ * withdrawal or what the manifest said.
  * @param db {flatdb.DB} the store to edit
  * @param name {string} the deck name
  * @param description {string} the deck's description (empty = leave unchanged)
@@ -565,6 +577,7 @@ export func putVersion(db as flatdb.DB, name as string, description as string, v
         $rec = json.set($rec, "/description", $description);
         $out = flatdb.set($out, deckPtr($name), $rec);
     }
+    def kept as DeckVersion init carriedOver($out, $name, $ver);
     def vjson as json.Value init json.map();
     $vjson = json.set($vjson, "/version", $ver.version);
     $vjson = json.set($vjson, "/kind", $ver.kind);
@@ -572,8 +585,8 @@ export func putVersion(db as flatdb.DB, name as string, description as string, v
     $vjson = json.set($vjson, "/ref", $ver.ref);
     $vjson = json.set($vjson, "/commit", $ver.commit);
     $vjson = json.set($vjson, "/checksum", $ver.checksum);
-    $vjson = json.set($vjson, "/yanked", $ver.yanked);
-    $vjson = json.set($vjson, "/license", $ver.license);
+    $vjson = json.set($vjson, "/yanked", $kept.yanked);
+    $vjson = json.set($vjson, "/license", $kept.license);
     def rjson as json.Value init json.map();
     for (def dep in $ver.requires) {
         $rjson = json.set($rjson, "/" + ptrEscape($dep), $ver.requires[$dep]);
@@ -590,13 +603,41 @@ export func putVersion(db as flatdb.DB, name as string, description as string, v
     }
     $vjson = json.set($vjson, "/capabilities", $cjson);
     def kjson as json.Value init json.list();
-    for (def word in $ver.keywords) {
+    for (def word in $kept.keywords) {
         $kjson = json.append($kjson, "", $word);
     }
     $vjson = json.set($vjson, "/keywords", $kjson);
     $vjson = json.set($vjson, "/description", $ver.description);
     $vjson = json.set($vjson, "/publishedAt", $ver.publishedAt);
+    if (flatdb.has($out, versionPtr($name, $ver.version))) {
+        def old as json.Value init flatdb.get($out, versionPtr($name, $ver.version));
+        for (def field in ["/repoId", "/repoOwnerId", "/repoOwner"]) {
+            if (json.has($old, $field)) {
+                $vjson = json.set($vjson, $field, json.get($old, $field));
+            }
+        }
+    }
     $out = flatdb.set($out, versionPtr($name, $ver.version), $vjson);
+    return $out;
+}
+
+# carriedOver fills `yanked`, `license` and `keywords` from the record `ver`
+# replaces, where `ver` leaves them unset. A new version is returned unchanged.
+func carriedOver(db as flatdb.DB, name as string, ver as DeckVersion) {
+    if (not flatdb.has($db, versionPtr($name, $ver.version))) {
+        return $ver;
+    }
+    def old as json.Value init flatdb.get($db, versionPtr($name, $ver.version));
+    def out as DeckVersion init $ver;
+    if (not $out.yanked) {
+        $out.yanked = recordBool($old, "/yanked");
+    }
+    if ($out.license == "") {
+        $out.license = recordString($old, "/license");
+    }
+    if (len($out.keywords) == 0) {
+        $out.keywords = recordStrings($old, "/keywords");
+    }
     return $out;
 }
 
@@ -615,8 +656,8 @@ export func removeVersion(db as flatdb.DB, name as string, version as string) {
 }
 
 /**
- * Remove a whole deck (all its versions), and its trusted-publisher binding,
- * returning a fresh DB. Errors if the deck does not exist (guard with
+ * Remove a whole deck (all its versions), its trusted-publisher binding and its
+ * lookup counts, returning a fresh DB. Errors if the deck does not exist (guard with
  * `hasDeck`). A binding left behind would let the bound repository publish the
  * name again as a first publish.
  * @param db {flatdb.DB} the store to edit
@@ -628,6 +669,10 @@ export func removeDeck(db as flatdb.DB, name as string) {
     def out as flatdb.DB init flatdb.remove($db, deckPtr($name));
     if (flatdb.has($out, bindingPtr($name))) {
         $out = flatdb.remove($out, bindingPtr($name));
+    }
+    # Counts left behind would be inherited by a later deck of the same name.
+    if (flatdb.has($out, statsPtr($name))) {
+        $out = flatdb.remove($out, statsPtr($name));
     }
     return $out;
 }
@@ -674,10 +719,18 @@ func notFound(name as string) {
 # recordString reads an optional string field off a record, yielding "" when
 # the field is absent.
 func recordString(rec as json.Value, field as string) {
-    if (json.has($rec, $field)) {
+    if (json.has($rec, $field) and json.typeOf($rec, $field) == "string") {
         return json.asString($rec, $field);
     }
     return "";
+}
+
+# recordInt reads an optional integer field. Absent or not a number reads as 0.
+func recordInt(rec as json.Value, field as string) {
+    if (json.has($rec, $field) and json.typeOf($rec, $field) == "int") {
+        return json.asInt($rec, $field);
+    }
+    return 0;
 }
 
 # The two kinds a scope's principal may be.
@@ -723,14 +776,14 @@ func recordMap(rec as json.Value, field as string) {
         return $out;
     }
     for (def key in json.keys($rec, $field)) {
-        $out[$key] = json.asString($rec, $field + "/" + $key);
+        $out[$key] = recordString($rec, $field + "/" + ptrEscape($key));
     }
     return $out;
 }
 
 # recordBool reads an optional boolean field. Absent reads as false.
 func recordBool(rec as json.Value, field as string) {
-    if (json.has($rec, $field)) {
+    if (json.has($rec, $field) and json.typeOf($rec, $field) == "bool") {
         return json.asBool($rec, $field);
     }
     return false;
@@ -1000,7 +1053,7 @@ export func removeNamespace(db as flatdb.DB, scope as string) {
 # refreshPtr is the JSON Pointer of one refresh-token record, keyed by the
 # token's fingerprint.
 func refreshPtr(fingerprint as string) {
-    return "/refreshTokens/" + $fingerprint;
+    return "/refreshTokens/" + ptrEscape($fingerprint);
 }
 
 /**
@@ -1041,7 +1094,7 @@ export func putRefresh(db as flatdb.DB, fingerprint as string, rec as Refresh) {
     $rj = json.set($rj, "/expiresAt", $rec.expiresAt);
     def ids as json.Value init json.map();
     for (def name in $rec.orgs) {
-        $ids = json.set($ids, "/" + $name, $rec.orgs[$name]);
+        $ids = json.set($ids, "/" + ptrEscape($name), $rec.orgs[$name]);
     }
     $rj = json.set($rj, "/orgs", $ids);
     $rj = json.set($rj, "/orgsCheckedAt", $rec.orgsCheckedAt);
@@ -1067,16 +1120,12 @@ export func hasRefresh(db as flatdb.DB, fingerprint as string) {
  */
 export func getRefresh(db as flatdb.DB, fingerprint as string) {
     def rec as json.Value init flatdb.get($db, refreshPtr($fingerprint));
-    def checkedAt as int init 0;
-    if (json.has($rec, "/orgsCheckedAt")) {
-        $checkedAt = json.asInt($rec, "/orgsCheckedAt");
-    }
     return Refresh{
         subject: recordString($rec, "/subject"),
-        login: json.asString($rec, "/login"),
-        expiresAt: json.asInt($rec, "/expiresAt"),
+        login: recordString($rec, "/login"),
+        expiresAt: recordInt($rec, "/expiresAt"),
         orgs: recordMap($rec, "/orgs"),
-        orgsCheckedAt: $checkedAt
+        orgsCheckedAt: recordInt($rec, "/orgsCheckedAt")
     };
 }
 
@@ -1241,7 +1290,7 @@ export func getForgeLink(db as flatdb.DB, subject as string) {
     return ForgeLink{
         forgeId: recordString($rec, "/forgeId"),
         forgeLogin: recordString($rec, "/forgeLogin"),
-        linkedAt: json.asInt($rec, "/linkedAt")
+        linkedAt: recordInt($rec, "/linkedAt")
     };
 }
 
@@ -1543,9 +1592,9 @@ export func putProvenance(db as flatdb.DB, name as string, version as string, p 
     return flatdb.set($db, versionPtr($name, $version), $rec);
 }
 
-# idField reads a numeric id field as text, "" when absent.
+# idField reads a numeric id field as text, "" when absent or not a number.
 func idField(rec as json.Value, field as string) {
-    if (not json.has($rec, $field)) {
+    if (not json.has($rec, $field) or not (json.typeOf($rec, $field) == "int")) {
         return "";
     }
     return convert.toString(json.asInt($rec, $field));
@@ -1878,12 +1927,16 @@ func holderOf(path as string) {
  * still holds the holder judged stale. A lock that cannot be created at all
  * (read-only mount, missing directory, wrong uid) fails at once with the reason.
  *
+ * A held lock is waited for up to `flatdb`'s bound, 5 s (`LOCK_WAIT_MS`); past
+ * it this throws rather than queueing, so a long `deckadmin` run makes a
+ * concurrent publish fail instead of stall.
+ *
  * The document must be read inside the lock as well as written, or the edit is
  * computed against a stale copy.
  * @param dbPath {string} the database path this lock guards
  * @return {Lock} the held lock
  * @throws {Error} kind "store" when the lock could not be taken: held past the
- *   wait, or not creatable at all
+ *   5 s wait, or not creatable at all
  */
 export func lock(dbPath as string) {
     try {

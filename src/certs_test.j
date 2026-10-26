@@ -138,3 +138,20 @@ func testADomainOfDotsCannotAddressItsParent() {
     testing.assertEqual(dirFor(tls(), "..."), "data/tls/__.");
     testing.assertEqual(dirFor(tls(), ""), "data/tls/_");
 }
+
+func testSaveLeavesNoStagingFilesAndReplacesABundle() {
+    def dir as string init fs.makeTempDir("", "jvc-certs");
+    def cfg as config.Tls init tls();
+    $cfg.certDir = $dir + "/tls";
+    save($cfg, "example.test", "CERT1", "KEY1", NOW);
+    save($cfg, "example.test", "CERT2", "KEY2", NOW + 10);
+    def b as Bundle init load($cfg, "example.test");
+    testing.assertEqual($b.cert, "CERT2");
+    testing.assertEqual($b.key, "KEY2");
+    testing.assertEqual($b.issuedAt, NOW + 10);
+    for (def p in pathsFor($cfg, "example.test")) {
+        testing.assertFalse(fs.exists($p + ".tmp"));
+    }
+    testing.assertEqual(fs.stat(pathsFor($cfg, "example.test")[1]).mode, 0o600);
+    fs.removeAll($dir);
+}

@@ -19,6 +19,7 @@
 use io;
 use strings;
 use convert;
+use lists;
 import "flatdb.j" as flatdb;
 import "args.j" as args;
 import "./store.j" as store;
@@ -33,6 +34,10 @@ import "./reserved.j" as reserved;
 import "./keywords.j" as keywords;
 import "./token.j" as token;
 import "./constraint.j" as constraint;
+
+# The identity providers a scope may be bound to: the modules under
+# src/identity/, as `config.IDENTITIES` names them (not exported, so repeated here).
+def const PROVIDERS as list of string init ["github", "gitlab", "gitea", "forgejo", "oidc"];
 
 /**
  * The outcome of an admin operation.
@@ -576,7 +581,17 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
             "not a valid scope name: " + $scope +
                 " (lowercase letters, digits and hyphens; not leading, trailing or doubled)");
     }
-    def owner as string init args.asString($r, "owner");
+    def owner as string init strings.trim(args.asString($r, "owner"));
+    if (not ($owner == "") and not identity.isSubject($owner)) {
+        return failResult($db, "not a subject id: " + $owner);
+    }
+    def provider as string init args.asString($r, "provider");
+    if (not lists.contains(PROVIDERS, $provider)) {
+        return failResult(
+            $db,
+            "unknown identity provider \"" + $provider + "\"; expected one of " +
+                strings.join(PROVIDERS, ", "));
+    }
     if (store.hasNamespace($db, $scope) and $owner == "") {
         return readResult($db, "namespace @" + $scope + " already registered");
     }
@@ -586,10 +601,13 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
     # A change of owner drops the old owner's CI tokens and trusted publishers.
     # Re-granting to the same owner (a kind change, say) keeps them.
     def handover as bool init false;
+    def kept as list of string init [];
     if ($reassigned) {
         def before as store.Namespace init store.getNamespace($db, $scope);
-        $handover = not ($before.subject == $owner and
-            $before.provider == args.asString($r, "provider"));
+        $handover = not ($before.subject == $owner and $before.provider == $provider);
+        if (not $handover) {
+            $kept = $before.coOwners;
+        }
     }
     def kind as string init store.SCOPE_USER;
     if (args.asBool($r, "org")) {
@@ -598,7 +616,7 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
     def out as scope.ClaimResult init scope.grantAs(
         $db,
         $scope,
-        args.asString($r, "provider"),
+        $provider,
         $owner,
         args.asString($r, "login"),
         $kind,
@@ -612,15 +630,17 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
         $granted = store.dropDelegations($granted, $scope);
         $message = $message + "; its CI tokens and trusted publishers were dropped";
     }
+    # `grantAs` writes a fresh record; the same owner keeps the co-owners.
+    for (def other in $kept) {
+        $granted = store.addCoOwner($granted, $scope, $other);
+    }
+    if (len($kept) > 0) {
+        $message = $message + "; its " + convert.toString(len($kept)) + " co-owner(s) were kept";
+    }
     return editResult(
         $granted,
         $message,
-        audit.scopeRegistered(
-            $scope,
-            args.asString($r, "provider"),
-            $owner,
-            args.asString($r, "login"),
-            $reassigned));
+        audit.scopeRegistered($scope, $provider, $owner, args.asString($r, "login"), $reassigned));
 }
 
 /**
@@ -752,8 +772,19 @@ export func cmdMintToken(db as flatdb.DB, r as args.Result, now as string) {
             return failResult($db, $deck + " is not under @" + $scopeName);
         }
     }
+    def days as int init -1;
+    try {
+        $days = convert.toInt(strings.trim(args.asString($r, "days")));
+    } catch (err) {
+        $days = -1;
+    }
+    if ($days < 0) {
+        return failResult(
+            $db,
+            "--days takes a whole number of days (0 = never expires): " +
+                args.asString($r, "days"));
+    }
     def secret as string init citoken.PREFIX + token.newRefresh();
-    def days as int init convert.toInt(args.asString($r, "days"));
     def rec as citoken.Token init citoken.Token{
         fingerprint: token.fingerprint($secret),
         name: args.asString($r, "name"),
@@ -982,6 +1013,9 @@ export func cmdAddOwner(db as flatdb.DB, r as args.Result, now as string) {
     if ($subject == "") {
         return failResult($db, "a co-owner is a principal id, not a login");
     }
+    if (not identity.isSubject($subject)) {
+        return failResult($db, "not a subject id: " + $subject);
+    }
     def ns as store.Namespace init store.getNamespace($db, $scopeName);
     if ($ns.subject == "") {
         return failResult(
@@ -1113,21 +1147,22 @@ export func cmdList(db as flatdb.DB, r as args.Result, now as string) {
         if (len($decks) == 0) {
             return readResult($db, "(registry is empty)");
         }
-        def msg as string init "decks:";
+        # Joined once: appending to a growing string is quadratic in the registry.
+        def lines as list of string init ["decks:"];
         for (def deck in $decks) {
             def count as int init len(store.listVersions($db, $deck));
-            $msg = $msg + "\n  " + $deck + " (" + io.sprintf("%d", $count) + " version(s))";
+            $lines[] = "  " + $deck + " (" + io.sprintf("%d", $count) + " version(s))";
         }
-        return readResult($db, $msg);
+        return readResult($db, strings.join($lines, "\n"));
     }
     if (not store.hasDeck($db, $name)) {
         return failResult($db, "no such deck: " + $name);
     }
-    def msg as string init "versions of " + $name + ":";
+    def lines as list of string init ["versions of " + $name + ":"];
     for (def version in store.listVersions($db, $name)) {
-        $msg = $msg + "\n  " + $version;
+        $lines[] = "  " + $version;
     }
-    return readResult($db, $msg);
+    return readResult($db, strings.join($lines, "\n"));
 }
 
 /**

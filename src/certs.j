@@ -208,9 +208,12 @@ export func hasBundle(tls as config.Tls, domain as string) {
 }
 
 /**
- * Write a certificate, its key, and the issue time. The key is set to `0600`
- * because it is a secret and the bind-mounted data directory would otherwise
- * leave its mode to the process umask.
+ * Write a certificate, its key, and the issue time. Each file is written beside
+ * its target and renamed into place, key first, so a crash leaves the old
+ * bundle whole rather than a new key under an old certificate. The key is set
+ * to `0600` before it holds anything, because it is a secret and the
+ * bind-mounted data directory would otherwise leave its mode to the process
+ * umask.
  * @param tls {config.Tls} the TLS configuration
  * @param domain {string} the primary domain
  * @param cert {string} the PEM chain
@@ -220,10 +223,23 @@ export func hasBundle(tls as config.Tls, domain as string) {
 export func save(tls as config.Tls, domain as string, cert as string, key as string, now as int) {
     def paths as list of string init pathsFor($tls, $domain);
     fs.mkdirAll(dirFor($tls, $domain));
-    fs.writeString($paths[0], $cert);
-    fs.writeString($paths[1], $key);
-    fs.chmod($paths[1], 0o600);
-    fs.writeString($paths[2], convert.toString($now));
+    def staged as list of string init [];
+    for (def p in $paths) {
+        $staged[] = $p + ".tmp";
+    }
+    # Create empty, restrict, then fill: `writeString` keeps an existing mode.
+    fs.writeString($staged[1], "");
+    fs.chmod($staged[1], 0o600);
+    fs.writeString($staged[1], $key);
+    fs.writeString($staged[0], $cert);
+    fs.writeString($staged[2], convert.toString($now));
+    # `fs.rename` refuses an existing destination.
+    for (def i in [1, 0, 2]) {
+        if (fs.exists($paths[$i])) {
+            fs.remove($paths[$i]);
+        }
+        fs.rename($staged[$i], $paths[$i]);
+    }
     return null;
 }
 

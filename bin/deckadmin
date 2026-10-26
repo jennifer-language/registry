@@ -45,7 +45,8 @@ if (maps.has($env.values, "REGISTRY_DB")) {
     $dbPath = $env.values["REGISTRY_DB"];
 }
 
-def db as flatdb.DB init store.open($dbPath);
+# Opened under the lock below; a copy read here would be stale by then.
+def db as flatdb.DB;
 def now as string init convert.toString(time.unix(time.utc()));
 
 # envOr reads a collected variable, or "" when it was not set.

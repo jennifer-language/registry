@@ -694,3 +694,119 @@ func testReassigningAScopeDropsItsScopeBinding() {
     testing.assertFalse(hasBinding($db, "@acme/tool"));
     testing.assertTrue(hasBinding($db, "@beta"));
 }
+
+# --- audit fixes (2026-10-26) ------------------------------------------------
+
+func testFiftyShuffledPlainVersionsSortHighestFirst() {
+    def db as flatdb.DB init emptyStore();
+    def want as list of string init [];
+    for (def i in 0..50) {
+        # 37 is coprime to 50, so this visits every number once, out of order
+        def n as int init ($i * 37) % 50;
+        $db = putVersion($db, "ansi", "", sampleVersion("1." + convert.toString($n) + ".0", "u"));
+    }
+    for (def i in 0..50) {
+        $want[] = "1." + convert.toString(49 - $i) + ".0";
+    }
+    testing.assertEqual(
+        strings.join(listVersionsDescending($db, "ansi"), " "),
+        strings.join($want, " "));
+}
+
+func testShuffledSemVerVersionsSortByPrecedenceWithUnusableLast() {
+    def db as flatdb.DB init emptyStore();
+    def given as list of string init [
+        "1.0.0-rc.1",
+        "2.0.0",
+        "99999999999999999999.0.0",
+        "1.0.0",
+        "1.0.0-beta",
+        "0.9.0",
+        "2.0.0-alpha",
+        "1.10.0",
+        "1.9.0",
+        "bogus.0.0"
+    ];
+    for (def v in $given) {
+        $db = putVersion($db, "ansi", "", sampleVersion($v, "u"));
+    }
+    testing.assertEqual(
+        strings.join(listVersionsDescending($db, "ansi"), " "),
+        "2.0.0 2.0.0-alpha 1.10.0 1.9.0 1.0.0 1.0.0-rc.1 1.0.0-beta 0.9.0 " +
+            "99999999999999999999.0.0 bogus.0.0");
+}
+
+func testRemovingADeckDropsItsLookupCounts() {
+    def db as flatdb.DB init putVersion(
+        emptyStore(),
+        "@acme/tool",
+        "",
+        sampleVersion("1.0.0", "u"));
+    $db = putStats($db, "@acme/tool", json.set(json.map(), "/total", 7));
+    testing.assertTrue(json.has(getStats($db, "@acme/tool"), "/total"));
+    $db = removeDeck($db, "@acme/tool");
+    testing.assertFalse(json.has(getStats($db, "@acme/tool"), "/total"));
+}
+
+func testReplacingAVersionKeepsProvenanceAndWithdrawal() {
+    def db as flatdb.DB init putVersion(
+        emptyStore(),
+        "@acme/tool",
+        "",
+        sampleVersion("1.0.0", "u1"));
+    $db = putProvenance(
+        $db,
+        "@acme/tool",
+        "1.0.0",
+        Provenance{repoId: "123", repoOwnerId: "77", repoOwner: "acme"});
+    $db = setYanked($db, "@acme/tool", "1.0.0", true);
+    def withMeta as DeckVersion init sampleVersion("1.0.0", "u1");
+    $withMeta.license = "MIT";
+    $withMeta.keywords = ["net"];
+    $db = putVersion($db, "@acme/tool", "", $withMeta);
+    # an operator `update`: a new pin, nothing else said
+    $db = putVersion($db, "@acme/tool", "", sampleVersion("1.0.0", "u2"));
+    def rec as DeckVersion init getVersionRecord($db, "@acme/tool", "1.0.0");
+    testing.assertEqual($rec.url, "u2");
+    testing.assertTrue($rec.yanked);
+    testing.assertEqual($rec.license, "MIT");
+    testing.assertEqual(strings.join($rec.keywords, ","), "net");
+    testing.assertEqual(provenanceOf($db, "@acme/tool", "1.0.0").repoId, "123");
+    testing.assertEqual(provenanceOf($db, "@acme/tool", "1.0.0").repoOwner, "acme");
+    # a new version carries nothing over
+    def fresh as DeckVersion init getVersionRecord(
+        putVersion($db, "@acme/tool", "", sampleVersion("1.1.0", "u3")),
+        "@acme/tool",
+        "1.1.0");
+    testing.assertFalse($fresh.yanked);
+    testing.assertEqual($fresh.license, "");
+}
+
+func testARefreshRecordWithOddKeysAndMissingFieldsReads() {
+    def db as flatdb.DB init putRefresh(
+        emptyStore(),
+        "a/b~c",
+        Refresh{subject: "u1", login: "alice", expiresAt: 5, orgs: {"x/y": "9"}, orgsCheckedAt: 0});
+    testing.assertTrue(hasRefresh($db, "a/b~c"));
+    testing.assertFalse(hasRefresh($db, "a"));
+    def rec as Refresh init getRefresh($db, "a/b~c");
+    testing.assertEqual($rec.orgs["x/y"], "9");
+    testing.assertEqual($rec.expiresAt, 5);
+    # a hand-edited record: fields absent or of the wrong type read as zero
+    def odd as flatdb.DB init flatdb.set(
+        $db,
+        "/refreshTokens/old",
+        json.set(json.set(json.map(), "/subject", "u2"), "/expiresAt", "soon"));
+    def got as Refresh init getRefresh($odd, "old");
+    testing.assertEqual($got.subject, "u2");
+    testing.assertEqual($got.login, "");
+    testing.assertEqual($got.expiresAt, 0);
+    testing.assertEqual(countRefresh($odd, "u2"), 1);
+}
+
+func testAForgeLinkWithoutATimeReads() {
+    def db as flatdb.DB init flatdb.set(emptyStore(), "/forgeLinks", json.map());
+    $db = flatdb.set($db, "/forgeLinks/u1", json.set(json.map(), "/forgeId", "42"));
+    testing.assertEqual(getForgeLink($db, "u1").forgeId, "42");
+    testing.assertEqual(getForgeLink($db, "u1").linkedAt, 0);
+}

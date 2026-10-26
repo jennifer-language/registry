@@ -102,7 +102,7 @@ ENV REGISTRY_RUN_UID="${UID}" \
 
 # Fail the build early if the interpreter or the module tree is broken: this
 # parses the whole server, its modules, and every pragma in them.
-RUN ["jennifer", "lint", "/app/bin/serve", "/app/bin/deckadmin"]
+RUN ["jennifer", "lint", "/app/bin/serve", "/app/bin/deckadmin", "/app/bin/healthcheck"]
 
 EXPOSE 8080
 
