@@ -362,6 +362,33 @@ func testPurgeDropsOnlyExpiredTokens() {
     testing.assertTrue(hasRefresh($db, "live"));
 }
 
+# legacyRefresh is a refresh record as written from 2026-08-16 to 08-18, with
+# `orgs` a list of organisation ids.
+func legacyRefresh(expiresAt as string) {
+    return json.decode('{"subject": "42", "login": "alice", "orgs": ["7", "9"], ' +
+        '"orgsCheckedAt": 1755300000, "expiresAt": ' + $expiresAt + '}');
+}
+
+func testARefreshRecordWithOrgsAsAListReadsWithNone() {
+    def db as flatdb.DB init flatdb.set(emptyStore(), "/refreshTokens", json.map());
+    $db = flatdb.set($db, "/refreshTokens/aug", legacyRefresh("1800000000"));
+    def rec as Refresh init getRefresh($db, "aug");
+    testing.assertEqual($rec.subject, "42");
+    testing.assertEqual(len($rec.orgs), 0);
+    testing.assertEqual($rec.expiresAt, 1800000000);
+}
+
+func testPurgeGetsPastARecordInAnOlderShape() {
+    # regression: one such record threw in the purge, so every login and
+    # refresh answered 500 (live, 2026-10-28)
+    def db as flatdb.DB init flatdb.set(emptyStore(), "/refreshTokens", json.map());
+    $db = flatdb.set($db, "/refreshTokens/aug", legacyRefresh("1756000000"));
+    $db = putRefresh($db, "live", aRefresh("42", 1800000000));
+    $db = purgeExpiredRefresh($db, 1793200000);
+    testing.assertFalse(hasRefresh($db, "aug"));
+    testing.assertTrue(hasRefresh($db, "live"));
+}
+
 func testPurgeTreatsTheExpiryInstantAsExpired() {
     def db as flatdb.DB init emptyStore();
     $db = putRefresh($db, "edge", aRefresh("42", 2000));

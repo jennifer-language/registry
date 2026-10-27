@@ -769,10 +769,12 @@ func recordStrings(rec as json.Value, field as string) {
     return $out;
 }
 
-# recordMap reads an optional object of string values into a map.
+# recordMap reads an optional object of string values into a map. Anything that
+# is not an object reads as empty: refresh records from 2026-08-16 to 08-18 hold
+# `orgs` as a list, and reading one threw on every login.
 func recordMap(rec as json.Value, field as string) {
     def out as map of string to string init {};
-    if (not json.has($rec, $field)) {
+    if (not json.has($rec, $field) or not (json.typeOf($rec, $field) == "map")) {
         return $out;
     }
     for (def key in json.keys($rec, $field)) {
@@ -1319,8 +1321,10 @@ export func purgeExpiredRefresh(db as flatdb.DB, now as int) {
         return $db;
     }
     def out as flatdb.DB init $db;
+    # Only the expiry is read: one record in a shape no reader expects must not
+    # stop the purge, and with it every login and refresh.
     for (def key in flatdb.keys($db, "/refreshTokens")) {
-        if (getRefresh($db, $key).expiresAt <= $now) {
+        if (recordInt(flatdb.get($db, refreshPtr($key)), "/expiresAt") <= $now) {
             $out = flatdb.remove($out, refreshPtr($key));
         }
     }
