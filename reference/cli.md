@@ -418,7 +418,7 @@ it back; it reports the scope as owned and leaves it alone.
 registry that has reserved the defaults holds scores of names:
 
 ```
-namespaces: 1 owned, 75 reserved
+namespaces: 1 owned, 76 reserved
   @jennifer  mplx [github 12345]
   @admin  (reserved, no owner)
 ```

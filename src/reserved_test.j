@@ -37,7 +37,9 @@ func testTheObviousDangerousNamesAreHeld() {
         "www",
         "jennifer",
         "jvc",
-        "registry"
+        "registry",
+        "jennifer-lang",
+        "deckyard"
     ]) {
         testing.assertTrue(lists.contains($all, $name));
     }
