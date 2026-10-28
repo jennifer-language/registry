@@ -889,6 +889,15 @@ func readThrottled(ctx as web.Context) {
 }
 
 /**
+ * The `web.onError` hook: a handler that threw is logged to the shared log as
+ * well as stderr. The 500 is already sent; this only records it.
+ * @param err {Error} the thrown error
+ */
+func logHandlerError(err as Error) {
+    audit.write($logSink, audit.handlerFailed($err));
+}
+
+/**
  * POST /auth/device: begin a device authorization with the identity provider and
  * return the code the user types.
  * @param ctx {web.Context} the request context
@@ -1801,6 +1810,7 @@ $app = web.before($app, accessLog);
 $app = web.before($app, securityHeaders);
 $app = web.before($app, notModified);
 $app = web.notFound($app, siteNotFound);
+$app = web.onError($app, logHandlerError);
 $app = webapi.install($api, $app, apiGuard);
 
 # The index and the discovery document are unversioned; the well-known path is
@@ -1901,6 +1911,7 @@ func toHttps(ctx as web.Context) {
 def plainApp as web.App init web.new();
 $plainApp = web.before($plainApp, accessLog);
 $plainApp = web.notFound($plainApp, toHttps);
+$plainApp = web.onError($plainApp, logHandlerError);
 $plainApp = web.get($plainApp, "/.well-known/acme-challenge/*rest", acmeChallenge);
 $plainApp = web.get($plainApp, "/health", apiHealth);
 

@@ -374,6 +374,31 @@ export func commandFailed(command as string, reason as string) {
     return Event{level: WARN, message: "command failed", fields: $f};
 }
 
+/** The longest error message a `handlerFailed` event carries. */
+export def const MAX_ERROR_TEXT as int init 300;
+
+/**
+ * A request handler threw, and the engine answered 500. The engine writes the
+ * error to stderr only; this puts it in the log both binaries share, where an
+ * operator looks first (a login broken for everyone was invisible there).
+ * The message is cut at `MAX_ERROR_TEXT`, so a runtime error that quotes a
+ * value cannot carry much of it.
+ * @param err {Error} the thrown error, as `web.onError` hands it over
+ * @return {Event} the event
+ */
+export func handlerFailed(err as Error) {
+    def text as string init $err.message;
+    if (len($text) > MAX_ERROR_TEXT) {
+        $text = strings.substring($text, 0, MAX_ERROR_TEXT) + "...";
+    }
+    def f as map of string to string init {
+        "kind": $err.kind,
+        "error": $text,
+        "at": $err.file + ":" + convert.toString($err.line)
+    };
+    return Event{level: ERROR, message: "handler failed", fields: $f};
+}
+
 /**
  * Fill in the `command` field of an event that carries it blank.
  *

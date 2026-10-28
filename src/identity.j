@@ -178,6 +178,9 @@ export def const STATE_DENIED as string init "denied";
 export def const STATE_EXPIRED as string init "expired";
 # The device code is not one the provider issued (400).
 export def const STATE_INVALID as string init "invalid";
+# The provider failed the exchange itself (GitHub answers HTTP 500 for a device
+# code that was already exchanged); polling again cannot succeed (400).
+export def const STATE_SPENT as string init "spent";
 # An error code outside the grant's vocabulary: a misconfigured client id, a
 # disabled flow, or a provider fault; the code is carried in `Poll.detail` (502).
 export def const STATE_FAILED as string init "failed";

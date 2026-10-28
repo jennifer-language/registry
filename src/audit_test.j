@@ -235,3 +235,30 @@ func testC1ControlsAndLineSeparatorsAreEscapedToo() {
     testing.assertEqual(printable("a b"), "a\\xe2\\x80\\xa9b");
     testing.assertEqual(printable("a bé"), "a bé");
 }
+
+func testAHandlerFailureIsAnErrorWithWhereItHappened() {
+    def err as Error init Error{
+        kind: "runtime",
+        message: "json.keys: expected a map, got a list",
+        file: "/app/src/store.j",
+        line: 778,
+        col: 21
+    };
+    def ev as Event init handlerFailed($err);
+    testing.assertEqual($ev.level, ERROR);
+    testing.assertEqual($ev.fields["kind"], "runtime");
+    testing.assertEqual($ev.fields["error"], "json.keys: expected a map, got a list");
+    testing.assertEqual($ev.fields["at"], "/app/src/store.j:778");
+}
+
+func testAHandlerFailureMessageIsCut() {
+    def err as Error init Error{
+        kind: "runtime",
+        message: strings.repeat("x", 1000),
+        file: "a.j",
+        line: 1,
+        col: 1
+    };
+    def got as string init handlerFailed($err).fields["error"];
+    testing.assertEqual(len($got), MAX_ERROR_TEXT + 3);
+}

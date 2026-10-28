@@ -337,6 +337,10 @@ func testPollStatesMapToStatusCodes() {
     testing.assertEqual(stateReply($db, "slowDown", "").status, 429);
     testing.assertEqual(stateReply($db, "denied", "").status, 403);
     testing.assertEqual(stateReply($db, "expired", "").status, 410);
+    # final, so a client stops polling: jvc retries a 5xx
+    def spent as AuthReply init stateReply($db, "spent", "GitHub answered HTTP 500");
+    testing.assertEqual($spent.status, 400);
+    testing.assertContains(json.asString($spent.body, "/error"), "start the login again");
 }
 
 func testPendingCarriesAStatusBody() {

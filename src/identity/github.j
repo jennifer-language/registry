@@ -38,6 +38,9 @@ def const API_BASE as string init "https://api.github.com";
 
 def const TIMEOUT_MS as int init 10000;
 def const MAX_BYTES as int init 65536;
+# The token poll reads more: GitHub answers a spent device code with a 160 KB
+# HTML error page, and only its status says what happened.
+def const POLL_MAX_BYTES as int init 524288;
 
 # The narrowest scopes that work (specification 8.6): the account's id and login,
 # and organisation membership. No `repo` scope, since decks are public.
@@ -169,6 +172,51 @@ export func pollFrom(doc as json.Value) {
 }
 
 /**
+ * Build a `Poll` from the token endpoint's raw answer. Pure.
+ *
+ * A 500 is what GitHub answers for a device code that was already exchanged
+ * (observed 2026-10-28, an HTML page), so it is `STATE_SPENT`: polling again
+ * cannot succeed. Any other 5xx, a body that is not JSON, or one with neither a
+ * token nor an error throws, which the caller reports as a provider it could
+ * not reach (502, retried by clients).
+ * @param status {int} the HTTP status
+ * @param body {string} the response body
+ * @return {identity.Poll} the outcome
+ * @throws {Error} kind "identity" for a provider fault worth retrying
+ */
+export func pollFromResponse(status as int, body as string) {
+    if ($status == 500) {
+        return identity.Poll{
+            state: identity.STATE_SPENT,
+            accessToken: "",
+            detail: "GitHub answered HTTP 500"
+        };
+    }
+    def answered as string init "GitHub answered HTTP " + convert.toString($status);
+    if ($status > 500) {
+        throw Error{kind: "identity", message: $answered};
+    }
+    def doc as json.Value;
+    try {
+        $doc = json.decode($body);
+    } catch (err) {
+        throw Error{kind: "identity", message: $answered + " without JSON"};
+    }
+    # Neither an error nor a token is not a login: issuing on it would bind an
+    # empty provider token.
+    if (not json.has($doc, "/error") and not hasText($doc, "/access_token")) {
+        throw Error{kind: "identity", message: $answered + " with no token and no error"};
+    }
+    return pollFrom($doc);
+}
+
+# hasText reports whether a field is present as a non-empty string.
+func hasText(doc as json.Value, field as string) {
+    return json.has($doc, $field) and json.typeOf($doc, $field) == "string" and
+        not (json.asString($doc, $field) == "");
+}
+
+/**
  * The organisation ids an account may act for, read from GitHub's memberships
  * payload. Pure.
  *
@@ -291,7 +339,14 @@ func pollOnce(cfg as identity.Config, deviceCode as string) {
     def body as string init formField("client_id", $cfg.clientId) + "&" +
         formField("device_code", $deviceCode) + "&" +
         formField("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
-    return pollFrom(post(endpointFor($cfg, "token"), $body));
+    def res as http.Response init http.requestWith(
+        "POST",
+        endpointFor($cfg, "token"),
+        jsonHeaders(),
+        $body,
+        TIMEOUT_MS,
+        POLL_MAX_BYTES);
+    return pollFromResponse($res.status, $res.body);
 }
 
 # authorize is unused: this provider runs the device flow.

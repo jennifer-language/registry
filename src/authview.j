@@ -126,6 +126,14 @@ export func stateReply(db as flatdb.DB, state as string, detail as string) {
         when "invalid" {
             return fail($db, 400, "the identity provider does not know this device code");
         }
+        when "spent" {
+            # A 400, not a 502: jvc retries a 5xx, and this code cannot succeed.
+            return fail(
+                $db,
+                400,
+                "the identity provider could not exchange this device code (" + $detail +
+                    "); a code already exchanged ends this way: start the login again");
+        }
     }
     # Not in the grant's vocabulary: the provider, or the registry's client
     # configuration, is at fault, not the user. The code is what the operator

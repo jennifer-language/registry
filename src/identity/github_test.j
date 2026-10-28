@@ -182,3 +182,37 @@ func testTheMembershipsEndpointAsksForActiveOnly() {
 func testFixedEndpointsNeedNoDiscovery() {
     testing.assertEqual(provider().discover(cfg()), "");
 }
+
+func testASpentDeviceCodeIsFinal() {
+    # GitHub answers a device code that was already exchanged with an HTML 500
+    def got as identity.Poll init pollFromResponse(
+        500,
+        "<!DOCTYPE html><title>Server Error</title>");
+    testing.assertEqual($got.state, identity.STATE_SPENT);
+    testing.assertContains($got.detail, "HTTP 500");
+}
+
+func pollUnavailable() {
+    pollFromResponse(503, "<html>unavailable</html>");
+}
+
+func pollNotJson() {
+    pollFromResponse(200, "<html>proxy</html>");
+}
+
+func pollEmpty() {
+    pollFromResponse(200, '{}');
+}
+
+func testAnOutageOrAnUnreadableAnswerIsRetryable() {
+    testing.assertThrows("pollUnavailable", "identity");
+    testing.assertThrows("pollNotJson", "identity");
+    testing.assertThrows("pollEmpty", "identity");
+}
+
+func testAJsonAnswerReadsAsBefore() {
+    testing.assertEqual(
+        pollFromResponse(200, '{"error":"authorization_pending"}').state,
+        identity.STATE_PENDING);
+    testing.assertEqual(pollFromResponse(200, '{"access_token":"gho_x"}').accessToken, "gho_x");
+}
