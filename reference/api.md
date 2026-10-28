@@ -435,8 +435,11 @@ then `404` for an unknown version.
 
 Bearer token only. Claims an unregistered scope under the deployment's claim
 policy (`derived` by default: the caller's own login, or an organisation the
-login carries). `201` with `{"scope", "owner"}`. `400` for a missing or invalid
-name, `409` for one already held or reserved, `403` when the policy declines.
+login carries). `201` with `{"scope", "owner", "kind"}`: `kind` is `user` or
+`org`, and `owner` is the login the scope is now bound to, which for an
+organisation claim is the organisation, not the caller. `400` for a missing or
+invalid name, `409` for one already held or reserved, `403` when the policy
+declines.
 
 ### POST /owners
 

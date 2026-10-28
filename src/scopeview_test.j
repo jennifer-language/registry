@@ -51,7 +51,24 @@ func testAClaimSucceedsUnderDerived() {
     testing.assertEqual($out.status, 201);
     testing.assertTrue($out.changed);
     testing.assertEqual(json.asString($out.body, "/scope"), "alice");
+    testing.assertEqual(json.asString($out.body, "/owner"), "alice");
+    testing.assertEqual(json.asString($out.body, "/kind"), "user");
     testing.assertTrue(store.ownsNamespace($out.db, "alice", "github", "1234567"));
+}
+
+func testAnOrganisationClaimNamesTheOrganisation() {
+    # the scope binds to the organisation, so the reply and the audit event say
+    # so; the member who claimed it is kept as claimedBy
+    def member as identity.Subject init alice();
+    $member.orgs = {"acme": "7654321"};
+    def out as ScopeReply init claim(emptyDb(), derived.policy(), $member, "acme", none(), NOW);
+    testing.assertEqual($out.status, 201);
+    testing.assertEqual(json.asString($out.body, "/owner"), "acme");
+    testing.assertEqual(json.asString($out.body, "/kind"), "org");
+    testing.assertTrue(store.ownsNamespace($out.db, "acme", "github", "7654321"));
+    testing.assertEqual($out.event.fields["subject"], "7654321");
+    testing.assertEqual($out.event.fields["login"], "acme");
+    testing.assertEqual($out.event.fields["claimedBy"], "alice");
 }
 
 func testTheThreeRefusalsAreDistinguishable() {

@@ -103,16 +103,23 @@ export func claim(
         return refuse($db, claimStatus($out.reason), $out.reason);
     }
     def folded as string init deckname.fold($name);
+    # The reply names the recorded owner, which for an organisation claim is
+    # the organisation, not the caller.
+    def ns as store.Namespace init store.getNamespace($out.db, $folded);
     def body as json.Value init json.map();
     $body = json.set($body, "/scope", $folded);
-    $body = json.set($body, "/owner", $who.login);
-    return ScopeReply{
-        status: 201,
-        body: $body,
-        db: $out.db,
-        changed: true,
-        event: audit.scopeRegistered($folded, $who.provider, $who.id, $who.login, false)
-    };
+    $body = json.set($body, "/owner", $ns.login);
+    $body = json.set($body, "/kind", $ns.kind);
+    def event as audit.Event init audit.scopeRegistered(
+        $folded,
+        $ns.provider,
+        $ns.subject,
+        $ns.login,
+        false);
+    if ($ns.kind == store.SCOPE_ORG) {
+        $event.fields["claimedBy"] = $who.login;
+    }
+    return ScopeReply{status: 201, body: $body, db: $out.db, changed: true, event: $event};
 }
 
 /**
