@@ -94,6 +94,15 @@ func onRegisterNamespace(r as args.Result) {
 }
 
 /**
+ * The `remove-namespace` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onRemoveNamespace(r as args.Result) {
+    return admin.cmdRemoveNamespace($db, $r, $now);
+}
+
+/**
  * The `add-owner` handler.
  * @param r {args.Result} the parsed command line
  * @return {admin.AdminResult} the outcome
@@ -277,6 +286,7 @@ def result as admin.AdminResult init args.dispatch(
         "remove": onRemove,
         "list": onList,
         "register-namespace": onRegisterNamespace,
+        "remove-namespace": onRemoveNamespace,
         "add-owner": onAddOwner,
         "remove-owner": onRemoveOwner,
         "namespaces": onNamespaces,

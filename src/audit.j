@@ -727,6 +727,23 @@ export func coOwnerRemoved(scope as string, provider as string, subject as strin
 }
 
 /**
+ * A scope was unregistered and may be claimed again. A warning, like a
+ * reassignment: it is the other way a scope leaves its holder.
+ * @param scope {string} the scope, without its "@"
+ * @param provider {string} the provider its owner was under ("" when reserved)
+ * @param subject {string} the owner it was bound to ("" when reserved)
+ * @return {Event} the event
+ */
+export func scopeRemoved(scope as string, provider as string, subject as string) {
+    def f as map of string to string init {"scope": $scope};
+    if (not ($subject == "")) {
+        $f["provider"] = $provider;
+        $f["subject"] = $subject;
+    }
+    return Event{level: WARN, message: "scope removed", fields: $f};
+}
+
+/**
  * A TLS certificate is in place. `issuedAt` is what renewal is decided from.
  * @param domains {string} the names the certificate covers
  * @param issuedAt {int} when it was obtained (Unix seconds)

@@ -262,3 +262,12 @@ func testAHandlerFailureMessageIsCut() {
     def got as string init handlerFailed($err).fields["error"];
     testing.assertEqual(len($got), MAX_ERROR_TEXT + 3);
 }
+
+func testARemovedScopeIsAWarningNamingItsFormerOwner() {
+    def ev as Event init scopeRemoved("acme", "github", "1000");
+    testing.assertEqual($ev.level, WARN);
+    testing.assertEqual($ev.message, "scope removed");
+    testing.assertEqual($ev.fields["subject"], "1000");
+    # a reserved scope had nobody to name
+    testing.assertFalse(maps.has(scopeRemoved("acme", "", "").fields, "subject"));
+}

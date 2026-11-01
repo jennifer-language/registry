@@ -36,6 +36,7 @@ func dispatch(db as flatdb.DB, argv as list of string) {
         when "register-namespace" { return cmdRegisterNamespace($db, $r, NOW); }
         when "add-owner" { return cmdAddOwner($db, $r, NOW); }
         when "remove-owner" { return cmdRemoveOwner($db, $r, NOW); }
+        when "remove-namespace" { return cmdRemoveNamespace($db, $r, NOW); }
         when "namespaces" { return cmdNamespaces($db, $r, NOW); }
         when "reserve-defaults" { return cmdReserveDefaults($db, $r, NOW); }
         when "mint-token" { return cmdMintToken($db, $r, NOW); }
@@ -1175,4 +1176,121 @@ func testListingIsOneLinePerDeck() {
         "decks:\n  @acme/ansi (2 version(s))\n  @acme/net (1 version(s))");
     def one as AdminResult init dispatch($db, ["deckadmin", "list", "@acme/ansi"]);
     testing.assertEqual($one.message, "versions of @acme/ansi:\n  1.0.0\n  1.1.0");
+}
+
+# --- remove-namespace -------------------------------------------------------
+
+func testAnEmptyScopeIsRemovedWithItsOwners() {
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "add-owner", "acme", "2000"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "remove-namespace", "@acme"]);
+    testing.assertTrue($r.ok);
+    testing.assertTrue($r.changed);
+    testing.assertFalse(store.hasNamespace($r.db, "acme"));
+    testing.assertContains($r.message, "owner 1000, 1 co-owner(s)");
+    testing.assertEqual($r.event.message, "scope removed");
+    testing.assertEqual($r.event.level, audit.WARN);
+    testing.assertEqual($r.event.fields["subject"], "1000");
+}
+
+func testRemovingAScopeDropsItsDelegations() {
+    def db as flatdb.DB init dispatch(owned(), ["deckadmin", "trust", "@acme", "123456789"]).db;
+    $db = dispatch($db, ["deckadmin", "mint-token", "acme"]).db;
+    testing.assertEqual(len(store.listCiTokens($db)), 1);
+    def r as AdminResult init dispatch($db, ["deckadmin", "remove-namespace", "acme"]);
+    testing.assertTrue($r.ok);
+    testing.assertFalse(store.hasBinding($r.db, "@acme"));
+    testing.assertEqual(len(store.listCiTokens($r.db)), 0);
+}
+
+func testAScopeWithADeckIsNeverFreed() {
+    def db as flatdb.DB init dispatch(
+        registered(),
+        gitAdd("@acme/ansi", "1.0.0", "https://github.com/acme/ansi")).db;
+    # yanked still counts: a lockfile installs it, so the name is in use
+    $db = dispatch($db, ["deckadmin", "yank", "@acme/ansi", "1.0.0"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "remove-namespace", "acme"]);
+    testing.assertFalse($r.ok);
+    testing.assertFalse($r.changed);
+    testing.assertContains($r.message, "1 deck(s) (@acme/ansi)");
+    testing.assertTrue(store.hasNamespace($r.db, "acme"));
+}
+
+func testAReservedDefaultIsNotRemoved() {
+    def argv as list of string init ["deckadmin", "register-namespace", "admin"];
+    def db as flatdb.DB init dispatch(emptyStore(), $argv).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "remove-namespace", "admin"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "reserved list");
+}
+
+func testRemovingAnUnknownScopeFails() {
+    def r as AdminResult init dispatch(emptyStore(), ["deckadmin", "remove-namespace", "nope"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "not registered");
+}
+
+func testAnotherScopesDeckDoesNotBlockRemoval() {
+    def db as flatdb.DB init dispatch(
+        registered(),
+        gitAdd("@acme/ansi", "1.0.0", "https://github.com/acme/ansi")).db;
+    $db = dispatch($db, ["deckadmin", "register-namespace", "acme-tools"]).db;
+    testing.assertTrue(dispatch($db, ["deckadmin", "remove-namespace", "acme-tools"]).ok);
+}
+
+func testRemovingAScopeByNamePointsAtRemoveNamespace() {
+    for (def given in ["@acme", "acme", "@ACME"]) {
+        def r as AdminResult init dispatch(registered(), ["deckadmin", "remove", $given]);
+        testing.assertFalse($r.ok);
+        testing.assertTrue(store.hasNamespace($r.db, "acme"));
+        testing.assertContains($r.message, "deckadmin remove-namespace acme");
+    }
+    # a missing deck under the scope gets no hint
+    def r as AdminResult init dispatch(registered(), ["deckadmin", "remove", "@acme/foo"]);
+    testing.assertEqual($r.message, "no such deck: @acme/foo");
+    # nor does a name that is no scope at all
+    def other as AdminResult init dispatch(registered(), ["deckadmin", "remove", "@zork"]);
+    testing.assertEqual($other.message, "no such deck: @zork");
+}
+
+# --- subject ids per provider -----------------------------------------------
+
+func testAGithubOwnerMustBeTheAccountId() {
+    def argv as list of string init [
+        "deckadmin",
+        "register-namespace",
+        "jennifer",
+        "--owner",
+        "mplx"
+    ];
+    def r as AdminResult init dispatch(emptyStore(), $argv);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "numeric account id, not a login: mplx");
+    testing.assertFalse(store.hasNamespace($r.db, "jennifer"));
+}
+
+func testAnOidcOwnerMayBeAnyOpaqueId() {
+    def argv as list of string init [
+        "deckadmin",
+        "register-namespace",
+        "acme",
+        "--provider",
+        "oidc",
+        "--owner",
+        "3f6c1b9e-2d4a-4c8b-9e1f-0a7b5c3d2e19"
+    ];
+    testing.assertTrue(dispatch(emptyStore(), $argv).ok);
+}
+
+func testACoOwnerMustBeTheAccountIdUnderTheScopesProvider() {
+    def r as AdminResult init dispatch(owned(), ["deckadmin", "add-owner", "acme", "bob"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "numeric account id");
+}
+
+func testALoginStoredAsACoOwnerCanStillBeRemoved() {
+    # entries from before the check must stay removable
+    def db as flatdb.DB init store.addCoOwner(owned(), "acme", "bob");
+    def r as AdminResult init dispatch($db, ["deckadmin", "remove-owner", "acme", "bob"]);
+    testing.assertTrue($r.ok);
+    testing.assertEqual(len(store.ownersOf($r.db, "acme")), 1);
 }

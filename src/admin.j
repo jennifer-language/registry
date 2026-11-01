@@ -88,6 +88,12 @@ func ownershipCommands(p as args.Parser) {
     $ro = args.positional($ro, "subject", "the principal id to remove");
     $out = args.command($out, "remove-owner", "remove a co-owner from a scope", $ro);
 
+    def rn as args.Parser init args.parser(
+        "remove-namespace",
+        "unregister a scope no deck was ever published under");
+    $rn = args.positional($rn, "scope", "the scope to remove (acme or @acme)");
+    $out = args.command($out, "remove-namespace", "unregister a scope with no decks", $rn);
+
     def nsl as args.Parser init args.parser("namespaces", "list registered scopes");
     $nsl = args.boolFlag($nsl, "owned", "", "only scopes that have an owner");
     $nsl = args.boolFlag($nsl, "reserved", "", "only scopes held with no owner");
@@ -540,7 +546,7 @@ export func cmdRemove(db as flatdb.DB, r as args.Result, now as string) {
     def version as string init args.asString($r, "version");
     if ($version == "") {
         if (not store.hasDeck($db, $name)) {
-            return failResult($db, "no such deck: " + $name);
+            return failResult($db, "no such deck: " + $name + scopeHint($db, $name));
         }
         return editResult(
             store.removeDeck($db, $name),
@@ -555,6 +561,23 @@ export func cmdRemove(db as flatdb.DB, r as args.Result, now as string) {
         $out,
         "removed " + $name + "@" + $version,
         audit.deckRemoved($name, $version));
+}
+
+# scopeHint points at `remove-namespace` when a name given to `remove` is a
+# registered scope (`@acme` or `acme`) rather than a deck; "" otherwise.
+func scopeHint(db as flatdb.DB, name as string) {
+    if (strings.contains($name, "/")) {
+        return "";
+    }
+    def bare as string init $name;
+    if (strings.startsWith($bare, "@")) {
+        $bare = strings.substring($bare, 1, len($bare));
+    }
+    if (not store.hasNamespace($db, $bare)) {
+        return "";
+    }
+    return "; @" + $bare + " is a scope, not a deck: to unregister it, use " +
+        "'deckadmin remove-namespace " + $bare + "'";
 }
 
 /**
@@ -582,15 +605,18 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
                 " (lowercase letters, digits and hyphens; not leading, trailing or doubled)");
     }
     def owner as string init strings.trim(args.asString($r, "owner"));
-    if (not ($owner == "") and not identity.isSubject($owner)) {
-        return failResult($db, "not a subject id: " + $owner);
-    }
     def provider as string init args.asString($r, "provider");
     if (not lists.contains(PROVIDERS, $provider)) {
         return failResult(
             $db,
             "unknown identity provider \"" + $provider + "\"; expected one of " +
                 strings.join(PROVIDERS, ", "));
+    }
+    if (not ($owner == "")) {
+        def wrongOwner as string init identity.subjectProblem($provider, $owner);
+        if (not ($wrongOwner == "")) {
+            return failResult($db, $wrongOwner);
+        }
     }
     if (store.hasNamespace($db, $scope) and $owner == "") {
         return readResult($db, "namespace @" + $scope + " already registered");
@@ -1013,10 +1039,12 @@ export func cmdAddOwner(db as flatdb.DB, r as args.Result, now as string) {
     if ($subject == "") {
         return failResult($db, "a co-owner is a principal id, not a login");
     }
-    if (not identity.isSubject($subject)) {
-        return failResult($db, "not a subject id: " + $subject);
-    }
     def ns as store.Namespace init store.getNamespace($db, $scopeName);
+    # Co-owners live under the scope's own provider (see the module docblock).
+    def wrongSubject as string init identity.subjectProblem($ns.provider, $subject);
+    if (not ($wrongSubject == "")) {
+        return failResult($db, $wrongSubject);
+    }
     if ($ns.subject == "") {
         return failResult(
             $db,
@@ -1071,6 +1099,62 @@ export func cmdRemoveOwner(db as flatdb.DB, r as args.Result, now as string) {
         $out,
         "removed " + $subject + " from @" + $scopeName,
         audit.coOwnerRemoved($scopeName, $ns.provider, $subject));
+}
+
+/**
+ * Unregister a scope, so it may be claimed again: a mistaken grant or
+ * reservation. Refused while any deck exists under it, yanked ones included,
+ * so a name somebody installs never comes free for another publisher; refused
+ * for a scope on the reserved list, which `reserve-defaults` holds on purpose.
+ * The record goes, and with it the owner and co-owners; the scope's CI tokens
+ * and trusted publishers are dropped as on a reassignment.
+ *
+ * A deck removed with `remove` leaves no record, so its name cannot be told
+ * from one never used; removing the decks first is how a scope is emptied.
+ * @param db {flatdb.DB} the current registry store
+ * @param r {args.Result} the parsed command line
+ * @param now {string} unused; kept so every command shares one handler shape
+ * @return {AdminResult} the result: the (edited) store, flags, and a message
+ */
+export func cmdRemoveNamespace(db as flatdb.DB, r as args.Result, now as string) {
+    def scopeName as string init deckname.fold(strings.trim(args.asString($r, "scope")));
+    if (strings.startsWith($scopeName, "@")) {
+        $scopeName = strings.substring($scopeName, 1, len($scopeName));
+    }
+    if (not store.hasNamespace($db, $scopeName)) {
+        return failResult($db, "namespace @" + $scopeName + " is not registered");
+    }
+    if (lists.contains(reserved.defaults(), $scopeName)) {
+        return failResult(
+            $db,
+            "@" + $scopeName + " is on the reserved list; it stays held so nobody can claim it");
+    }
+    def decks as list of string init [];
+    for (def name in store.listDecks($db)) {
+        if (deckname.scopeOf($name) == $scopeName) {
+            $decks[] = $name;
+        }
+    }
+    if (len($decks) > 0) {
+        return failResult(
+            $db,
+            "@" + $scopeName + " has " + convert.toString(len($decks)) + " deck(s) (" +
+                strings.join(lists.sort($decks), ", ") +
+                "); a scope with published decks is never freed, so their names cannot " +
+                "pass to another publisher");
+    }
+    def ns as store.Namespace init store.getNamespace($db, $scopeName);
+    def out as flatdb.DB init store.dropDelegations($db, $scopeName);
+    $out = store.removeNamespace($out, $scopeName);
+    def message as string init "removed @" + $scopeName;
+    if (not ($ns.subject == "")) {
+        $message = $message + " (owner " + $ns.subject + ", " +
+            convert.toString(len($ns.coOwners)) + " co-owner(s))";
+    }
+    return editResult(
+        $out,
+        $message + "; its CI tokens and trusted publishers were dropped",
+        audit.scopeRemoved($scopeName, $ns.provider, $ns.subject));
 }
 
 /**

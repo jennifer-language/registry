@@ -180,7 +180,7 @@ rotation needs a restart. Fetching per request would add two round trips to
 every publish and make the registry unavailable whenever the issuer is.
 
 `REGISTRY_FORGE*` configures how a publish reads a repository: resolving a tag to a
-commit and reading `deck.toml` at it. Identity and forge are configured
+commit and reading the manifest at it. Identity and forge are configured
 separately; they coincide only on `github.com`.
 
 A missing database file opens as an empty registry, so a first run needs no seed
@@ -320,9 +320,10 @@ and `deckadmin` never sees a request, so only the shared file shows both.
 | ------- | ---- |
 | `add <deck> <version> <url> [description] [flags]` | publish a version (an upsert; see below) |
 | `update ...` | an alias of `add` |
-| `remove <deck> [version]` | remove one version, or a whole deck |
+| `remove <deck> [version]` | remove one version, or a whole deck (a scope: `remove-namespace`) |
 | `list [deck]` | list decks, or one deck's versions |
 | `register-namespace <scope> [flags]` | grant a scope to a principal, or reserve it |
+| `remove-namespace <scope>` | unregister a scope no deck exists under |
 | `add-owner <scope> <subject>` | let another principal write under a scope |
 | `remove-owner <scope> <subject>` | revoke a co-owner |
 | `namespaces [--owned\|--reserved]` | list registered scopes and who owns each |
@@ -377,7 +378,9 @@ jennifer run bin/deckadmin remove-owner acme 67890
 ```
 
 The argument is the principal id, not a login, so a rename never changes who may
-write; it is checked as a subject id, as `POST /owners` checks it. Co-owners live
+write; it is checked as a subject id under the scope's provider (numeric for all
+but OIDC), as `POST /owners` checks it. Removing is not checked that strictly,
+so an entry stored before the check can still be taken out. Co-owners live
 under the scope's own provider; the same numeric id at a different provider is a
 different person and is refused.
 
@@ -395,6 +398,27 @@ Reassigning a scope to a different owner drops its CI tokens and trusted
 publishers, since the old owner granted them; the new owner mints and binds
 their own. Re-granting to the same owner keeps them. Removing a deck removes
 its trusted publisher too.
+
+#### Removing a scope
+
+`remove-namespace` undoes a mistaken grant or reservation, so the scope can be
+claimed again:
+
+```sh
+jennifer run bin/deckadmin remove-namespace acme
+```
+
+- **Refused while any deck exists under the scope**, yanked ones included. A
+  name somebody installs must never pass to another publisher.
+- **Refused for a scope on the reserved list.** `reserve-defaults` holds those
+  on purpose.
+- **What goes with the record:** the owner and the co-owners. The scope's CI
+  tokens and trusted publishers are dropped, as on a reassignment.
+- **The log records it** as a warning, `scope removed`, with the former owner.
+
+A deck removed with `remove` leaves no record behind, so its name cannot be
+told apart from one never used. Removing a scope's decks first therefore does
+free the scope; do that only when the names were never in use.
 
 A team that only needs to publish rarely needs co-owners: a CI token scoped to
 the namespace, or a trusted publisher per deck, lets people and pipelines
@@ -504,10 +528,14 @@ scope changes hands. A change of owner or provider drops the scope's co-owners,
 CI tokens and trusted publishers; re-running it for the same owner (to set
 `--org`, say) keeps all three and says so.
 
-`--owner` must be a subject id (`identity.isSubject`: 1 to 255 printable ASCII
-characters, no whitespace) and `--provider` one of the identity modules
-(`github`, `gitlab`, `gitea`, `forgejo`, `oidc`); anything else is refused,
-since a scope bound to a mistyped provider could never be written under.
+`--provider` must be one of the identity modules (`github`, `gitlab`, `gitea`,
+`forgejo`, `oidc`), and `--owner` a subject id under it
+(`identity.subjectProblem`). For GitHub, GitLab, Gitea and Forgejo that is the
+**numeric account id**, never the login: a login presents the number, so a
+scope bound to `mplx` would match nobody. The GitHub id is the `id` field of
+`https://api.github.com/users/<login>`. An OIDC `sub` is opaque and only has to
+be 1 to 255 printable ASCII characters without whitespace. Anything else is
+refused, since a scope bound to it could never be written under.
 
 #### `trust`
 
