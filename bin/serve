@@ -50,6 +50,7 @@ import "../src/citoken.j" as citoken;
 import "../src/forgecred.j" as forgecred;
 import "../src/config.j" as config;
 import "../src/stats.j" as stats;
+import "../src/featured.j" as featured;
 import "../src/deckname.j" as deckname;
 import "../src/certs.j" as certs;
 import "../src/scopeview.j" as scopeview;
@@ -467,7 +468,7 @@ func counterValue(key as string) {
 func apiIndex(ctx as web.Context) {
     if (webapi.wants($ctx) == "html") {
         def db as flatdb.DB init sharedStore();
-        def page as webview.Page init webview.home($db);
+        def page as webview.Page init webview.homeFrom(len(store.listDecks($db)), sharedFeatured());
         web.html($ctx, $page.status, $page.body);
         return;
     }
@@ -696,14 +697,17 @@ func sharedStore() {
     return flatdb.DB{path: $dbPath, data: $db.data, version: ""};
 }
 
-# The four shared read values: the deck index (`search.index`) and the three
-# lookups derived from it (`search.lowered`, `tagMap`, `scopeMap`), built once
-# per change of the file and shared like the store. Every listing and search
-# reads them; building the index sorts every deck's versions (about 0.7 s at
-# 5,000 decks), the three lookups add about 0.1 s and turn the per-request scans
-# of the index (13 to 44 ms each at that size) into lookups.
+# The shared read values: the deck index (`search.index`), the three lookups
+# derived from it (`search.lowered`, `tagMap`, `scopeMap`) and the landing
+# page's featured decks (`featured.build`), built once per change of the file
+# and shared like the store. Every listing and search reads them; building the
+# index sorts every deck's versions (about 0.7 s at 5,000 decks), the three
+# lookups add about 0.1 s and turn the per-request scans of the index (13 to
+# 44 ms each at that size) into lookups. The featured decks also read the clock
+# (the count windows, the deck of the day); `SHARED_TTL_SECONDS` keeps them
+# from going stale on a file that does not change.
 #
-# All four are built from one index and filed under one file version, so the
+# All are built from one index and filed under one file version, so the
 # positions a lookup holds refer to the index served with it. `sharedStore` may
 # return a newer copy, which only makes the index newer than its key.
 func sharedIndex() {
@@ -722,7 +726,14 @@ func sharedScopeMap() {
     return sharedPart("scopes");
 }
 
-# sharedPart is one of the four by name. One reader builds all four while the
+# sharedFeatured is the landing page's featured decks (`featured.build`), built
+# with the four above. It reads every deck's versions and counts, so building it
+# per request would cost what the index does.
+func sharedFeatured() {
+    return sharedPart("featured");
+}
+
+# sharedPart is one of the five by name. One reader builds all five while the
 # rest wait on the index's marker; a part missing after the build (expired
 # between two calls) is rebuilt from the index that was just filed.
 func sharedPart(name as string) {
@@ -740,7 +751,7 @@ func sharedPart(name as string) {
     }
     def index as json.Value init search.index(sharedStore());
     keepShared("current index", "index " + $version, $index);
-    for (def part in ["lowered", "tags", "scopes"]) {
+    for (def part in ["lowered", "tags", "scopes", "featured"]) {
         keepShared("current " + $part, $part + " " + $version, partOf($part, $index));
     }
     return partOf($name, $index);
@@ -752,6 +763,7 @@ func partOf(name as string, index as json.Value) {
         when "lowered" { return search.lowered($index); }
         when "tags" { return search.tagMap($index); }
         when "scopes" { return search.scopeMap($index); }
+        when "featured" { return featured.build(sharedStore(), $index, nowSeconds()); }
     }
     return $index;
 }

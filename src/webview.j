@@ -34,6 +34,7 @@ import "./search.j" as search;
 import "./deckname.j" as deckname;
 import "./stats.j" as stats;
 import "./keywords.j" as keywords;
+import "./featured.j" as featured;
 import "uri.j" as uri;
 
 /**
@@ -153,8 +154,16 @@ header .wrap {
   color: var(--fg); font-size: 1.05rem;
 }
 .brand span { color: var(--accent); }
-nav { margin-left: auto; display: flex; gap: 1.25rem; }
+nav { margin-left: auto; display: flex; align-items: baseline; gap: 1.25rem; }
 nav a, .muted a { color: var(--muted); text-decoration: none; font-size: 0.9rem; }
+nav a { white-space: nowrap; }
+/* On a phone the links go under the brand and wrap as whole words, so the
+   header never pushes the page wider than the screen. */
+@media (max-width: 48rem) {
+  header .wrap { flex-wrap: wrap; row-gap: 0.6rem; }
+  header nav { margin-left: 0; flex-basis: 100%; flex-wrap: wrap; gap: 0.5rem 1rem; }
+  header nav .theme { margin-left: auto; }
+}
 nav a:hover, .muted a:hover { color: var(--accent); }
 .theme {
   display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.7rem;
@@ -186,6 +195,10 @@ nav a:hover, .muted a:hover { color: var(--accent); }
 h1 { font-size: 1.9rem; letter-spacing: -0.03em; margin: 0 0 0.35rem; }
 h2 { font-size: 1.05rem; letter-spacing: -0.01em; margin: 2.5rem 0 0.9rem; }
 .lede { color: var(--muted); margin: 0 0 2rem; }
+/* Running-text links take the accent, so they read on either theme; the
+   browser default blue is too dark on the dark background. */
+a { color: var(--accent); }
+a:hover { text-decoration-thickness: 2px; }
 .readme { border: 1px solid var(--line); border-radius: 6px; padding: 0 1.25rem;
   margin-top: 0.5rem; overflow-x: auto; }
 .readme h1, .readme h2, .readme h3 { font-size: 1.05rem; margin: 1.25rem 0 0.5rem; }
@@ -226,6 +239,8 @@ ul.decks li:hover { border-color: var(--accent); }
   border-radius: 999px; padding: 0.05rem 0.5rem;
 }
 table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+/* A wide table scrolls inside its own box rather than widening the page. */
+.scroll { overflow-x: auto; }
 th, td {
   text-align: left; padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--line);
   vertical-align: top;
@@ -263,6 +278,41 @@ footer {
 .fact dd { margin: 0; font-size: 0.95rem; overflow-wrap: anywhere; }
 .fact a { color: var(--fg); text-decoration: none; }
 .fact a:hover { color: var(--accent); }
+/* The ways in and the featured decks on the landing page. Each card is one link, with a
+   hover and focus state, so it reads as clickable; the facts above are not. */
+.ways, .picks {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.6rem; margin: 0.5rem 0 0; padding: 0; list-style: none;
+}
+.way, .pick {
+  display: flex; border: 1px solid var(--line); border-radius: 11px;
+  background: var(--card); color: var(--fg); text-decoration: none;
+  padding: 0.85rem 1.05rem; height: 100%;
+}
+a.way:hover, a.pick:hover { border-color: var(--accent); }
+a.way:focus-visible, a.pick:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.way { align-items: center; gap: 0.9rem; }
+.way svg {
+  width: 1.7rem; height: 1.7rem; flex: none; fill: none; stroke: var(--accent);
+  stroke-width: 1.6; stroke-linejoin: round;
+}
+.way strong { display: block; font-size: 1rem; }
+.way span span { color: var(--muted); font-size: 0.88rem; }
+.way .go { margin-left: auto; color: var(--muted); font-size: 1.4rem; line-height: 1; }
+.way:hover .go { color: var(--accent); }
+/* Three across on a wide screen, so six cards make two full rows and a long
+   deck name has room; two, then one, on narrower ones. */
+.picks { grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); }
+.pick { flex-direction: column; gap: 0.2rem; }
+.pick .label { color: var(--muted); font-size: 0.78rem; }
+.pick .deckname { overflow-wrap: anywhere; }
+.pick .desc {
+  color: var(--muted); font-size: 0.88rem; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.pick .detail { margin-top: auto; padding-top: 0.3rem; font-size: 0.8rem; color: var(--muted); }
 /* Counts. Tabular figures so the numbers line up as a row of columns rather
    than drifting with the width of each digit. */
 .stats {
@@ -435,27 +485,85 @@ func hitList(hits as list of search.Hit, emptyMessage as string) {
 }
 
 /**
- * The landing page: search, links to `/browse` and `/tags`, and the deck
- * count. It does not list every deck, since a full listing grows without bound
- * and is the slowest page to render and send.
+ * The landing page: search, links to `/browse` and `/tags` with the deck count,
+ * and the featured decks (`featured.build`). It does not list every deck, since
+ * a full listing grows without bound and is the slowest page to render and send.
  * @param db {flatdb.DB} the registry to read
+ * @param now {int} the current time (Unix seconds), for the featured decks
  * @return {Page} a 200 page
  */
-export func home(db as flatdb.DB) {
-    def total as int init len(store.listDecks($db));
+export func home(db as flatdb.DB, now as int) {
+    def picks as json.Value init featured.build($db, search.index($db), $now);
+    return homeFrom(len(store.listDecks($db)), $picks);
+}
+
+/**
+ * The landing page from a deck count and prebuilt featured decks, which the
+ * server builds once per version of the file instead of per request.
+ * @param total {int} how many decks the registry holds
+ * @param picks {json.Value} the cards from `featured.build`
+ * @return {Page} a 200 page
+ */
+export func homeFrom(total as int, picks as json.Value) {
+    def count as string init convert.toString($total) + " decks";
+    if ($total == 1) {
+        $count = "1 deck";
+    }
     def body as string init '<h1>Jennifer registry</h1>
 <p class="lede">The registry <a href="https://jvc.jennifer-lang.dev/">jvc</a> ' +
         'resolves and fetches decks from.</p>' +
         searchForm("") +
-        '<ul class="facts">' +
-        '<div class="fact"><dt>Browse</dt><dd><a href="/browse">All ' +
-        convert.toString($total) + ' decks</a>, by name</dd></div>' +
-        '<div class="fact"><dt>By tag</dt><dd><a href="/tags">Tags</a>, ' +
-        'grouped by what decks are for</dd></div>' +
-        '<div class="fact"><dt>For clients</dt><dd><a href="/.well-known/' +
-        'jennifer-registry">The API</a>, and what this server promises</dd></div>' +
-        '</ul>';
+        '<nav class="ways" aria-label="Find decks">' +
+        wayCard("/browse", BROWSE_ICON, "Browse", "All " + $count + ", by name") +
+        wayCard("/tags", TAG_ICON, "Tags", "Decks grouped by what they are for") +
+        '</nav>' + featuredSection(featured.fromJson($picks));
     return Page{status: 200, body: layout("Jennifer registry", $body)};
+}
+
+# The two ways in, as inline SVG so the page still makes one request. Drawn in
+# `currentColor`, so they follow the theme; decorative, since the card's text
+# says where it goes.
+def const ICON_OPEN as string init '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">';
+def const BROWSE_ICON as string init ICON_OPEN +
+    '<rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/>' +
+    '<rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/>' +
+    '<rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/>' +
+    '<rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>';
+def const TAG_ICON as string init ICON_OPEN +
+    '<path d="M3.5 12.6V4.5a1 1 0 0 1 1-1h8.1l8.4 8.4' +
+    'a1 1 0 0 1 0 1.4l-7.7 7.7a1 1 0 0 1-1.4 0z"/>' +
+    '<circle cx="8" cy="8" r="1.6"/></svg>';
+
+# wayCard is one way into the listing: the whole card is the link, with an
+# icon and an arrow, so it reads as something to click rather than a fact.
+func wayCard(href as string, icon as string, title as string, text as string) {
+    return '<a class="way" href="' + $href + '">' + $icon + '<span><strong>' +
+        esc($title) + '</strong><span>' + esc($text) + '</span></span>' +
+        '<span class="go" aria-hidden="true">&rsaquo;</span></a>';
+}
+
+# featuredSection renders the featured cards, or nothing when there are none.
+# Each card links its deck as a whole; the description is publisher input.
+func featuredSection(picks as list of featured.Pick) {
+    if (len($picks) == 0) {
+        return "";
+    }
+    def items as list of string init [];
+    for (def p in $picks) {
+        def card as string init '<span class="label">' + esc($p.label) + '</span>' +
+            '<span class="deckname">' + esc($p.name) + '</span>';
+        if (not ($p.description == "")) {
+            $card = $card + '<span class="desc">' + esc($p.description) + '</span>';
+        }
+        $card = $card + '<span class="detail">' + esc($p.detail) + '</span>';
+        def url as string init deckUrl($p.name);
+        if ($url == "") {
+            $items[] = '<li class="pick">' + $card + '</li>';
+        } else {
+            $items[] = '<li><a class="pick" href="' + esc($url) + '">' + $card + '</a></li>';
+        }
+    }
+    return '<h2>Featured</h2><ul class="picks">' + strings.join($items, "") + '</ul>';
 }
 
 /**
@@ -765,10 +873,10 @@ export func deck(db as flatdb.DB, name as string, now as int) {
     if (len($all) == 0) {
         $body = $body + '<div class="empty">This deck has no published versions.</div>';
     } else {
-        $body = $body + '<table><thead><tr><th>Version</th><th>Status</th>' +
+        $body = $body + '<div class="scroll"><table><thead><tr><th>Version</th><th>Status</th>' +
             '<th>Kind</th><th>Pin</th>' +
             '<th>Requires</th><th>Engines</th><th>Capabilities</th></tr></thead><tbody>' +
-            versionRows($db, $name) + '</tbody></table>';
+            versionRows($db, $name) + '</tbody></table></div>';
     }
     # The licence and source come from the newest live version, if any.
     def shown as list of string init $live;

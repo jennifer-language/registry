@@ -101,7 +101,7 @@ saying how to build it.
 for t in store admin apiview webview authview token search policy identity forge \
          forgecred scope scopeview reserved audit trustpub citoken manifest publishview \
          config certs stats keywords deckcatalog constraint deckname catalog \
-         resolver; do
+         resolver featured; do
     jennifer test src/${t}_test.j
 done
 for t in policy/operator policy/derived policy/firstcome \

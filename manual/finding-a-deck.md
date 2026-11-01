@@ -18,7 +18,12 @@ search keeps the choice.
 name and then by scope, so `@deckyard/routeros` and `@jennifer/routeros` sit
 side by side: the same deck under two scopes is usually a fork or a move, and
 worth seeing together. To see one publisher's decks, open their scope instead.
-The front page does not list them.
+The front page does not list them. It features up to six instead, one per
+card: the most resolved in the last 30 days, the busiest this week, the one
+most other decks require, the newest, the latest release, and a deck of the
+day that changes daily (UTC) and gives every deck a turn. A deck appears on one
+card at most, and only decks with a live version are featured. Resolutions are
+lookups, not downloads; the deck page explains the difference.
 
 **Tags** (`/tags`) help when you know the kind of deck you want but not its name. Each
 deck carries up to five keywords chosen by its author, and the tag index shows

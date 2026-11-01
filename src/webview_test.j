@@ -76,7 +76,7 @@ func seeded() {
 # --- the landing page -------------------------------------------------------
 
 func testHomeIsAWholeDocument() {
-    def page as Page init home(seeded());
+    def page as Page init home(seeded(), NOW);
     testing.assertEqual($page.status, 200);
     testing.assertTrue(strings.startsWith($page.body, "<!doctype html>"));
     testing.assertContains($page.body, "</html>");
@@ -100,21 +100,57 @@ func testEmptyRegistrySaysSo() {
 }
 
 func testHomeLinksJvc() {
-    def page as Page init home(seeded());
+    def page as Page init home(seeded(), NOW);
     testing.assertContains($page.body, '<a href="https://jvc.jennifer-lang.dev/">jvc</a>');
 }
 
 func testHomeDoesNotListEveryDeck() {
-    # the full listing is /browse, not the landing page
-    def page as Page init home(seeded());
+    # the full listing is /browse; the landing page features a few decks at most
+    def page as Page init home(manyDecks(30), NOW);
     testing.assertEqual($page.status, 200);
-    testing.assertFalse(strings.contains($page.body, "@acme/routeros"));
+    def links as int init len(strings.split($page.body, 'href="/deck/')) - 1;
+    testing.assertTrue($links >= 1);
+    testing.assertTrue($links <= featured.MAX_PICKS);
     testing.assertContains($page.body, '/browse');
     testing.assertContains($page.body, '/tags');
 }
 
+# Browse and Tags are whole-card links with an icon and an arrow, so they read as
+# something to click; the API card is gone (the header links it).
+func testHomeOffersTheWaysInAsCards() {
+    def body as string init home(seeded(), NOW).body;
+    testing.assertContains($body, '<a class="way" href="/browse"><svg');
+    testing.assertContains($body, '<a class="way" href="/tags"><svg');
+    testing.assertContains($body, "All 1 deck, by name");
+    testing.assertContains($body, '<span class="go" aria-hidden="true">');
+    testing.assertFalse(strings.contains($body, "For clients"));
+    testing.assertFalse(strings.contains($body, 'class="fact"'));
+}
+
+func testHomeFeaturesDecksAsLinks() {
+    def body as string init home(seeded(), NOW).body;
+    testing.assertContains($body, "<h2>Featured</h2>");
+    testing.assertContains($body, '<a class="pick" href="/deck/acme/routeros">');
+    testing.assertContains($body, '<span class="desc">MikroTik client</span>');
+}
+
+func testAnEmptyRegistryFeaturesNothing() {
+    def body as string init home(emptyDb(), NOW).body;
+    testing.assertFalse(strings.contains($body, "Featured"));
+    testing.assertContains($body, "All 0 decks, by name");
+}
+
+# A featured deck's description is publisher input, inside markup.
+func testAFeaturedDescriptionIsEscaped() {
+    def hostile as string init '<script>x</script>';
+    def db as flatdb.DB init store.putVersion(emptyDb(), "@acme/x", $hostile, gitVer("1.0.0"));
+    def body as string init home($db, NOW).body;
+    testing.assertFalse(strings.contains($body, "<script>x"));
+    testing.assertContains($body, "&lt;script&gt;x");
+}
+
 func testHomeStillCountsTheRegistry() {
-    testing.assertContains(home(seeded()).body, "decks");
+    testing.assertContains(home(seeded(), NOW).body, "decks");
 }
 
 # --- search -----------------------------------------------------------------
@@ -355,7 +391,7 @@ func testTheDeckPageShowsTheReadmeAndLicence() {
 
 func testTheMenuLinksToTheDiscoveryDocument() {
     # The live discovery document, after the reference link.
-    def page as Page init home(emptyDb());
+    def page as Page init home(emptyDb(), NOW);
     testing.assertContains($page.body, '<a href="/.well-known/jennifer-registry">API</a>');
     def nav as int init strings.indexOf($page.body, "<nav>");
     testing.assertTrue(strings.indexOf($page.body, "/.well-known/") > $nav);
@@ -374,7 +410,7 @@ func testTheMenuIsOnEveryPage() {
 # --- the theme switch ---------------------------------------------------------
 
 func testTheSwitchIsOnEveryPage() {
-    testing.assertContains(home(emptyDb()).body, 'class="theme"');
+    testing.assertContains(home(emptyDb(), NOW).body, 'class="theme"');
     testing.assertContains(notFound("gone").body, 'class="theme"');
     testing.assertContains(
         results(search.index(emptyDb()), "x", 1, DEFAULT_PAGE_SIZE).body,
@@ -383,14 +419,14 @@ func testTheSwitchIsOnEveryPage() {
 
 func testTheScriptRunsBeforeTheBodyPaints() {
     # applied later, a stored choice shows the wrong theme for a frame
-    def page as Page init home(emptyDb());
+    def page as Page init home(emptyDb(), NOW);
     testing.assertTrue(strings.indexOf($page.body, "jvcTheme") <
         strings.indexOf($page.body, "<body>"));
 }
 
 func testAllThreeThemeStatesAreStyled() {
     # an explicit choice must override the system in both directions
-    def css as string init home(emptyDb()).body;
+    def css as string init home(emptyDb(), NOW).body;
     testing.assertContains($css, "@media (prefers-color-scheme: dark)");
     testing.assertContains($css, ':root:not([data-theme="light"])');
     testing.assertContains($css, ':root[data-theme="dark"]');
@@ -398,14 +434,14 @@ func testAllThreeThemeStatesAreStyled() {
 
 func testTheSwitchHidesItselfWithoutScripting() {
     # without scripting the button is hidden and the page follows the system
-    def page as Page init home(emptyDb());
+    def page as Page init home(emptyDb(), NOW);
     testing.assertContains($page.body, 'class="no-js"');
     testing.assertContains($page.body, '.no-js .theme');
 }
 
 func testTheSwitchIsLabelledForScreenReaders() {
-    testing.assertContains(home(emptyDb()).body, "aria-label=");
-    testing.assertContains(home(emptyDb()).body, 'aria-hidden="true"');
+    testing.assertContains(home(emptyDb(), NOW).body, "aria-label=");
+    testing.assertContains(home(emptyDb(), NOW).body, 'aria-hidden="true"');
 }
 
 # --- tags --------------------------------------------------------------------
@@ -705,8 +741,8 @@ func testThePolicyAdmitsOnlyTheThemeScript() {
     testing.assertFalse(strings.contains($policy, "script-src 'unsafe-inline'"));
     testing.assertContains($policy, "frame-ancestors 'none'");
     # an inline handler would need unsafe-inline, so there must be none
-    testing.assertFalse(strings.contains(home(emptyDb()).body, "onclick"));
-    testing.assertContains(home(emptyDb()).body, "<script>" + THEME_SCRIPT + "</script>");
+    testing.assertFalse(strings.contains(home(emptyDb(), NOW).body, "onclick"));
+    testing.assertContains(home(emptyDb(), NOW).body, "<script>" + THEME_SCRIPT + "</script>");
 }
 
 # --- shared maps and page size ----------------------------------------------
