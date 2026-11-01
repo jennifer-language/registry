@@ -117,7 +117,7 @@ export func project() {
         "registry",
         "deckregistry",
         "jennifer-lang",
-		"jennifer-language",
+        "jennifer-language",
         "deckyard"
     ];
 }
