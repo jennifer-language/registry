@@ -320,6 +320,8 @@ tr.is-yanked td:first-child { text-decoration: line-through; }
 }
 .pager { margin: 1rem 0; color: var(--muted); }
 .pager a { margin: 0 0.5rem; }
+.page-size { margin: 1rem 0 0; color: var(--muted); }
+.page-size a, .page-size strong { margin: 0 0.25rem; }
 ';
 
 # layout wraps a page body in the site chrome. `title` is plain text and is
@@ -367,9 +369,19 @@ repository, pinned to the commit it was published from.</footer>
 
 # searchForm renders the search box, pre-filled with the current query.
 func searchForm(query as string) {
+    return searchFormSized($query, DEFAULT_PAGE_SIZE);
+}
+
+# searchFormSized is the search form for a listing read at `size` per page, which
+# a new search keeps.
+func searchFormSized(query as string, size as int) {
+    def keep as string init "";
+    if (not ($size == DEFAULT_PAGE_SIZE)) {
+        $keep = '<input type="hidden" name="size" value="' + convert.toString($size) + '">';
+    }
     return '<form class="search" action="/search" method="get">
 <input type="search" name="q" placeholder="Search decks" aria-label="Search decks"
- value="' + esc($query) + '">
+ value="' + esc($query) + '">' + $keep + '
 <button type="submit">Search</button>
 </form>';
 }
@@ -437,7 +449,7 @@ export func home(db as flatdb.DB) {
         searchForm("") +
         '<ul class="facts">' +
         '<div class="fact"><dt>Browse</dt><dd><a href="/browse">All ' +
-        convert.toString($total) + ' decks</a>, newest listing first</dd></div>' +
+        convert.toString($total) + ' decks</a>, by name</dd></div>' +
         '<div class="fact"><dt>By tag</dt><dd><a href="/tags">Tags</a>, ' +
         'grouped by what decks are for</dd></div>' +
         '<div class="fact"><dt>For clients</dt><dd><a href="/.well-known/' +
@@ -447,10 +459,20 @@ export func home(db as flatdb.DB) {
 }
 
 /**
- * How many decks one page of a listing shows. Measured unpaged at 5,000 decks:
+ * The most decks one page of a listing shows. Measured unpaged at 5,000 decks:
  * 1.2 MB per page and about 80 MB per request in flight.
  */
 export def const PAGE_SIZE as int init 100;
+
+/**
+ * The page sizes a reader may pick with `?size=`, smallest first. A fixed set
+ * rather than any number keeps the pages a cache sees few and bounded by
+ * `PAGE_SIZE`.
+ */
+export def const PAGE_SIZES as list of int init [10, 25, 50, 100];
+
+/** The page size a listing uses when `?size=` is absent or not one of `PAGE_SIZES`. */
+export def const DEFAULT_PAGE_SIZE as int init 25;
 
 /**
  * Turn a `page` query parameter into a page number: 1 for anything that is not
@@ -475,61 +497,117 @@ export func pageNumber(raw as string) {
     return $n;
 }
 
-# lastPage is how many pages a listing of `total` entries has; at least one, so
-# an empty listing is page 1 of 1.
-func lastPage(total as int) {
+/**
+ * Turn a `size` query parameter into a page size: one of `PAGE_SIZES`, or
+ * `DEFAULT_PAGE_SIZE` for anything else.
+ * @param raw {string} the parameter as given ("" when absent)
+ * @return {int} the page size
+ */
+export func pageSize(raw as string) {
+    for (def size in PAGE_SIZES) {
+        if ($raw == convert.toString($size)) {
+            return $size;
+        }
+    }
+    return DEFAULT_PAGE_SIZE;
+}
+
+# lastPage is how many pages a listing of `total` entries has at `size` per
+# page; at least one, so an empty listing is page 1 of 1.
+func lastPage(total as int, size as int) {
     if ($total == 0) {
         return 1;
     }
-    return convert.toInt(($total + PAGE_SIZE - 1) / PAGE_SIZE);
+    return convert.toInt(($total + $size - 1) / $size);
+}
+
+# sizeParam is the `size=` a listing link carries, with its separator; nothing
+# for the default, so the default pages keep their plain URLs.
+func sizeParam(size as int) {
+    if ($size == DEFAULT_PAGE_SIZE) {
+        return "";
+    }
+    return "size=" + convert.toString($size) + "&amp;";
+}
+
+# sizeChoice links each page size, the current one unlinked. A new size opens
+# the page holding the first deck shown now, so the reader keeps their place.
+func sizeChoice(page as int, size as int, base as string) {
+    def first as int init ($page - 1) * $size;
+    def out as string init '<nav class="page-size">Per page:';
+    for (def each in PAGE_SIZES) {
+        def label as string init convert.toString($each);
+        if ($each == $size) {
+            $out = $out + ' <strong aria-current="true">' + $label + '</strong>';
+        } else {
+            def at as int init convert.toInt(($first - $first % $each) / $each) + 1;
+            $out = $out + ' <a href="' + $base + sizeParam($each) + 'page=' +
+                convert.toString($at) + '">' + $label + '</a>';
+        }
+    }
+    return $out + '</nav>';
 }
 
 # pageOf renders one page of a selection from the index, clamped to the
-# listing, with links to its neighbours. `base` is the listing's URL up to and
-# including the separator the page parameter follows ("/browse?" or
-# "/search?q=x&amp;"), already escaped; `empty` is what an empty one says.
+# listing, with links to its neighbours and a choice of page size. `base` is the
+# listing's URL up to and including the separator the parameters follow
+# ("/browse?" or "/search?q=x&amp;"), already escaped; `empty` is what an empty
+# one says. A listing that fits the smallest page offers no sizes, since every
+# size would show the same.
 func pageOf(
     index as json.Value,
     positions as list of int,
     page as int,
+    size as int,
     base as string,
     empty as string) {
     def total as int init len($positions);
-    def last as int init lastPage($total);
+    def last as int init lastPage($total, $size);
     def shown as int init $page;
     if ($shown > $last) {
         $shown = $last;
     }
     def out as string init hitList(
-        search.hits($index, $positions, ($shown - 1) * PAGE_SIZE, PAGE_SIZE),
+        search.hits($index, $positions, ($shown - 1) * $size, $size),
         $empty);
+    if ($total > PAGE_SIZES[0]) {
+        $out = $out + sizeChoice($shown, $size, $base);
+    }
     if ($last == 1) {
         return $out;
     }
+    def here as string init $base + sizeParam($size);
     def nav as string init '<nav class="pager">';
     if ($shown > 1) {
-        $nav = $nav + '<a rel="prev" href="' + $base + 'page=' +
+        $nav = $nav + '<a rel="prev" href="' + $here + 'page=' +
             convert.toString($shown - 1) + '">Previous</a> ';
     }
     $nav = $nav + 'Page ' + convert.toString($shown) + ' of ' + convert.toString($last);
     if ($shown < $last) {
-        $nav = $nav + ' <a rel="next" href="' + $base + 'page=' +
+        $nav = $nav + ' <a rel="next" href="' + $here + 'page=' +
             convert.toString($shown + 1) + '">Next</a>';
     }
     return $out + $nav + '</nav>';
 }
 
 /**
- * The browse page: every deck, a page at a time.
+ * The browse page: every deck, a page at a time, by deck name and then scope.
  * @param index {json.Value} the registry's deck index, from `search.index`
  * @param page {int} which page, 1-based; past the last shows the last
+ * @param size {int} decks per page, one of `PAGE_SIZES`
  * @return {Page} a 200 page
  */
-export func browse(index as json.Value, page as int) {
+export func browse(index as json.Value, page as int, size as int) {
     def all as list of int init search.select($index, "");
-    def listing as string init pageOf($index, $all, $page, "/browse?", "No decks published yet.");
+    def listing as string init pageOf(
+        $index,
+        $all,
+        $page,
+        $size,
+        "/browse?",
+        "No decks published yet.");
     def body as string init '<h1>Browse</h1>
-<p class="lede">Every deck published here.</p>' + searchForm("") +
+<p class="lede">Every deck published here.</p>' + searchFormSized("", $size) +
         '<h2>All decks (' + convert.toString(len($all)) + ')</h2>' + $listing;
     return Page{status: 200, body: layout("Browse", $body)};
 }
@@ -539,10 +617,11 @@ export func browse(index as json.Value, page as int) {
  * @param index {json.Value} the registry's deck index, from `search.index`
  * @param query {string} the search query
  * @param page {int} which page of results, 1-based
+ * @param size {int} results per page, one of `PAGE_SIZES`
  * @return {Page} a 200 page, or a 400 for a query over `search.MAX_QUERY`
  */
-export func results(index as json.Value, query as string, page as int) {
-    return resultsIn($index, search.lowered($index), $query, $page);
+export func results(index as json.Value, query as string, page as int, size as int) {
+    return resultsIn($index, search.lowered($index), $query, $page, $size);
 }
 
 /**
@@ -552,9 +631,15 @@ export func results(index as json.Value, query as string, page as int) {
  * @param lowered {json.Value} from `search.lowered` over that index
  * @param query {string} the search query ("" for everything)
  * @param page {int} which page of results, 1-based
+ * @param size {int} results per page, one of `PAGE_SIZES`
  * @return {Page} a 200 page, or a 400 for a query over `search.MAX_QUERY`
  */
-export func resultsIn(index as json.Value, lowered as json.Value, query as string, page as int) {
+export func resultsIn(
+    index as json.Value,
+    lowered as json.Value,
+    query as string,
+    page as int,
+    size as int) {
     if (len($query) > search.MAX_QUERY) {
         def body as string init '<h1>Search</h1>' + searchForm("") +
             '<p class="lede">A search can be at most ' +
@@ -574,8 +659,8 @@ export func resultsIn(index as json.Value, lowered as json.Value, query as strin
     }
     def base as string init "/search?q=" + esc(uri.encodeForm($q)) + "&amp;";
     def none as string init 'Nothing matched <code>' + esc($q) + '</code>.';
-    def body as string init '<h1>Search</h1>' + searchForm($q) +
-        '<h2>' + $heading + '</h2>' + pageOf($index, $found, $page, $base, $none);
+    def body as string init '<h1>Search</h1>' + searchFormSized($q, $size) +
+        '<h2>' + $heading + '</h2>' + pageOf($index, $found, $page, $size, $base, $none);
     return Page{status: 200, body: layout("Search decks", $body)};
 }
 
@@ -924,10 +1009,11 @@ export func readmeSection(db as flatdb.DB, name as string) {
  * @param index {json.Value} the registry's deck index, from `search.index`
  * @param name {string} the scope, with or without its leading "@"
  * @param page {int} which page of its decks, 1-based
+ * @param size {int} decks per page, one of `PAGE_SIZES`
  * @return {Page} the scope page at 200, or a 404 page
  */
-export func scope(db as flatdb.DB, index as json.Value, name as string, page as int) {
-    return scopeIn($db, $index, search.scopeMap($index), $name, $page);
+export func scope(db as flatdb.DB, index as json.Value, name as string, page as int, size as int) {
+    return scopeIn($db, $index, search.scopeMap($index), $name, $page, $size);
 }
 
 /**
@@ -938,6 +1024,7 @@ export func scope(db as flatdb.DB, index as json.Value, name as string, page as 
  * @param groups {json.Value} from `search.scopeMap` over that index
  * @param name {string} the scope, with or without its leading "@"
  * @param page {int} which page of its decks, 1-based
+ * @param size {int} decks per page, one of `PAGE_SIZES`
  * @return {Page} the scope page at 200, or a 404 page
  */
 export func scopeIn(
@@ -945,7 +1032,8 @@ export func scopeIn(
     index as json.Value,
     groups as json.Value,
     name as string,
-    page as int) {
+    page as int,
+    size as int) {
     def folded as string init deckname.fold(strings.trim($name));
     if (strings.startsWith($folded, "@")) {
         $folded = strings.substring($folded, 1, len($folded));
@@ -960,7 +1048,7 @@ export func scopeIn(
         '</span></h1>' + scopeFacts($db, $folded);
     $body = $body + '<h2>Decks (' + convert.toString($count) + ')</h2>';
     def none as string init "Nothing is published under this scope yet.";
-    $body = $body + pageOf($index, $decks, $page, "/scope/" + $safe + "?", $none);
+    $body = $body + pageOf($index, $decks, $page, $size, "/scope/" + $safe + "?", $none);
     return Page{status: 200, body: layout("@" + $folded, $body)};
 }
 
@@ -1138,10 +1226,11 @@ func latestKeywords(db as flatdb.DB, name as string) {
  * @param index {json.Value} the registry's deck index, from `search.index`
  * @param name {string} the tag
  * @param page {int} which page, 1-based
+ * @param size {int} decks per page, one of `PAGE_SIZES`
  * @return {Page} the tag page at 200, or a 404 page
  */
-export func tag(index as json.Value, name as string, page as int) {
-    return tagIn($index, search.tagMap($index), $name, $page);
+export func tag(index as json.Value, name as string, page as int, size as int) {
+    return tagIn($index, search.tagMap($index), $name, $page, $size);
 }
 
 /**
@@ -1151,9 +1240,15 @@ export func tag(index as json.Value, name as string, page as int) {
  * @param groups {json.Value} from `search.tagMap` over that index
  * @param name {string} the tag
  * @param page {int} which page, 1-based
+ * @param size {int} decks per page, one of `PAGE_SIZES`
  * @return {Page} the tag page at 200, or a 404 page
  */
-export func tagIn(index as json.Value, groups as json.Value, name as string, page as int) {
+export func tagIn(
+    index as json.Value,
+    groups as json.Value,
+    name as string,
+    page as int,
+    size as int) {
     def folded as string init keywords.fold($name);
     # A refused or malformed tag cannot have been stored; a 404 also avoids
     # echoing an arbitrary string into the page.
@@ -1168,6 +1263,6 @@ export func tagIn(index as json.Value, groups as json.Value, name as string, pag
     def body as string init '<h1>' + $safe + '</h1><p class="lede">' +
         convert.toString(len($found)) + ' deck(s) tagged <code>' + $safe +
         '</code>. <a href="/tags">All tags</a></p>' +
-        pageOf($index, $found, $page, "/tag/" + $safe + "?", "");
+        pageOf($index, $found, $page, $size, "/tag/" + $safe + "?", "");
     return Page{status: 200, body: layout($folded, $body)};
 }

@@ -53,13 +53,34 @@ func names(hits as list of Hit) {
     return $out;
 }
 
+# By deck name, not by scope: @zeta/ansi comes before both @acme decks.
 func testEmptyQueryReturnsEverythingAlphabetically() {
     def hits as list of Hit init find(seeded(), "");
     testing.assertEqual(len($hits), 3);
     def got as list of string init names($hits);
-    testing.assertEqual($got[0], "@acme/net");
-    testing.assertEqual($got[1], "@acme/routeros");
-    testing.assertEqual($got[2], "@zeta/ansi");
+    testing.assertEqual($got[0], "@zeta/ansi");
+    testing.assertEqual($got[1], "@acme/net");
+    testing.assertEqual($got[2], "@acme/routeros");
+}
+
+# One deck under several scopes (a fork, a move) is listed together, the scopes
+# in order, rather than a scope's worth of decks apart.
+func testTheSameDeckUnderTwoScopesIsListedTogether() {
+    def db as flatdb.DB init seeded();
+    $db = store.putVersion($db, "@jennifer/routeros", "the old home", ver("0.1.0"));
+    $db = store.putVersion($db, "@deckyard/routeros", "the new home", ver("0.2.0"));
+    $db = store.putVersion($db, "@deckyard/zz", "", ver("0.1.0"));
+    def got as list of string init names(find($db, ""));
+    testing.assertEqual(
+        strings.join($got, " "),
+        "@zeta/ansi @acme/net @acme/routeros @deckyard/routeros @jennifer/routeros @deckyard/zz");
+}
+
+# The deck part decides before the scope even where a scope is a prefix of
+# another, and a bare name sorts ahead of its scoped spellings.
+func testListingOrderComparesTheDeckPartFirst() {
+    def got as list of string init listingOrder(["@ab/x", "@a/y", "x", "@a/x-tool", "@b/x"]);
+    testing.assertEqual(strings.join($got, " "), "x @ab/x @b/x @a/x-tool @a/y");
 }
 
 func testEmptyRegistrySearchesToNothing() {
@@ -128,15 +149,16 @@ func testNoMatchIsEmpty() {
     testing.assertEqual(len(find(seeded(), "nothing-matches-this")), 0);
 }
 
+# @acme/net is the second entry, after @zeta/ansi.
 func testAnIndexEntryCarriesTheNewestKeywords() {
     def v as store.DeckVersion init ver("3.0.0");
     $v.keywords = ["net", "cli"];
     def db as flatdb.DB init store.putVersion(seeded(), "@acme/net", "", $v);
     def all as json.Value init index($db);
     testing.assertEqual(json.length($all, ""), 3);
-    testing.assertEqual(json.asString(json.get($all, "/0/name")), "@acme/net");
-    testing.assertEqual(json.asString(json.get($all, "/0/latest")), "3.0.0");
-    testing.assertEqual(strings.join(keywordsAt($all, 0), ","), "net,cli");
+    testing.assertEqual(json.asString(json.get($all, "/1/name")), "@acme/net");
+    testing.assertEqual(json.asString(json.get($all, "/1/latest")), "3.0.0");
+    testing.assertEqual(strings.join(keywordsAt($all, 1), ","), "net,cli");
     testing.assertEqual(len(tagged($all, "cli")), 1);
     testing.assertEqual(len(under($all, "acme")), 2);
 }

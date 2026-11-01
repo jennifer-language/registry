@@ -343,7 +343,8 @@ with an empty `results`, never a `404`: the query was well-formed, nothing
 matched it.
 
 The JSON result set is unpaged. The HTML results page, like `/browse`, shows
-100 decks at a time with `?page=`.
+25 decks at a time with `?page=`, or 10, 50 or 100 with `?size=` (any other
+value reads as 25). Listings are ordered by deck name, then scope.
 
 The contract leaves the ranking unspecified: display the order you are given
 rather than depending on a particular one. Matching is a substring scan over one

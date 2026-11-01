@@ -37,6 +37,7 @@ use json;
 use convert;
 import "flatdb.j" as flatdb;
 import "./store.j" as store;
+import "./deckname.j" as deckname;
 
 /**
  * The longest query a search accepts, in characters. The results page echoes
@@ -99,18 +100,41 @@ func entryFor(db as flatdb.DB, name as string) {
 }
 
 /**
- * Summarise every deck, ordered by name. Each entry has `name`, `description`,
- * `latest`, `versions`, `live` and `keywords`, the shape `GET /search` answers
- * with. Expensive: a server builds it once per version of the store.
+ * Summarise every deck, ordered by deck name, then scope (`listingOrder`). Each
+ * entry has `name`, `description`, `latest`, `versions`, `live` and
+ * `keywords`, the shape `GET /search` answers with. Expensive: a server builds
+ * it once per version of the store.
  * @param db {flatdb.DB} the registry to read
- * @return {json.Value} a list of deck entries, alphabetical
+ * @return {json.Value} a list of deck entries, alphabetical by deck name
  */
 export func index(db as flatdb.DB) {
     def parts as list of json.Value init [];
-    for (def name in lists.sort(store.listDecks($db))) {
+    for (def name in listingOrder(store.listDecks($db))) {
         $parts[] = entryFor($db, $name);
     }
     return json.list($parts);
+}
+
+/**
+ * Sort deck names by the deck part, then the scope, so one deck under several
+ * scopes (a fork, a move to an organisation) is listed together rather than a
+ * scope's worth apart. A bare name sorts as an empty scope, ahead of the scoped
+ * spellings of the same deck.
+ * @param names {list of string} folded deck names
+ * @return {list of string} the same names in listing order
+ */
+export func listingOrder(names as list of string) {
+    # A tab sorts below every character a deck name or scope may hold, so the
+    # deck part decides first and the full name breaks any tie.
+    def byKey as map of string to string init {};
+    for (def name in $names) {
+        $byKey[deckname.deckOf($name) + "\t" + deckname.scopeOf($name) + "\t" + $name] = $name;
+    }
+    def out as list of string init [];
+    for (def key in lists.sort(maps.keys($byKey))) {
+        $out[] = $byKey[$key];
+    }
+    return $out;
 }
 
 /**
@@ -298,7 +322,7 @@ export func countsIn(groups as json.Value) {
 /**
  * The positions of the entries whose name or description contains `query`,
  * case-insensitively. An empty query selects every deck. Name matches come
- * before description-only matches, each group in index (alphabetical) order.
+ * before description-only matches, each group in index (listing) order.
  * @param index {json.Value} an index from `index`
  * @param query {string} the search query ("" for everything)
  * @return {list of int} positions in the index, best first

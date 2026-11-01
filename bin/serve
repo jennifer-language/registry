@@ -487,7 +487,8 @@ func apiSearch(ctx as web.Context) {
             sharedIndex(),
             sharedLowered(),
             $query,
-            pageOf($ctx));
+            pageOf($ctx),
+            sizeOf($ctx));
         web.html($ctx, $page.status, $page.body);
         return;
     }
@@ -524,12 +525,17 @@ func pageOf(ctx as web.Context) {
     return webview.pageNumber(web.query($ctx, "page"));
 }
 
+# sizeOf reads an HTML listing's `?size=` parameter.
+func sizeOf(ctx as web.Context) {
+    return webview.pageSize(web.query($ctx, "size"));
+}
+
 /**
- * GET /browse?page=: every deck, a page at a time.
+ * GET /browse?page=&size=: every deck, a page at a time.
  * @param ctx {web.Context} the request context
  */
 func siteBrowse(ctx as web.Context) {
-    def page as webview.Page init webview.browse(sharedIndex(), pageOf($ctx));
+    def page as webview.Page init webview.browse(sharedIndex(), pageOf($ctx), sizeOf($ctx));
     web.html($ctx, $page.status, $page.body);
 }
 
@@ -543,17 +549,22 @@ func siteTags(ctx as web.Context) {
 }
 
 /**
- * GET /tag/:name?page=: the decks carrying one tag.
+ * GET /tag/:name?page=&size=: the decks carrying one tag.
  * @param ctx {web.Context} the request context
  */
 func siteTag(ctx as web.Context) {
     def name as string init web.param($ctx, "name");
-    def page as webview.Page init webview.tagIn(sharedIndex(), sharedTagMap(), $name, pageOf($ctx));
+    def page as webview.Page init webview.tagIn(
+        sharedIndex(),
+        sharedTagMap(),
+        $name,
+        pageOf($ctx),
+        sizeOf($ctx));
     web.html($ctx, $page.status, $page.body);
 }
 
 /**
- * GET /scope/:name?page=: who holds a scope, and what is published under it.
+ * GET /scope/:name?page=&size=: who holds a scope, and what is published under it.
  * @param ctx {web.Context} the request context
  */
 func siteScope(ctx as web.Context) {
@@ -563,7 +574,8 @@ func siteScope(ctx as web.Context) {
         sharedIndex(),
         sharedScopeMap(),
         $name,
-        pageOf($ctx));
+        pageOf($ctx),
+        sizeOf($ctx));
     web.html($ctx, $page.status, $page.body);
 }
 

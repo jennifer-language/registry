@@ -207,8 +207,9 @@ database file's size** in memory (measured: a 3.9 MB file of 5,000 decks is abou
 15 MB), so concurrent lookups cost little. Every listing and search reads one
 shared deck index built from that copy, once per change of the file: at 5,000
 decks building it takes about 0.7 seconds, and the request that triggers it
-waits that long while the others wait for its copy. Listing pages show 100 decks
-at a time (`?page=`).
+waits that long while the others wait for its copy. Listing pages show 25 decks
+at a time (`?page=`), or 10, 50 or 100 (`?size=`); 100 is the most a page holds,
+so the measurements below are the largest page.
 
 `REGISTRY_MAX_IN_FLIGHT` (`maxInFlight` in `config.toml`, default 32) bounds how
 many requests are handled at once; a request beyond the limit waits rather than
@@ -246,7 +247,7 @@ Read-only: no form that writes anything, no session, no account UI.
 | ----- | -- |
 | `/` | search, links to `/browse` and `/tags`, and the deck count (HTML), or the service index (JSON) |
 | `/search?q=` | results (HTML), or the JSON result set |
-| `/browse` | every deck, 100 to a page (`?page=`) |
+| `/browse` | every deck by deck name then scope, 25 to a page (`?page=`, `?size=10\|25\|50\|100`) |
 | `/tags`, `/tag/<keyword>` | the keywords in use, and the decks carrying one |
 | `/scope/<name>` | the decks under one scope |
 | `/deck/<scope>/<deck>` | a deck page: versions, pins, dependencies, engines, capabilities |

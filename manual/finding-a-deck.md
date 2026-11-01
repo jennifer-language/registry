@@ -8,13 +8,17 @@ The search box matches on both the deck name and its description,
 case-insensitively. Searching for `router` finds `@acme/routeros` by name, and
 also finds a deck whose description mentions routers.
 
-An empty search lists everything. Results, like the browse listing, come 100
-to a page.
+An empty search lists everything. Results, like the browse listing, come 25
+to a page; "Per page" under a listing switches to 10, 50 or 100, and a new
+search keeps the choice.
 
 ## Browse and tags
 
-**Browse** (`/browse`) lists every deck published here, alphabetically, 100 to
-a page. The front page does not list them.
+**Browse** (`/browse`) lists every deck published here, alphabetically by deck
+name and then by scope, so `@deckyard/routeros` and `@jennifer/routeros` sit
+side by side: the same deck under two scopes is usually a fork or a move, and
+worth seeing together. To see one publisher's decks, open their scope instead.
+The front page does not list them.
 
 **Tags** (`/tags`) help when you know the kind of deck you want but not its name. Each
 deck carries up to five keywords chosen by its author, and the tag index shows

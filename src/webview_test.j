@@ -83,18 +83,18 @@ func testHomeIsAWholeDocument() {
 }
 
 func testBrowseListsEveryDeckAndLinksIt() {
-    def page as Page init browse(search.index(seeded()), 1);
+    def page as Page init browse(search.index(seeded()), 1, DEFAULT_PAGE_SIZE);
     testing.assertContains($page.body, "@acme/routeros");
     testing.assertContains($page.body, 'href="/deck/acme/routeros"');
 }
 
 func testBrowseShowsTheLatestVersion() {
-    def page as Page init browse(search.index(seeded()), 1);
+    def page as Page init browse(search.index(seeded()), 1, DEFAULT_PAGE_SIZE);
     testing.assertContains($page.body, "0.2.0");
 }
 
 func testEmptyRegistrySaysSo() {
-    def page as Page init browse(search.index(emptyDb()), 1);
+    def page as Page init browse(search.index(emptyDb()), 1, DEFAULT_PAGE_SIZE);
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "No decks published yet");
 }
@@ -120,26 +120,26 @@ func testHomeStillCountsTheRegistry() {
 # --- search -----------------------------------------------------------------
 
 func testResultsReportTheMatchCount() {
-    def page as Page init results(search.index(seeded()), "routeros", 1);
+    def page as Page init results(search.index(seeded()), "routeros", 1, DEFAULT_PAGE_SIZE);
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "1 result");
     testing.assertContains($page.body, "@acme/routeros");
 }
 
 func testResultsEchoTheQueryIntoTheBox() {
-    def page as Page init results(search.index(seeded()), "routeros", 1);
+    def page as Page init results(search.index(seeded()), "routeros", 1, DEFAULT_PAGE_SIZE);
     testing.assertContains($page.body, 'value="routeros"');
 }
 
 func testNoMatchesStillAnswers200() {
     # an empty result set is not an error
-    def page as Page init results(search.index(seeded()), "nothing-here", 1);
+    def page as Page init results(search.index(seeded()), "nothing-here", 1, DEFAULT_PAGE_SIZE);
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "Nothing matched");
 }
 
 func testAnEmptyQueryListsEverything() {
-    def page as Page init results(search.index(seeded()), "", 1);
+    def page as Page init results(search.index(seeded()), "", 1, DEFAULT_PAGE_SIZE);
     testing.assertContains($page.body, "All decks");
     testing.assertContains($page.body, "@acme/routeros");
 }
@@ -198,24 +198,32 @@ func testDescriptionIsEscaped() {
     # a description is untrusted input landing inside markup
     def db as flatdb.DB init emptyDb();
     $db = store.putVersion($db, "@acme/x", "<script>alert(1)</script>", gitVer("1.0.0"));
-    def page as Page init browse(search.index($db), 1);
+    def page as Page init browse(search.index($db), 1, DEFAULT_PAGE_SIZE);
     testing.assertFalse(strings.contains($page.body, "<script>alert"));
     testing.assertContains($page.body, "&lt;script&gt;");
 }
 
 func testTheSearchQueryIsEscaped() {
     # the query is echoed into a value attribute and into the heading
-    def page as Page init results(search.index(seeded()), '"><script>', 1);
+    def page as Page init results(search.index(seeded()), '"><script>', 1, DEFAULT_PAGE_SIZE);
     testing.assertFalse(strings.contains($page.body, '"><script>'));
     testing.assertContains($page.body, "&lt;script&gt;");
 }
 
 func testTheSearchQueryCannotLeaveTheValueAttribute() {
     # a bare quote closing value="..." was a reflected XSS
-    def page as Page init results(search.index(seeded()), '" autofocus onfocus=alert(1) x="', 1);
+    def page as Page init results(
+        search.index(seeded()),
+        '" autofocus onfocus=alert(1) x="',
+        1,
+        DEFAULT_PAGE_SIZE);
     testing.assertFalse(strings.contains($page.body, '" autofocus'));
     testing.assertContains($page.body, "&quot; autofocus");
-    def single as Page init results(search.index(seeded()), "' onfocus=alert(1) '", 1);
+    def single as Page init results(
+        search.index(seeded()),
+        "' onfocus=alert(1) '",
+        1,
+        DEFAULT_PAGE_SIZE);
     testing.assertFalse(strings.contains($single.body, "' onfocus"));
 }
 
@@ -368,7 +376,9 @@ func testTheMenuIsOnEveryPage() {
 func testTheSwitchIsOnEveryPage() {
     testing.assertContains(home(emptyDb()).body, 'class="theme"');
     testing.assertContains(notFound("gone").body, 'class="theme"');
-    testing.assertContains(results(search.index(emptyDb()), "x", 1).body, 'class="theme"');
+    testing.assertContains(
+        results(search.index(emptyDb()), "x", 1, DEFAULT_PAGE_SIZE).body,
+        'class="theme"');
 }
 
 func testTheScriptRunsBeforeTheBodyPaints() {
@@ -439,26 +449,26 @@ func testAnEmptyRegistryHasNoTags() {
 }
 
 func testATagPageListsTheDecksCarryingIt() {
-    def page as Page init tag(search.index(taggedDb()), "cli", 1);
+    def page as Page init tag(search.index(taggedDb()), "cli", 1, DEFAULT_PAGE_SIZE);
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "@acme/one");
     testing.assertContains($page.body, "@acme/two");
 }
 
 func testATagPageExcludesDecksWithoutIt() {
-    def page as Page init tag(search.index(taggedDb()), "net", 1);
+    def page as Page init tag(search.index(taggedDb()), "net", 1, DEFAULT_PAGE_SIZE);
     testing.assertContains($page.body, "@acme/one");
     testing.assertFalse(strings.contains($page.body, "@acme/two"));
 }
 
 func testAnUnusedTagIs404() {
-    testing.assertEqual(tag(search.index(taggedDb()), "nothing", 1).status, 404);
+    testing.assertEqual(tag(search.index(taggedDb()), "nothing", 1, DEFAULT_PAGE_SIZE).status, 404);
 }
 
 func testARefusedTagIsNotEchoedBack() {
     # a refused tag cannot be stored, so the page must not reflect it
     def refused as string init decodeAllFromKeywords();
-    def page as Page init tag(search.index(taggedDb()), $refused, 1);
+    def page as Page init tag(search.index(taggedDb()), $refused, 1, DEFAULT_PAGE_SIZE);
     testing.assertEqual($page.status, 404);
     testing.assertFalse(strings.contains($page.body, $refused));
 }
@@ -469,7 +479,7 @@ func decodeAllFromKeywords() {
 }
 
 func testAMalformedTagIs404RatherThanReflected() {
-    def page as Page init tag(search.index(taggedDb()), "<script>x</script>", 1);
+    def page as Page init tag(search.index(taggedDb()), "<script>x</script>", 1, DEFAULT_PAGE_SIZE);
     testing.assertEqual($page.status, 404);
     testing.assertFalse(strings.contains($page.body, "<script>x"));
 }
@@ -484,8 +494,8 @@ func testTagsAreReadFromTheNewestVersionOnly() {
     def db as flatdb.DB init emptyDb();
     $db = store.putVersion($db, "@acme/one", "d", tagged("1.0.0", ["old"]));
     $db = store.putVersion($db, "@acme/one", "", tagged("2.0.0", ["new"]));
-    testing.assertEqual(tag(search.index($db), "old", 1).status, 404);
-    testing.assertEqual(tag(search.index($db), "new", 1).status, 200);
+    testing.assertEqual(tag(search.index($db), "old", 1, DEFAULT_PAGE_SIZE).status, 404);
+    testing.assertEqual(tag(search.index($db), "new", 1, DEFAULT_PAGE_SIZE).status, 200);
 }
 
 # --- scope, source, counts ---------------------------------------------------
@@ -534,14 +544,16 @@ func testADeckPageNamesTheScopeItIsPublishedUnder() {
 }
 
 func testAScopePageListsTheScopesDecks() {
-    def page as Page init scope(taggedDb(), search.index(taggedDb()), "acme", 1);
+    def page as Page init scope(taggedDb(), search.index(taggedDb()), "acme", 1, DEFAULT_PAGE_SIZE);
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "@acme/one");
     testing.assertContains($page.body, "@acme/two");
 }
 
 func testAnUnknownScopeIs404() {
-    testing.assertEqual(scope(taggedDb(), search.index(taggedDb()), "nobody", 1).status, 404);
+    testing.assertEqual(
+        scope(taggedDb(), search.index(taggedDb()), "nobody", 1, DEFAULT_PAGE_SIZE).status,
+        404);
 }
 
 func testADeckWithNoLookupsShowsNoCounts() {
@@ -620,11 +632,13 @@ func testYankingAnOlderVersionDoesNotRaiseABanner() {
 func testAListingMarksADeckWithNothingInstallable() {
     def db as flatdb.DB init yankedDb();
     $db = store.setYanked($db, "@acme/routeros", "0.1.0", true);
-    testing.assertContains(browse(search.index($db), 1).body, "all versions yanked");
+    testing.assertContains(
+        browse(search.index($db), 1, DEFAULT_PAGE_SIZE).body,
+        "all versions yanked");
 }
 
 func testAListingShowsTheNewestLiveVersionAsLatest() {
-    testing.assertContains(browse(search.index(yankedDb()), 1).body, "0.1.0");
+    testing.assertContains(browse(search.index(yankedDb()), 1, DEFAULT_PAGE_SIZE).body, "0.1.0");
 }
 
 # manyDecks returns a registry of `n` decks, @acme/d000 upwards.
@@ -640,35 +654,37 @@ func manyDecks(n as int) {
 
 func testBrowseShowsOnePageAtATime() {
     def index as json.Value init search.index(manyDecks(250));
-    def first as string init browse($index, 1).body;
+    def first as string init browse($index, 1, PAGE_SIZE).body;
     testing.assertContains($first, "All decks (250)");
     testing.assertContains($first, "@acme/d099");
     testing.assertFalse(strings.contains($first, "@acme/d100"));
     testing.assertContains($first, "Page 1 of 3");
-    testing.assertContains($first, 'href="/browse?page=2"');
+    testing.assertContains($first, 'href="/browse?size=100&amp;page=2"');
     testing.assertFalse(strings.contains($first, 'rel="prev"'));
-    def last as string init browse($index, 3).body;
+    def last as string init browse($index, 3, PAGE_SIZE).body;
     testing.assertContains($last, "@acme/d249");
-    testing.assertContains($last, 'href="/browse?page=2"');
+    testing.assertContains($last, 'href="/browse?size=100&amp;page=2"');
     testing.assertFalse(strings.contains($last, 'rel="next"'));
 }
 
 func testAPagePastTheEndShowsTheLast() {
     def index as json.Value init search.index(manyDecks(150));
-    testing.assertContains(browse($index, 99).body, "Page 2 of 2");
+    testing.assertContains(browse($index, 99, PAGE_SIZE).body, "Page 2 of 2");
 }
 
 func testASmallListingHasNoPager() {
-    testing.assertFalse(strings.contains(browse(search.index(seeded()), 1).body, 'class="pager"'));
+    testing.assertFalse(strings.contains(
+        browse(search.index(seeded()), 1, DEFAULT_PAGE_SIZE).body,
+        'class="pager"'));
 }
 
 func testSearchPagesKeepTheQueryEscaped() {
     def db as flatdb.DB init manyDecks(150);
     $db = store.putVersion($db, "@acme/zz", '"><b>router</b>', gitVer("1.0.0"));
-    def body as string init results(search.index($db), 'router"<x>', 1).body;
+    def body as string init results(search.index($db), 'router"<x>', 1, PAGE_SIZE).body;
     testing.assertFalse(strings.contains($body, '"<x>'));
-    def page as Page init results(search.index($db), "router", 2);
-    testing.assertContains($page.body, 'href="/search?q=router&amp;page=1"');
+    def page as Page init results(search.index($db), "router", 2, PAGE_SIZE);
+    testing.assertContains($page.body, 'href="/search?q=router&amp;size=100&amp;page=1"');
 }
 
 func testThePageParameterIsForgiving() {
@@ -699,12 +715,16 @@ func testThePagesBuiltFromSharedMapsMatchTheIndexOnes() {
     def db as flatdb.DB init taggedDb();
     def all as json.Value init search.index($db);
     testing.assertEqual(tagsFrom(search.tagMap($all)).body, tags($all).body);
-    testing.assertEqual(tagIn($all, search.tagMap($all), "cli", 1).body, tag($all, "cli", 1).body);
-    testing.assertEqual(tagIn($all, search.tagMap($all), "nothing", 1).status, 404);
-    def viaMap as Page init scopeIn($db, $all, search.scopeMap($all), "acme", 1);
-    testing.assertEqual($viaMap.body, scope($db, $all, "acme", 1).body);
-    def found as Page init resultsIn($all, search.lowered($all), "ONE", 1);
-    testing.assertEqual($found.body, results($all, "ONE", 1).body);
+    testing.assertEqual(
+        tagIn($all, search.tagMap($all), "cli", 1, DEFAULT_PAGE_SIZE).body,
+        tag($all, "cli", 1, DEFAULT_PAGE_SIZE).body);
+    testing.assertEqual(
+        tagIn($all, search.tagMap($all), "nothing", 1, DEFAULT_PAGE_SIZE).status,
+        404);
+    def viaMap as Page init scopeIn($db, $all, search.scopeMap($all), "acme", 1, DEFAULT_PAGE_SIZE);
+    testing.assertEqual($viaMap.body, scope($db, $all, "acme", 1, DEFAULT_PAGE_SIZE).body);
+    def found as Page init resultsIn($all, search.lowered($all), "ONE", 1, DEFAULT_PAGE_SIZE);
+    testing.assertEqual($found.body, results($all, "ONE", 1, DEFAULT_PAGE_SIZE).body);
     testing.assertContains($found.body, "@acme/one");
     testing.assertFalse(strings.contains($found.body, "@acme/two"));
 }
@@ -732,4 +752,55 @@ func testADeckWithManyVersionsRendersEveryRow() {
     def page as Page init deck($db, "@acme/many", NOW);
     testing.assertContains($page.body, "1.299.0");
     testing.assertContains($page.body, "1.0.0");
+}
+
+func testAPageSizeIsOneOfTheFixedChoices() {
+    testing.assertEqual(pageSize("10"), 10);
+    testing.assertEqual(pageSize("100"), 100);
+    testing.assertEqual(pageSize(""), DEFAULT_PAGE_SIZE);
+    testing.assertEqual(pageSize("7"), DEFAULT_PAGE_SIZE);
+    testing.assertEqual(pageSize("010"), DEFAULT_PAGE_SIZE);
+    testing.assertEqual(pageSize("1000"), DEFAULT_PAGE_SIZE);
+    testing.assertEqual(pageSize("-25"), DEFAULT_PAGE_SIZE);
+}
+
+# The default size keeps the plain URLs a listing had before sizes existed.
+func testTheDefaultPageSizeKeepsPlainLinks() {
+    def body as string init browse(search.index(manyDecks(60)), 1, DEFAULT_PAGE_SIZE).body;
+    testing.assertContains($body, "@acme/d024");
+    testing.assertFalse(strings.contains($body, "@acme/d025"));
+    testing.assertContains($body, "Page 1 of 3");
+    testing.assertContains($body, 'href="/browse?page=2"');
+    testing.assertFalse(strings.contains($body, "size=25"));
+}
+
+# Changing the size opens the page holding the first deck shown now: page 5 at
+# 10 starts at the 41st deck, which is on page 2 at 25 and page 1 at 50.
+func testAnotherPageSizeKeepsTheReadersPlace() {
+    def body as string init browse(search.index(manyDecks(120)), 5, 10).body;
+    testing.assertContains($body, "@acme/d040");
+    testing.assertContains($body, '<strong aria-current="true">10</strong>');
+    testing.assertContains($body, 'href="/browse?page=2">25</a>');
+    testing.assertContains($body, 'href="/browse?size=50&amp;page=1">50</a>');
+    testing.assertContains($body, 'href="/browse?size=100&amp;page=1">100</a>');
+    testing.assertContains($body, 'rel="prev" href="/browse?size=10&amp;page=4"');
+    testing.assertContains($body, 'rel="next" href="/browse?size=10&amp;page=6"');
+}
+
+# Ten decks or fewer read the same at every size, so no choice is offered.
+func testASmallListingOffersNoPageSizes() {
+    def small as string init browse(search.index(manyDecks(10)), 1, DEFAULT_PAGE_SIZE).body;
+    testing.assertFalse(strings.contains($small, 'class="page-size"'));
+    def more as string init browse(search.index(manyDecks(11)), 1, DEFAULT_PAGE_SIZE).body;
+    testing.assertContains($more, 'class="page-size"');
+    testing.assertFalse(strings.contains($more, 'class="pager"'));
+}
+
+func testASearchKeepsTheChosenPageSize() {
+    def index as json.Value init search.index(manyDecks(60));
+    def sized as string init results($index, "router", 2, 50).body;
+    testing.assertContains($sized, '<input type="hidden" name="size" value="50">');
+    testing.assertContains($sized, 'href="/search?q=router&amp;size=50&amp;page=1"');
+    def plain as string init results($index, "router", 1, DEFAULT_PAGE_SIZE).body;
+    testing.assertFalse(strings.contains($plain, 'name="size"'));
 }
