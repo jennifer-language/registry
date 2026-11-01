@@ -205,6 +205,15 @@ Anything else (a name that is not an account on your forge, a dispute, a
 reassignment) is the operator's to grant. Ask them, naming the account that
 should own it.
 
+### "is reserved; ask an operator"
+
+The registry holds back a short list of names that nobody can claim, even when
+the name is your login or one of your organisations: the project's own names
+(`jennifer`, `jvc`, `grimoire`, `jennifer-lang`, `deckyard`, ...), names that
+read as the registry speaking (`admin`, `official`, `security`), names that
+read as part of the service (`api`, `www`), and placeholders (`test`,
+`example`). Only an operator can grant one, the same way as any other grant.
+
 ### "is neither your github username nor one of the organisations your login carries"
 
 A claim for an organisation you belong to can still be refused. The registry
