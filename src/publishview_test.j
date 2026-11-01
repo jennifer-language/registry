@@ -67,6 +67,7 @@ func source() {
         repoId: REPO_ID,
         repoOwnerId: "42",
         repoOwner: "acme",
+        manifestName: "deck.toml",
         manifestText: manifestText(),
         readmeText: "# routeros\n\nA **client**.\n",
         commitShadowed: false,
@@ -294,8 +295,8 @@ func testAConflictIsReportedBeforeAMissingEntryModule() {
 }
 
 func testTheEntryPathComesFromTheManifestName() {
-    testing.assertEqual(entryPathFor(manifestText()), "src/routeros.j");
-    testing.assertEqual(entryPathFor("not toml ["), "");
+    testing.assertEqual(entryPathFor("deck.toml", manifestText()), "src/routeros.j");
+    testing.assertEqual(entryPathFor("deck.toml", "not toml ["), "");
 }
 
 func testAnUnresolvedTagIsRefused() {
@@ -886,4 +887,67 @@ func testNewBindingValidatesTheRefPattern() {
         testing.assertFalse($out.ok);
         testing.assertContains($out.error, "refs");
     }
+}
+
+func testAMissingManifestListsTheNamesLookedFor() {
+    def c as string init "a3ecd948ffe2ea9151f8906e18548e0275c12162";
+    testing.assertEqual(
+        missingManifest("0.1.0", $c),
+        "no deck manifest found at 0.1.0 (commit a3ecd948ffe2); " +
+            "looked for deck.toml, deck.yaml, deck.yml, deck.json");
+}
+
+func testTwoManifestsAreRefusedByName() {
+    def got as string init multipleManifests("0.1.0", ["deck.toml", "deck.yaml"]);
+    testing.assertContains($got, "(deck.toml, deck.yaml); keep exactly one");
+}
+
+# yamlSource is source() with the same manifest written as deck.yaml.
+func yamlSource() {
+    def src as Source init source();
+    $src.manifestName = "deck.yaml";
+    $src.manifestText = 'package:
+  name: "@acme/routeros"
+  version: "0.1.0"
+  description: "MikroTik RouterOS client"
+decks:
+  "@acme/net": "^1.0.0"
+';
+    return $src;
+}
+
+func testADeckPublishesFromDeckYaml() {
+    def out as PublishReply init byToken(owned(), alice(), yamlSource(), NOW);
+    testing.assertEqual($out.status, 201);
+    def v as store.DeckVersion init store.getVersionRecord($out.db, "@acme/routeros", "0.1.0");
+    testing.assertEqual($v.requires["@acme/net"], "^1.0.0");
+    testing.assertEqual(entryPathFor("deck.yaml", yamlSource().manifestText), "src/routeros.j");
+}
+
+func testMessagesNameTheManifestThatWasRead() {
+    def src as Source init yamlSource();
+    $src.tag = "v0.2.0";
+    def out as PublishReply init byToken(owned(), alice(), $src, NOW);
+    testing.assertEqual($out.status, 400);
+    testing.assertContains(json.asString($out.body, "/error"), "the version in deck.yaml");
+}
+
+func testAMissingTagSaysToPushIt() {
+    def got as string init missingTag("https://github.com/acme/deck-x", "1.0.0");
+    testing.assertContains($got, "1.0.0 was not found in https://github.com/acme/deck-x");
+    testing.assertContains($got, "git push <remote> 1.0.0");
+}
+
+func testExactlyOneManifestIsChosen() {
+    def c as string init "a3ecd948ffe2ea9151f8906e18548e0275c12162";
+    def one as ManifestFile init chooseManifest("0.1.0", $c, {"deck.yaml": 'package: {}'});
+    testing.assertEqual($one.name, "deck.yaml");
+    testing.assertEqual($one.text, 'package: {}');
+    testing.assertEqual($one.problem, "");
+    def none as ManifestFile init chooseManifest("0.1.0", $c, {});
+    testing.assertContains($none.problem, "no deck manifest found at 0.1.0");
+    def two as ManifestFile init chooseManifest("0.1.0", $c, {"deck.json": '{}', "deck.toml": ""});
+    # named in the reading order, whatever order the map holds them in
+    testing.assertContains($two.problem, "(deck.toml, deck.json); keep exactly one");
+    testing.assertEqual($two.name, "");
 }

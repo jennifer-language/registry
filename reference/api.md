@@ -391,7 +391,8 @@ and, for a tag ref, its tag the one published.
 ```
 
 Nothing else about the deck comes from the body. The registry resolves the tag
-to a commit, reads `deck.toml` (and `README.md`, if any) at that commit, and
+to a commit, reads the manifest (`deck.toml`, `deck.yaml`, `deck.yml` or
+`deck.json`, exactly one; and `README.md`, if any) at that commit, and
 takes the name, version, dependencies, engines, capabilities, keywords, and
 license from it. For a bearer or CI token it also asks the forge whether the
 account behind the publish may push to the repository (source authority, route

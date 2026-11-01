@@ -156,7 +156,7 @@ func resolveTag(cfg as forge.Config, url as string, tag as string) {
         "");
     if (not ($res.status == 200)) {
         throw Error{
-            kind: "forge",
+            kind: forge.kindOf($res.status),
             message: "could not resolve the tag " + $tag + ": the forge answered " +
                 convert.toString($res.status),
             file: "",
@@ -187,7 +187,7 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
     def res as http.Response init http.requestWith("GET", $target, $h, "", TIMEOUT_MS, MAX_BYTES);
     if (not ($res.status == 200)) {
         throw Error{
-            kind: "forge",
+            kind: forge.kindOf($res.status),
             message: "could not read " + $path + " at " + $commit + ": the forge answered " +
                 convert.toString($res.status),
             file: "",

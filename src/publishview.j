@@ -6,7 +6,8 @@
  * `POST /publish`, as pure data (specification 7).
  *
  * A publish names a repository and a tag; the forge resolves the tag to a
- * commit and reads `deck.toml` at that commit, and the record comes from there.
+ * commit and reads its manifest (`deck.toml`, `deck.yaml`, `deck.yml` or
+ * `deck.json`) at that commit, and the record comes from there.
  * The request cannot name the deck, so the scope check checks a fact, not a
  * claim.
  *
@@ -31,6 +32,7 @@
 use json;
 use strings;
 use convert;
+use maps;
 import "flatdb.j" as flatdb;
 import "./store.j" as store;
 import "./scope.j" as scope;
@@ -51,7 +53,9 @@ import "./forge.j" as forge;
  * @field repoId {string} the forge's immutable numeric repository id
  * @field repoOwnerId {string} the numeric id of the owning account
  * @field repoOwner {string} the owner's name, a display label
- * @field manifestText {string} the bytes of `deck.toml` at that commit
+ * @field manifestName {string} which manifest the commit holds, one of
+ *     `manifest.FILENAMES`; it decides how `manifestText` is decoded
+ * @field manifestText {string} the bytes of that manifest at that commit
  * @field readmeText {string} the bytes of `README.md` at that commit ("" when
  *     the repository has none; a deck without one is not an error)
  * @field commitShadowed {bool} true when the repository also holds a branch or
@@ -70,6 +74,7 @@ export def struct Source {
     repoId as string,
     repoOwnerId as string,
     repoOwner as string,
+    manifestName as string,
     manifestText as string,
     readmeText as string,
     commitShadowed as bool,
@@ -144,15 +149,89 @@ export func checkSource(src as Source) {
 }
 
 /**
+ * The refusal for a commit without a manifest (specification 7, step 3).
+ * @param tag {string} the tag published
+ * @param commit {string} the commit it resolved to
+ * @return {string} the message for a 400
+ */
+export func missingManifest(tag as string, commit as string) {
+    return "no deck manifest found at " + $tag + " (commit " + strings.substring($commit, 0, 12) +
+        "); looked for " + strings.join(manifest.FILENAMES, ", ");
+}
+
+/**
+ * The manifest a commit holds, chosen from what the forge returned.
+ * @field name {string} which one, from `manifest.FILENAMES` ("" on a problem)
+ * @field text {string} its bytes
+ * @field problem {string} why none can be used, for a 400; "" when one can
+ */
+export def struct ManifestFile {
+    name as string,
+    text as string,
+    problem as string
+};
+
+/**
+ * Choose the commit's manifest: exactly one of `manifest.FILENAMES` must be
+ * there. None, or more than one, is the publisher's to fix (specification 7,
+ * step 3).
+ * @param tag {string} the tag published
+ * @param commit {string} the commit it resolved to
+ * @param found {map of string to string} manifest name to bytes, for each the
+ *     forge returned at the commit
+ * @return {ManifestFile} the manifest, or `problem` set
+ */
+export func chooseManifest(tag as string, commit as string, found as map of string to string) {
+    def names as list of string init [];
+    for (def name in manifest.FILENAMES) {
+        if (maps.has($found, $name)) {
+            $names[] = $name;
+        }
+    }
+    if (len($names) == 0) {
+        return ManifestFile{name: "", text: "", problem: missingManifest($tag, $commit)};
+    }
+    if (len($names) > 1) {
+        return ManifestFile{name: "", text: "", problem: multipleManifests($tag, $names)};
+    }
+    return ManifestFile{name: $names[0], text: $found[$names[0]], problem: ""};
+}
+
+/**
+ * The refusal for a commit holding more than one manifest. Which one counts
+ * would depend on the reader, so none does, as clients refuse it locally.
+ * @param tag {string} the tag published
+ * @param found {list of string} the manifests the commit holds
+ * @return {string} the message for a 400
+ */
+export func multipleManifests(tag as string, found as list of string) {
+    return "more than one deck manifest at " + $tag + " (" + strings.join($found, ", ") +
+        "); keep exactly one";
+}
+
+/**
+ * The refusal for a tag the forge does not know: usually one tagged locally but
+ * never pushed to the remote published from.
+ * @param repository {string} the repository URL
+ * @param tag {string} the tag
+ * @return {string} the message for a 400
+ */
+export func missingTag(repository as string, tag as string) {
+    return "the tag " + $tag + " was not found in " + $repository +
+        "; push it there first (git push <remote> " + $tag + ")";
+}
+
+/**
  * Where the entry module of the deck a manifest names must be, or "" when the
  * manifest does not parse or names no valid deck (the parse error is then what
  * the publish reports). The caller asks the forge about this file before
  * `entryProblem` judges the answer.
- * @param manifestText {string} the bytes of `deck.toml` at the commit
+ * @param manifestName {string} which manifest it is, one of `manifest.FILENAMES`
+ * @param manifestText {string} its bytes at the commit
  * @return {string} the path, such as `src/routeros.j`, or ""
  */
-export func entryPathFor(manifestText as string) {
-    def m as manifest.Manifest init manifest.parse($manifestText);
+export func entryPathFor(manifestName as string, manifestText as string) {
+    def m as manifest.Manifest init manifest.parseAs($manifestName, $manifestText);
     if (not $m.ok or not deckname.isValid($m.name)) {
         return "";
     }
@@ -161,11 +240,12 @@ export func entryPathFor(manifestText as string) {
 
 /**
  * The deck name a manifest gives, folded, or "" when it does not parse.
- * @param manifestText {string} the bytes of `deck.toml` at the commit
+ * @param manifestName {string} which manifest it is, one of `manifest.FILENAMES`
+ * @param manifestText {string} its bytes at the commit
  * @return {string} the deck name, or ""
  */
-export func deckNameOf(manifestText as string) {
-    def m as manifest.Manifest init manifest.parse($manifestText);
+export func deckNameOf(manifestName as string, manifestText as string) {
+    def m as manifest.Manifest init manifest.parseAs($manifestName, $manifestText);
     if (not $m.ok) {
         return "";
     }
@@ -186,7 +266,8 @@ export func versionProblem(src as Source, m as manifest.Manifest) {
         $tagged = strings.substring($tagged, 1, len($tagged));
     }
     if (not ($tagged == $m.version)) {
-        return "the tag " + $src.tag + " disagrees with the version in deck.toml, " +
+        return "the tag " + $src.tag + " disagrees with the version in " + $src.manifestName +
+            ", " +
             $m.version + "; tag the release " + $m.version + " or v" + $m.version;
     }
     return "";
@@ -200,7 +281,8 @@ export func versionProblem(src as Source, m as manifest.Manifest) {
  */
 export func entryProblem(src as Source) {
     if (not $src.entryPresent) {
-        return "the tree at " + $src.commit + " has no " + entryPathFor($src.manifestText) +
+        return "the tree at " + $src.commit + " has no " +
+            entryPathFor($src.manifestName, $src.manifestText) +
             ", the entry module a deck must contain";
     }
     return "";
@@ -393,7 +475,7 @@ func alreadyPublished(db as flatdb.DB, m as manifest.Manifest) {
 # parsed reads the manifest; callers turn a parse failure into a 400. A missing
 # or unreadable manifest is reported by the caller before this.
 func parsed(src as Source) {
-    return manifest.parse($src.manifestText);
+    return manifest.parseAs($src.manifestName, $src.manifestText);
 }
 
 # manifestRefusal is the 400 for a manifest that did not validate (7, step 3).
@@ -405,7 +487,7 @@ func manifestRefusal(db as flatdb.DB, src as Source, m as manifest.Manifest, aut
     if ($authorised) {
         return refuse($db, 400, $m.error);
     }
-    def shown as string init manifest.FILENAME + " at " + $src.tag + " did not validate";
+    def shown as string init $src.manifestName + " at " + $src.tag + " did not validate";
     def out as PublishReply init refuse($db, 400, $shown);
     $out.event = audit.publishRefused($shown + ": " + $m.error, 400);
     return $out;
@@ -438,7 +520,7 @@ export func byToken(db as flatdb.DB, who as identity.Subject, src as Source, now
     }
     def m as manifest.Manifest init parsed($src);
     if (not $m.ok) {
-        def name as string init manifest.nameOf($src.manifestText);
+        def name as string init manifest.nameOfAs($src.manifestName, $src.manifestText);
         return manifestRefusal($db, $src, $m, mayReadErrors($db, $who, $name));
     }
     def deckComplaint as string init checkDeck($db, $m);
@@ -484,7 +566,7 @@ export func byCiToken(db as flatdb.DB, t as citoken.Token, src as Source, now as
     }
     def m as manifest.Manifest init parsed($src);
     if (not $m.ok) {
-        def name as string init manifest.nameOf($src.manifestText);
+        def name as string init manifest.nameOfAs($src.manifestName, $src.manifestText);
         def covered as bool init not ($name == "") and
             citoken.check($t, $name, convert.toInt($now)).allowed;
         return manifestRefusal($db, $src, $m, $covered);
@@ -551,7 +633,7 @@ export func byTrustedPublisher(
     }
     def m as manifest.Manifest init parsed($src);
     if (not $m.ok) {
-        def name as string init manifest.nameOf($src.manifestText);
+        def name as string init manifest.nameOfAs($src.manifestName, $src.manifestText);
         def bound as bool init not ($name == "") and not ($claims.repositoryId == "") and
             store.bindingFor($db, $name).repositoryId == $claims.repositoryId;
         return manifestRefusal($db, $src, $m, $bound);

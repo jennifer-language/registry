@@ -44,6 +44,7 @@ import "../src/forge/github.j" as githubForge;
 import "../src/forge/gitlab.j" as gitlabForge;
 import "../src/forge/gitea.j" as giteaForge;
 import "../src/publishview.j" as publishview;
+import "../src/manifest.j" as manifest;
 import "../src/trustpub.j" as trustpub;
 import "../src/citoken.j" as citoken;
 import "../src/forgecred.j" as forgecred;
@@ -1002,8 +1003,45 @@ func publishRequestProblem(repository as string, tag as string) {
     return forge.tagProblem($tag);
 }
 
+# manifestAt reads the commit's manifest, whichever of `manifest.FILENAMES` it
+# is. Every name is asked for, since two at once are refused rather than one
+# silently preferred. None, or several, throws kind "manifest", which the
+# handler answers with 400; a forge that fails throws its own kind (502).
+func manifestAt(repository as string, tag as string, commit as string) {
+    def found as map of string to string init {};
+    for (def name in manifest.FILENAMES) {
+        try {
+            $found[$name] = $theForge.readFile($forgeConfig, $repository, $commit, $name);
+        } catch (err) {
+            if (not ($err.kind == forge.ABSENT)) {
+                throw $err;
+            }
+        }
+    }
+    def got as publishview.ManifestFile init publishview.chooseManifest($tag, $commit, $found);
+    if (not ($got.problem == "")) {
+        throw Error{kind: "manifest", message: $got.problem};
+    }
+    return $got;
+}
+
+# sourceFailure answers a publish whose forge reads threw. Not there, or a
+# manifest that is missing or doubled, is the publisher's to fix (5.7: 400); a
+# forge that failed is a 502.
+func sourceFailure(ctx as web.Context, err as Error, repository as string, tag as string) {
+    if ($err.kind == forge.ABSENT or $err.kind == "manifest") {
+        def why as string init $err.message;
+        if (strings.startsWith($why, "could not resolve the tag")) {
+            $why = publishview.missingTag($repository, $tag);
+        }
+        webapi.fail($ctx, 400, $why);
+        return;
+    }
+    webapi.fail($ctx, 502, "could not read " + $repository + " at " + $tag + ": " + $err.message);
+}
+
 # sourceFrom makes every forge call of a publish and assembles the result for
-# publishview: resolve the tag to a commit, read `deck.toml` at that commit, and
+# publishview: resolve the tag to a commit, read its manifest at that commit, and
 # look up the repository. The manifest never comes from the request body
 # (specification 7), so the scope check is made against the repository content.
 func sourceFrom(repository as string, tag as string) {
@@ -1018,6 +1056,7 @@ func sourceFrom(repository as string, tag as string) {
             repoId: "",
             repoOwnerId: "",
             repoOwner: "",
+            manifestName: "",
             manifestText: "",
             readmeText: "",
             commitShadowed: false,
@@ -1029,7 +1068,7 @@ func sourceFrom(repository as string, tag as string) {
     # name before an object, so a ref named `<commit>` would answer the reads
     # below. `refExists` throws when the forge will not say, which becomes a 502.
     def shadowed as bool init $theForge.refExists($forgeConfig, $repository, $commit);
-    def text as string init $theForge.readFile($forgeConfig, $repository, $commit, "deck.toml");
+    def mf as publishview.ManifestFile init manifestAt($repository, $tag, $commit);
     def r as forge.Repo init $theForge.repo($forgeConfig, $repository);
     # The README is optional and read at the same commit as the manifest.
     def readme as string init "";
@@ -1040,7 +1079,7 @@ func sourceFrom(repository as string, tag as string) {
     }
     # Whether the entry module the manifest's name implies (6.1) exists. An
     # unparsable manifest names none; the publish reports its parse error.
-    def entry as string init publishview.entryPathFor($text);
+    def entry as string init publishview.entryPathFor($mf.name, $mf.text);
     def entryPresent as bool init false;
     if (not ($entry == "")) {
         $entryPresent = $theForge.fileExists($forgeConfig, $repository, $commit, $entry);
@@ -1057,7 +1096,8 @@ func sourceFrom(repository as string, tag as string) {
         repoId: $r.id,
         repoOwnerId: $r.ownerId,
         repoOwner: $r.owner,
-        manifestText: $text,
+        manifestName: $mf.name,
+        manifestText: $mf.text,
         readmeText: $readme,
         commitShadowed: $shadowed,
         entryPresent: $entryPresent,
@@ -1084,7 +1124,7 @@ func authorityFor(
         $principal = publishview.ciPrincipal(
             $db,
             $ciRec,
-            publishview.deckNameOf($src.manifestText));
+            publishview.deckNameOf($src.manifestName, $src.manifestText));
     }
     try {
         return askForge($db, $principal, $src.repository);
@@ -1271,11 +1311,7 @@ func apiPublish(ctx as web.Context) {
     try {
         $src = sourceFrom($repository, $tag);
     } catch (err) {
-        webapi.fail(
-            $ctx,
-            502,
-            "could not read " + $repository + " at " + $tag +
-                ": " + $err.message);
+        sourceFailure($ctx, $err, $repository, $tag);
         return;
     }
     # Source authority (7.1 route A) is asked before the lock; publishview judges

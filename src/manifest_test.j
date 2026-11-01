@@ -336,3 +336,112 @@ name = "bare"
 name = 5
 '), "");
 }
+
+# --- deck.yaml, deck.yml, deck.json -------------------------------------------
+
+def const YAML_MANIFEST as string init 'package:
+  name: "@Acme/Tool"
+  version: "1.2.0"
+  description: "a tool"
+  license: "MIT"
+  capabilities: ["net"]
+  keywords: ["network", "cli"]
+engines:
+  jennifer: ">=0.25.0"
+decks:
+  "@acme/net": "^1.0.0"
+';
+
+def const JSON_MANIFEST as string init '{"package": {"name": "@Acme/Tool", "version": "1.2.0", ' +
+    '"description": "a tool", "license": "MIT", "capabilities": ["net"], ' +
+    '"keywords": ["network", "cli"]}, "engines": {"jennifer": ">=0.25.0"}, ' +
+    '"decks": {"@acme/net": "^1.0.0"}}';
+
+def const TOML_MANIFEST as string init '[package]
+name = "@Acme/Tool"
+version = "1.2.0"
+description = "a tool"
+license = "MIT"
+capabilities = ["net"]
+keywords = ["network", "cli"]
+
+[engines]
+jennifer = ">=0.25.0"
+
+[decks]
+"@acme/net" = "^1.0.0"
+';
+
+func testTheFourFormatsRecordTheSameManifest() {
+    def want as Manifest init parseAs("deck.toml", TOML_MANIFEST);
+    testing.assertTrue($want.ok);
+    for (def got in [
+        parseAs("deck.yaml", YAML_MANIFEST),
+        parseAs("deck.yml", YAML_MANIFEST),
+        parseAs("deck.json", JSON_MANIFEST)
+    ]) {
+        testing.assertTrue($got.ok);
+        testing.assertEqual($got.name, "@acme/tool");
+        testing.assertEqual($got.version, $want.version);
+        testing.assertEqual($got.description, $want.description);
+        testing.assertEqual($got.license, $want.license);
+        testing.assertEqual($got.capabilities, $want.capabilities);
+        testing.assertEqual($got.keywords, $want.keywords);
+        testing.assertEqual($got.engines["jennifer"], ">=0.25.0");
+        testing.assertEqual($got.requires["@acme/net"], "^1.0.0");
+    }
+}
+
+func testAnUnquotedYamlVersionSaysToQuoteIt() {
+    def m as Manifest init parseAs("deck.yaml", 'package:
+  name: "@acme/tool"
+  version: 1.2
+');
+    testing.assertFalse($m.ok);
+    testing.assertEqual($m.error, "`version` in deck.yaml must be a string; put it in quotes");
+}
+
+func testASyntaxErrorNamesTheFileAndFormat() {
+    testing.assertContains(
+        parseAs("deck.yaml", "package: [unclosed").error,
+        "deck.yaml is not valid YAML");
+    testing.assertContains(
+        parseAs("deck.json", '{"package": ').error,
+        "deck.json is not valid JSON");
+}
+
+func testADocumentThatIsNoTableIsRefused() {
+    testing.assertContains(
+        parseAs("deck.yaml", "just a string").error,
+        "must be a table of fields");
+    testing.assertContains(parseAs("deck.json", "[1, 2]").error, "must be a table of fields");
+}
+
+func testAYamlDateIsNotText() {
+    # JSON has no date type, so a date read as text would slip past every check
+    def m as Manifest init parseAs(
+        "deck.yaml",
+        'package:
+  name: "@acme/tool"
+  version: "1.0.0"
+  description: 2026-10-28
+');
+    testing.assertFalse($m.ok);
+    testing.assertContains($m.error, "`description` in deck.yaml must be a string");
+}
+
+func testTheRulesHoldInEveryFormat() {
+    def m as Manifest init parseAs(
+        "deck.json",
+        '{"package": {"name": "@acme/tool", ' +
+            '"version": "1.0.0"}, "decks": {"@acme/net": ""}}');
+    testing.assertEqual(
+        $m.error,
+        "empty version constraint for @acme/net in [decks]: write \"*\" for any version");
+}
+
+func testTheNameIsReadFromAnyFormatForErrorAccess() {
+    testing.assertEqual(nameOfAs("deck.yaml", YAML_MANIFEST), "@acme/tool");
+    testing.assertEqual(nameOfAs("deck.json", JSON_MANIFEST), "@acme/tool");
+    testing.assertEqual(nameOfAs("deck.json", "not json"), "");
+}

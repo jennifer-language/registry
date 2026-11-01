@@ -208,6 +208,27 @@ export func isAccountId(id as string) {
 }
 
 /**
+ * The error kind a forge read throws for a thing the forge says is not there
+ * (404): a tag that was never pushed, a file absent at the commit. It is the
+ * publisher's to fix, so a publish answers it with 400 rather than the 502 of a
+ * forge that failed. A private repository the registry cannot see answers 404
+ * too, so messages say "not found", never "does not exist".
+ */
+export def const ABSENT as string init "absent";
+
+/**
+ * The kind of error a failed forge read throws: `ABSENT` for 404, else "forge".
+ * @param status {int} the HTTP status the forge answered with
+ * @return {string} the error kind
+ */
+export func kindOf(status as int) {
+    if ($status == 404) {
+        return ABSENT;
+    }
+    return "forge";
+}
+
+/**
  * Turn a forge's answer about one ref into presence, or refuse to guess.
  *
  * `200` is present and `404` is absent; anything else throws. The check finds a

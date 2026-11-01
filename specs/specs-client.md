@@ -239,7 +239,8 @@ An absent `kind` **MUST** be read as `"tar.gz"`, for records written before
 
 ### 4.4 What to install
 
-The fetched tree contains `deck.toml`, a `src/` directory, and optionally
+The fetched tree contains a manifest ([specs-server.md](specs-server.md) 7.0), a
+`src/` directory, and optionally
 `template/`. A client **MUST** install only `src/`, into
 `vendor/<scope>/<deck>/`, and **MUST** verify that `src/<deck>.j` is present
 (for `@acme/routeros`, `src/routeros.j`). `template/` is read at scaffold time and

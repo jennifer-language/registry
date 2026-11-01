@@ -5,7 +5,7 @@
 A deck is an ordinary git repository. At the commit you publish, it must contain:
 
 ```
-deck.toml
+deck.toml           or deck.yaml, deck.yml, deck.json: exactly one
 src/<deck>.j        the entry module
 src/...             anything else your deck imports
 template/           optional, used by scaffolding; never vendored
@@ -14,7 +14,11 @@ template/           optional, used by scaffolding; never vendored
 The entry module is named after the deck: `@acme/routeros` needs
 `src/routeros.j`. Only `src/` is installed into a consumer's vendor tree.
 
-Your `deck.toml` describes the version being published:
+Your manifest describes the version being published. It can be TOML, YAML or
+JSON (`deck.toml`, `deck.yaml` or `deck.yml`, `deck.json`) with the same
+fields; keep exactly one, since a commit with two is refused. In YAML, quote
+the version (`version: "1.2.0"`): unquoted, `1.2` is a number and is refused.
+The examples here are TOML:
 
 ```toml
 [package]
@@ -65,7 +69,7 @@ jennifer = ">=0.24.0"
 ## Publishing it
 
 `POST /publish` takes a repository and a tag, and nothing else about your deck.
-The registry resolves the tag to a commit, reads `deck.toml` at that commit, and
+The registry resolves the tag to a commit, reads your manifest at that commit, and
 records what the manifest says. You cannot rename a deck, change its
 dependencies, or publish into a scope by asking for one: everything in the
 record comes from your repository.
@@ -150,7 +154,7 @@ removing a version breaks working builds.
 
 Publishing binds a name to a source, and you need the right to both.
 
-- **The name** comes from `deck.toml` at the commit being published, not from
+- **The name** comes from the manifest at the commit being published, not from
   anything you type. You cannot rename a deck at publish time, and you cannot
   publish a repository into a scope its own manifest does not name. So the scope
   in `name` must be one you hold.

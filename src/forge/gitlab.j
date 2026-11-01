@@ -229,7 +229,7 @@ func resolveTag(cfg as forge.Config, url as string, tag as string) {
         "");
     if (not ($res.status == 200)) {
         throw Error{
-            kind: "forge",
+            kind: forge.kindOf($res.status),
             message: "could not resolve the tag " + $tag + ": the forge answered " +
                 convert.toString($res.status),
             file: "",
@@ -250,7 +250,7 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
         "");
     if (not ($res.status == 200)) {
         throw Error{
-            kind: "forge",
+            kind: forge.kindOf($res.status),
             message: "could not read " + $path + " at " + $commit + ": the forge answered " +
                 convert.toString($res.status),
             file: "",

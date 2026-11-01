@@ -818,7 +818,8 @@ However it is fetched, the deck's tree **MUST** contain:
   tree;
 - `src/<deck>.j`, the entry module. For `@acme/routeros` that is
   `src/routeros.j`;
-- `deck.toml`, the manifest the registry reads its metadata from (section 7).
+- the manifest the registry reads its metadata from (section 7): exactly one of
+  `deck.toml`, `deck.yaml`, `deck.yml` or `deck.json` at the root.
 
 A `template/` directory, when present, is read by the client at scaffold time and
 is also not vendored. Everything else is ignored.
@@ -988,12 +989,12 @@ does the resolving:
 1. authenticate the caller (section 8);
 2. **resolve the tag to a commit SHA**, and record the SHA. The tag is retained
    for display; the commit is the identity (6.2);
-3. read `deck.toml` **at that commit** and take the deck name, version,
-   `requires`, `engines`, and `capabilities` from it;
+3. read the deck's manifest **at that commit** (7.0) and take the deck name,
+   version, `requires`, `engines`, and `capabilities` from it;
 4. verify the caller has **name authority** over the scope in *that* name, and
    **source authority** over the repository (7.1);
 5. reject a name that is not scoped, or a version that is not SemVer;
-6. reject a version whose `deck.toml` version disagrees with the tag (a tag
+6. reject a version whose manifest version disagrees with the tag (a tag
    `v1.0.0` whose manifest says `0.9.0` is a mislabelled release). A single
    leading `v` on the tag is ignored for this comparison and nowhere else (2.3),
    so `v1.0.0` and `1.0.0` both agree with a manifest saying `1.0.0`;
@@ -1015,6 +1016,26 @@ such a failure quotes the manifest, which the registry may have read with rights
 the caller lacks (7.2), so it **MUST NOT** be shown to a caller who is not
 authorised for the name the manifest gives; the caller sees a fixed message and
 the detail goes to the operational log.
+
+### 7.0 The manifest's encodings
+
+A deck declares itself in **exactly one** file at the repository root:
+
+| File | Encoding |
+| ---- | -------- |
+| `deck.toml` | TOML 1.0 |
+| `deck.yaml`, `deck.yml` | YAML 1.2, one document |
+| `deck.json` | JSON |
+
+All four carry the same document: the TOML tables (`[package]`, `[engines]`,
+`[decks]`) are top-level mappings or objects of the same names, and every field
+has the type it has in TOML. A registry **MUST** read any of them and apply the
+same rules to each, so the encoding never changes what is recorded. A commit
+holding none, or more than one, **MUST** be refused with `400` naming what was
+found: with two, which one counts would depend on the reader. A version written
+unquoted (`version: 1.2` in YAML) is a number, not a string, and is refused like
+any other wrong type. A YAML or TOML date has no JSON equivalent and is never
+read as text.
 
 ### 7.1 Two authorisations, not one
 
@@ -1086,7 +1107,7 @@ them, and accept that as source authority on its own.
 
 This route asks the forge for nothing. Verifying a signature needs only the
 ability to **read** the repository, which the registry already does to fetch
-`deck.toml`, so it works on a forge with no permissions API, on a self-hosted
+the manifest, so it works on a forge with no permissions API, on a self-hosted
 instance the registry holds no token for, on a mirror, and on a `file://` URL.
 Git supports GPG signatures, and SSH signatures since git 2.34.
 
@@ -1131,7 +1152,7 @@ needs to read (7.2).
 
 ### 7.2 What the registry reads, and with what rights
 
-Publishing reads two things from the host: the repository's `deck.toml` at a
+Publishing reads two things from the host: the repository's manifest at a
 commit, and the caller's permissions on that repository. Because decks are
 public, neither needs the OAuth `repo` scope: public contents are readable
 without authentication, and the `permissions` object is returned for a public
@@ -1522,7 +1543,7 @@ The OAuth app **SHOULD** request the narrowest scopes that work:
 | `read:user` | the account's stable id and login |
 | `read:org` | organisation membership, to authorise an org-owned deck scope |
 
-**No `repo` scope is needed.** Publishing reads `deck.toml` at a commit and
+**No `repo` scope is needed.** Publishing reads the manifest at a commit and
 checks the caller's permissions on the repository (7.1, 7.2); both are reachable
 without it, because **decks are published from public repositories**. The `repo` scope exists for
 private repository access, which a public registry has no use for and should not
@@ -1900,7 +1921,7 @@ stored by the client**; it is exchanged for the registry's own credential (8.5).
 | ------- | -------- |
 | does this forge handle this URL? | selecting among configured forges (12.4) |
 | resolve a tag to a commit SHA | 7, step 2 |
-| read a file at a commit | reading `deck.toml`, 7 step 3 |
+| read a file at a commit | reading the manifest, 7 step 3 |
 | may this caller push to this repository? | source authority, 7.1 |
 | a stable repository id and owner id | provenance, 6.4 |
 
@@ -2146,8 +2167,10 @@ Naming (section 2.1):
 
 Publishing, where it is offered (section 7):
 
-- [ ] the deck name is taken from `deck.toml` at the resolved commit, and the
+- [ ] the deck name is taken from the manifest at the resolved commit, and the
       scope check runs against **that** name
+- [ ] `deck.toml`, `deck.yaml`, `deck.yml` and `deck.json` are all read, by the
+      same rules; none, or more than one, is a `400` (7.0)
 - [ ] source authority is verified, or the source is recorded and shown as
       unverified
 - [ ] a repository the caller cannot push to is refused, even when its manifest
