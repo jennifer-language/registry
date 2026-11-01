@@ -66,3 +66,25 @@ func testASubjectIsOpaqueButBounded() {
         testing.assertFalse(isSubject($bad));
     }
 }
+
+func testANumericProviderWantsTheAccountIdNotTheLogin() {
+    testing.assertEqual(subjectProblem("github", "1986588"), "");
+    testing.assertContains(
+        subjectProblem("github", "mplx"),
+        "numeric account id, not a login: mplx");
+    testing.assertContains(subjectProblem("github", "mplx"), "api.github.com/users/mplx");
+    for (def provider in ["gitlab", "gitea", "forgejo"]) {
+        testing.assertEqual(subjectProblem($provider, "42"), "");
+        testing.assertContains(subjectProblem($provider, "alice"), "numeric account id");
+    }
+    # not the decimal text of a number
+    testing.assertNotEqual(subjectProblem("github", "0042"), "");
+    testing.assertNotEqual(subjectProblem("github", "12345678901234567890"), "");
+    testing.assertNotEqual(subjectProblem("github", "-5"), "");
+}
+
+func testAnOidcSubjectStaysOpaque() {
+    testing.assertEqual(subjectProblem("oidc", "3f6c1b9e-2d4a-4c8b-9e1f-0a7b5c3d2e19"), "");
+    testing.assertEqual(subjectProblem("oidc", "alice"), "");
+    testing.assertContains(subjectProblem("oidc", "has space"), "not a subject id");
+}

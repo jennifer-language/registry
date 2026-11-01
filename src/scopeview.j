@@ -164,6 +164,15 @@ export func owners(
     if (not ($ns.provider == $who.provider and $ns.subject == $who.id)) {
         return refuse($db, 403, "only the owner of @" + $folded + " may change its co-owners");
     }
+    # Strict on adding only: a malformed entry stored earlier must stay removable.
+    if ($add) {
+        def wrongSubject as string init identity.subjectProblem(
+            $ns.provider,
+            strings.trim($subject));
+        if (not ($wrongSubject == "")) {
+            return refuse($db, 400, $wrongSubject);
+        }
+    }
     if ($ns.subject == strings.trim($subject) and not $add) {
         return refuse(
             $db,

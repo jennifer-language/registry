@@ -132,6 +132,19 @@ func testAnOwnerAddsACoOwner() {
     testing.assertEqual(len(store.ownersOf($out.db, "alice")), 2);
 }
 
+func testAnOwnerCannotAddALoginAsACoOwner() {
+    def out as ScopeReply init owners(owned(), alice(), "alice", "bob", true, NOW);
+    testing.assertEqual($out.status, 400);
+    testing.assertContains(json.asString($out.body, "/error"), "numeric account id");
+}
+
+func testALoginStoredAsACoOwnerCanStillBeRemovedByTheOwner() {
+    def db as flatdb.DB init store.addCoOwner(owned(), "alice", "bob");
+    def out as ScopeReply init owners($db, alice(), "alice", "bob", false, NOW);
+    testing.assertEqual($out.status, 200);
+    testing.assertEqual(len(store.ownersOf($out.db, "alice")), 1);
+}
+
 func testAStrangerCannotChangeOwners() {
     def out as ScopeReply init owners(owned(), stranger(), "alice", "999", true, NOW);
     testing.assertEqual($out.status, 403);

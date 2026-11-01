@@ -112,6 +112,48 @@ export func isSubject(s as string) {
 }
 
 /**
+ * Why `s` cannot be a subject id under `provider`, or "" when it can. On top of
+ * `isSubject`: GitHub, GitLab, Gitea and Forgejo identify an account by a
+ * decimal number, so anything else there is a login or a typo, and a scope bound
+ * to it would match no login ever (a login presents the number). An OIDC `sub`
+ * is opaque and is held only to `isSubject`.
+ * @param provider {string} the identity provider's name
+ * @param s {string} the candidate
+ * @return {string} the complaint, or ""
+ */
+export func subjectProblem(provider as string, s as string) {
+    if (not isSubject($s)) {
+        return "not a subject id: " + $s;
+    }
+    if ($provider == "oidc") {
+        return "";
+    }
+    if (not isDecimalId($s)) {
+        def hint as string init "";
+        if ($provider == "github") {
+            $hint = " (https://api.github.com/users/" + $s + " shows it as `id`)";
+        }
+        return "a " + $provider + " subject is the numeric account id, not a login: " + $s +
+            $hint;
+    }
+    return "";
+}
+
+# isDecimalId accepts 1 to 19 digits without a leading zero: what a numeric
+# account id prints as, and no more than fits an int.
+func isDecimalId(s as string) {
+    if (len($s) == 0 or len($s) > 19 or strings.startsWith($s, "0")) {
+        return false;
+    }
+    for (def ch in strings.chars($s)) {
+        if ($ch < "0" or $ch > "9") {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
  * The error kind `subject` throws when the provider refuses the token outright
  * (HTTP 401): it was revoked or has expired. Any other failure is `identity` or
  * a network kind, which says nothing about the grant (specification 8.5).
