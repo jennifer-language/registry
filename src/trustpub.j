@@ -522,6 +522,8 @@ export func fetchJwks(issuer as string) {
  * @throws {Error} when the signature, the expiry, or the encoding is bad
  */
 export func verified(token as string, jwksJson as string, provider as string) {
-    def policy as jwt.Policy init jwt.Policy{iss: "", aud: "", requireExp: true};
+    # Field by field, not a literal: see token.j `requireExpiry` for why.
+    def policy as jwt.Policy;
+    $policy.requireExp = true;
     return claimsFrom($provider, jwt.verifyJwksWith($token, $jwksJson, "RS256", $policy));
 }

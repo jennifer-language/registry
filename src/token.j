@@ -116,11 +116,9 @@ export func mint(
  * @throws {Error} when the token is malformed, forged, expired, or foreign
  */
 export func verify(key as bytes, issuer as string, token as string) {
-    def claims as json.Value init jwt.verifyWith(
-        $token,
-        $key,
-        ALG,
-        jwt.Policy{iss: $issuer, aud: "", requireExp: true});
+    def policy as jwt.Policy init requireExpiry();
+    $policy.iss = $issuer;
+    def claims as json.Value init jwt.verifyWith($token, $key, ALG, $policy);
     def orgs as map of string to string init {};
     if (json.has($claims, "/orgs")) {
         for (def name in json.keys($claims, "/orgs")) {
@@ -168,4 +166,15 @@ export func fingerprint(token as string) {
  */
 export func now() {
     return time.unix(time.utc());
+}
+
+# requireExpiry is a policy that requires `exp` and checks nothing else. It is
+# filled in field by field, not written as a literal: `jwt.Policy` is a struct
+# from a bundled .j module, so a literal must name every field, and a release
+# that adds one (`leeway`, after 0.25.0) would otherwise refuse to load this.
+# A field left unset takes its zero value (no issuer, no audience, no leeway).
+func requireExpiry() {
+    def policy as jwt.Policy;
+    $policy.requireExp = true;
+    return $policy;
 }
