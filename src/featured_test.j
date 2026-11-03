@@ -54,6 +54,17 @@ func cards(db as flatdb.DB, now as int) {
     return strings.join($out, ", ");
 }
 
+# todays is the deck the rotation picks for the day of `now`, "" when none is
+# in it. The card shows it unless another card already does.
+func todays(db as flatdb.DB, now as int) {
+    def decks as list of Measured init measure($db, search.index($db), $now);
+    def i as int init ofTheDay($decks, $now);
+    if ($i < 0) {
+        return "";
+    }
+    return $decks[$i].name;
+}
+
 func testAnEmptyRegistryFeaturesNothing() {
     testing.assertEqual(cards(emptyDb(), NOW), "");
 }
@@ -63,7 +74,8 @@ func testANewRegistryShowsOnlyWhatItCanMeasure() {
     def db as flatdb.DB init store.putVersion(emptyDb(), "@acme/one", "the first", ver("0.1.0", 3));
     testing.assertEqual(cards($db, NOW), "Newest=@acme/one");
     $db = store.putVersion($db, "@acme/two", "", ver("0.1.0", 9));
-    testing.assertEqual(cards($db, NOW), "Newest=@acme/one, Deck of the day=@acme/two");
+    # The next day's turn falls on @acme/two, which no other card shows.
+    testing.assertEqual(cards($db, NOW + DAY), "Newest=@acme/one, Deck of the day=@acme/two");
 }
 
 # One deck tops every count, but appears once: each card takes the best deck the
@@ -83,7 +95,12 @@ func testADeckIsFeaturedOnce() {
     testing.assertContains($got, "Busy this week=@acme/b");
     # @acme/a and @acme/b released most recently, but both are already shown.
     testing.assertFalse(strings.contains($got, "Latest release="));
-    testing.assertEqual(len(strings.split($got, ", ")), 4);
+    def seen as map of string to bool init {};
+    for (def card in strings.split($got, ", ")) {
+        def name as string init strings.split($card, "=")[1];
+        testing.assertFalse(maps.has($seen, $name));
+        $seen[$name] = true;
+    }
 }
 
 func testTheDetailSaysWhyADeckIsThere() {
@@ -143,13 +160,55 @@ func testAWithdrawnDeckIsNeverFeatured() {
 func testTheDeckOfTheDayChangesDaily() {
     def db as flatdb.DB init emptyDb();
     for (def i in 0..9) {
-        $db = store.putVersion($db, "@acme/d" + convert.toString($i), "", ver("1.0.0", 0));
+        $db = store.putVersion($db, "@acme/d" + convert.toString($i), "", ver("1.0.0", 2));
     }
     def morning as string init cards($db, NOW - NOW % DAY + 60);
     testing.assertEqual(cards($db, NOW - NOW % DAY + DAY - 60), $morning);
     testing.assertFalse(cards($db, NOW - NOW % DAY + DAY + 60) == $morning);
 }
 
+# Nothing during the day moves it: not a deck published today, which sorts
+# first and changes the listing, and not lookups that reshuffle the other cards.
+func testTheDeckOfTheDayHoldsThroughTheDay() {
+    def db as flatdb.DB init emptyDb();
+    for (def i in 0..9) {
+        $db = store.putVersion($db, "@acme/d" + convert.toString($i), "", ver("1.0.0", 5));
+    }
+    def morning as string init todays($db, NOW - NOW % DAY + 60);
+    testing.assertTrue(len($morning) > 0);
+    $db = store.putVersion($db, "@acme/a", "", ver("0.1.0", 0));
+    for (def i in 0..9) {
+        def name as string init "@acme/d" + convert.toString($i);
+        if ($name != $morning) {
+            $db = looked($db, $name, $i + 1);
+        }
+    }
+    testing.assertEqual(todays($db, NOW + 60), $morning);
+}
+
+# A deck joins the rotation the day after its first publish.
+func testANewDeckWaitsForTomorrow() {
+    def db as flatdb.DB init store.putVersion(emptyDb(), "@acme/new", "", ver("0.1.0", 0));
+    testing.assertEqual(todays($db, NOW + 60), "");
+    testing.assertEqual(todays($db, NOW + DAY), "@acme/new");
+}
+
+# When another card already shows today's deck, the card is left out rather
+# than handed to a different deck.
+func testTheCardStepsAsideRatherThanSwitching() {
+    def db as flatdb.DB init store.putVersion(emptyDb(), "@acme/only", "", ver("1.0.0", 4));
+    $db = looked($db, "@acme/only", 3);
+    testing.assertEqual(cards($db, NOW), "Most resolved=@acme/only");
+}
+
 func testAtMostSixCards() {
     testing.assertEqual(MAX_PICKS, 6);
+}
+
+# A version recorded before publish dates existed counts as long published.
+func testAnUndatedDeckIsInTheRotation() {
+    def v as store.DeckVersion init ver("1.0.0", 0);
+    $v.publishedAt = "0";
+    def db as flatdb.DB init store.putVersion(emptyDb(), "@acme/old", "", $v);
+    testing.assertEqual(todays($db, NOW), "@acme/old");
 }

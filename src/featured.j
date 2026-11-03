@@ -13,7 +13,7 @@
  * | Most depended on | live decks requiring it from their newest version | at least one |
  * | Newest | recent first publish | a live deck |
  * | Latest release | recent publish after the first | a second version |
- * | Deck of the day | (none: a rotation through the remaining decks) | a live deck |
+ * | Deck of the day | (none: a daily rotation) | live before today began, not on another card |
  *
  * Lookups are `stats` resolutions, not downloads (see that module). A deck
  * appears on one card at most: each card takes the best deck the cards before
@@ -22,10 +22,13 @@
  * install. A card nothing qualifies for is left out, so a new registry shows
  * fewer.
  *
- * The deck of the day steps through the remaining decks by a large prime per
- * day, so it changes once a day (UTC), every reader sees the same one, and
- * every deck gets a turn. No randomness: a page that changed per request could
- * not be cached.
+ * The deck of the day steps by a large prime per day through the decks that
+ * were live when the day began (UTC), so every reader sees the same one, every
+ * deck gets a turn, and nothing that happens during the day moves it to
+ * another deck: a deck published today joins tomorrow's rotation, and the
+ * other cards are not consulted. When one of them already shows today's deck,
+ * the card is left out rather than replaced. No randomness: a page that
+ * changed per request could not be cached.
  *
  * `build` reads every deck's versions and counts, so the server builds it with
  * the shared index, once per version of the file, and serves the result.
@@ -136,10 +139,9 @@ export func build(db as flatdb.DB, index as json.Value, now as int) {
             stats.dayKey($d.lastAt));
         $taken[$d.name] = true;
     }
-    $best = ofTheDay($decks, $taken, $now);
-    if ($best >= 0) {
-        def d as Measured init $decks[$best];
-        $picks[] = pickOf("Deck of the day", $d, "one deck a day, in turn");
+    def today as int init ofTheDay($decks, $now);
+    if ($today >= 0 and not maps.has($taken, $decks[$today].name)) {
+        $picks[] = pickOf("Deck of the day", $decks[$today], "one deck a day, in turn");
     }
 
     def out as list of json.Value init [];
@@ -327,18 +329,21 @@ func bestBy(decks as list of Measured, taken as map of string to bool, measure a
     return $best;
 }
 
-# ofTheDay is the position of today's deck among the untaken ones, -1 when every
-# deck is already on a card.
-func ofTheDay(decks as list of Measured, taken as map of string to bool, now as int) {
-    def left as list of int init [];
+# ofTheDay is the position of today's deck, -1 when no deck was live before the
+# day began. It reads only the day and the decks first published before it, not
+# the other cards, so a publish or a lookup during the day cannot move it.
+func ofTheDay(decks as list of Measured, now as int) {
+    def start as int init $now - $now % SECONDS_PER_DAY;
+    def rotation as list of int init [];
     for (def i in 0..len($decks)) {
-        if (not maps.has($taken, $decks[$i].name)) {
-            $left[] = $i;
+        # An undated deck (firstAt 0) predates dating, so it is in.
+        if ($decks[$i].firstAt < $start) {
+            $rotation[] = $i;
         }
     }
-    if (len($left) == 0) {
+    if (len($rotation) == 0) {
         return -1;
     }
-    def day as int init convert.toInt(($now - $now % SECONDS_PER_DAY) / SECONDS_PER_DAY);
-    return $left[($day * DAY_STEP) % len($left)];
+    def day as int init convert.toInt($start / SECONDS_PER_DAY);
+    return $rotation[($day * DAY_STEP) % len($rotation)];
 }
