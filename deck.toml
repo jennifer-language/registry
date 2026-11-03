@@ -3,15 +3,16 @@ name = "registry"
 version = "0.1.0"
 description = "the jennifer deck registry - HTTP repository and operator CLI"
 license = "LGPL-3.0-only"
-authors = ["mplx <jennifer@mplx.dev"]
+authors = ["mplx <jennifer@mplx.dev>"]
 keywords = ["registry", "decks", "jennifer"]
 bin = "bin/deckadmin"
 
+# The registry serves HTTP and shells out to nothing, so it needs `net` only.
+# Above [package.urls]: TOML puts a key in the table whose header precedes it.
+capabilities = ["net"]
+
 [package.urls]
 deck = "https://raw.githubusercontent.com/jennifer-language/registry/main/deck.toml"
-
-# The registry serves HTTP and shells out to nothing, so it needs `net` only.
-capabilities = ["net"]
 
 # Needs the webapi / web engine, flatdb, args, and the semver range surface.
 # Matches the pragma-jennifer-version floor every .j file declares.
