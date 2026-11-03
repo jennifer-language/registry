@@ -16,6 +16,17 @@
  * `D` under both constraints, and a cycle (`A -> B -> A`) terminates once the
  * constraints stabilise rather than recursing forever.
  *
+ * **A deck is picked when the walk first reaches it.** A deck with no choice
+ * yet is given the highest version that fits the constraints gathered so far
+ * in that round's walk, and that version's requirements are followed at once,
+ * so a chain settles in a round or two instead of one round per level. An
+ * early pick is the highest version under a subset of the deck's final
+ * constraints: if it still fits all of them it is also the full re-pick, and if
+ * it does not it is stale (below) and replaced. The walk visits roots, and each
+ * version's requirements, in sorted order, so an early pick does not depend on
+ * the order a map was filled in, and this module and the registry's copy lock
+ * the same graph identically.
+ *
  * **A choice the constraints have overtaken does not fail the graph.** A
  * chosen version that no longer satisfies the constraints now on its deck is
  * *stale*: it is about to be replaced. Its own requirements still steer this
@@ -69,10 +80,12 @@ import "./constraint.j" as constraint;
 import "./deckname.j" as deckname;
 
 # The resolution rounds allowed beyond the catalog's own size before declaring
-# non-convergence. A chain of decks needs one round per level (a deck reached
-# for the first time is chosen the round after), so the bound is this plus two
-# per deck the catalog knows: a fixed 1000 failed every graph deeper than about
-# 998 as "did not converge". A cycle is caught by the state check long before.
+# non-convergence. A chain settles in one round now that a deck is picked as
+# the walk reaches it, but revisions can still cascade one round per level (each
+# stale early pick replaced, and what it held up re-picked, a round later), so
+# the bound stays this plus two per deck the catalog knows: a fixed 1000 failed
+# every graph deeper than about 998 as "did not converge" when every chain
+# needed a round per level. A cycle is caught by the state check long before.
 def const MAX_ROUNDS as int init 1000;
 
 /**
@@ -150,10 +163,14 @@ func bestSatisfyingAll(versions as list of string, constraints as list of string
 # Index is the catalog read once into maps for the rounds to look things up in.
 # Scanning the list per lookup (and copying it per call into `catalog`) made a
 # round cost depth x size squared.
+#
+# `order` holds each (deck, version)'s requirement names sorted, so the walk
+# follows them in a fixed order without sorting them every round.
 def struct Index {
     versions as map of string to list of string,
     present as map of string to bool,
-    requires as map of string to map of string to string
+    requires as map of string to map of string to string,
+    order as map of string to list of string
 };
 
 # indexOf reads a catalog into an Index in one pass. `versions` holds only the
@@ -174,6 +191,7 @@ def struct Index {
 func indexOf(cat as catalog.Catalog) {
     def present as map of string to bool init {};
     def requires as map of string to map of string to string init {};
+    def order as map of string to list of string init {};
     def runNames as list of string init [];
     def runs as list of list of string init [];
     def runName as string init "";
@@ -186,6 +204,7 @@ func indexOf(cat as catalog.Catalog) {
         }
         $present[$name] = true;
         $requires[$key] = foldReqs($e.requires);
+        $order[$key] = lists.sort(maps.keys($requires[$key]));
         if ($e.yanked) {
             continue;
         }
@@ -201,7 +220,12 @@ func indexOf(cat as catalog.Catalog) {
         $runNames[] = $runName;
         $runs[] = $run;
     }
-    return Index{versions: joinRuns($runNames, $runs), present: $present, requires: $requires};
+    return Index{
+        versions: joinRuns($runNames, $runs),
+        present: $present,
+        requires: $requires,
+        order: $order
+    };
 }
 
 # joinRuns turns the runs indexOf gathered into one version list per deck. A
@@ -252,12 +276,31 @@ func foldReqs(reqs as map of string to string) {
     return $out;
 }
 
+# Walk is what one round's walk produced: the constraint set, the decks it
+# picked early, and the picks it worked out that the cache did not hold yet.
+def struct Walk {
+    cons as map of string to list of string,
+    early as map of string to string,
+    fresh as map of string to string
+};
+
 # accumulate builds the per-deck constraint set for one round: the roots, plus
 # the requirements of every chosen (deck, version) **reachable from the roots**
 # through the current choices. A deck chosen last round that nothing reachable
 # requires any more contributes nothing: counting its requirements anyway kept a
 # dropped deck imposing constraints, which could fail a graph that has a
 # solution, or keep two decks swapping in and out of it forever.
+#
+# A deck reached for the first time, with no choice, is picked early under the
+# constraints gathered so far (see the module docblock), and its requirements
+# are followed like a chosen deck's. One with no version that fits yet stays
+# unchosen; one the catalog lacks is not followed. Only a deck the last round
+# did not reach (`reached`) is picked early: one it reached and left unchosen
+# had its whole constraint set tried and fit nothing, and picking it again
+# under part of that set brought back the same stale choice every round, so
+# the round never settled and a plain "no version satisfies" was reported as
+# alternating choices. `picked` is the round loop's pick cache, read only; a
+# pick it lacks is worked out here and returned in `fresh`.
 #
 # A deck named in `skip` is constrained like any other but its chosen version's
 # requirements are not followed: that is how the decks a stale choice alone
@@ -266,10 +309,14 @@ func accumulate(
     idx as Index,
     roots as map of string to string,
     chosen as map of string to string,
-    skip as map of string to bool) {
+    skip as map of string to bool,
+    reached as map of string to list of string,
+    picked as map of string to string) {
     def cons as map of string to list of string init {};
+    def early as map of string to string init {};
+    def fresh as map of string to string init {};
     def queue as list of string init [];
-    for (def name in $roots) {
+    for (def name in lists.sort(maps.keys($roots))) {
         $cons[$name] = [$roots[$name]];
         $queue[] = $name;
     }
@@ -278,16 +325,36 @@ func accumulate(
     while ($at < len($queue)) {
         def name as string init $queue[$at];
         $at = $at + 1;
-        if (maps.has($visited, $name) or not maps.has($chosen, $name) or maps.has($skip, $name)) {
+        if (maps.has($visited, $name) or maps.has($skip, $name)) {
             continue;
         }
         $visited[$name] = true;
-        def key as string init $name + "@" + $chosen[$name];
+        def version as string init "";
+        if (maps.has($chosen, $name)) {
+            $version = $chosen[$name];
+        } elseif (maps.has($idx.present, $name) and not maps.has($reached, $name)) {
+            def pickKey as string init pickKeyOf($name, $cons[$name]);
+            if (maps.has($picked, $pickKey)) {
+                $version = $picked[$pickKey];
+            } elseif (maps.has($fresh, $pickKey)) {
+                $version = $fresh[$pickKey];
+            } else {
+                $version = bestSatisfyingAll(versionsOf($idx, $name), $cons[$name]);
+                $fresh[$pickKey] = $version;
+            }
+            if ($version == "") {
+                continue;
+            }
+            $early[$name] = $version;
+        } else {
+            continue;
+        }
+        def key as string init $name + "@" + $version;
         if (not maps.has($idx.requires, $key)) {
             continue;
         }
         def reqs as map of string to string init $idx.requires[$key];
-        for (def dep in $reqs) {
+        for (def dep in $idx.order[$key]) {
             # Appended in place. Returning an edited copy of the map from a helper,
             # once per requirement, made each round quadratic in its size.
             if (not maps.has($cons, $dep)) {
@@ -300,7 +367,7 @@ func accumulate(
             $queue[] = $dep;
         }
     }
-    return $cons;
+    return Walk{cons: $cons, early: $early, fresh: $fresh};
 }
 
 # invalidHint names the constraints in a set that are outside the grammar, or
@@ -408,14 +475,17 @@ func buildResolutions(cat as catalog.Catalog, chosen as map of string to string)
 }
 
 # hasNewDeck reports whether a round reached a known deck the round before it
-# did not. Such a deck has no choice yet, so its requirements are not counted
-# and the round is not settled.
+# did not, and found no version of it that fits yet. Such a deck has no choice,
+# so its requirements are not counted and the round is not settled. A new deck
+# picked early is in `choices`, its requirements already followed.
 func hasNewDeck(
     present as map of string to bool,
     cons as map of string to list of string,
-    reached as map of string to list of string) {
+    reached as map of string to list of string,
+    choices as map of string to string) {
     for (def name in $cons) {
-        if (maps.has($present, $name) and not maps.has($reached, $name)) {
+        if (maps.has($present, $name) and not maps.has($reached, $name) and
+            not maps.has($choices, $name)) {
             return true;
         }
     }
@@ -487,7 +557,13 @@ func settledResult(
 # cycleResult is the result once a state comes round again: this resolver takes
 # the highest version that fits and does not backtrack, so a graph whose only
 # solutions need a lower version somewhere ends here. A deck still missing is
-# asked for first, since its requirements may break the cycle.
+# asked for first, since its requirements may break the cycle: every deck any
+# round's walk reached that the catalog lacks (`missing`), a stale version's
+# requirements included, and not only the last round's. The rounds of a cycle
+# need different decks, and the round that detects it may need none, which
+# reported a cycle while a chosen version's requirement was still unfetched.
+# The resolution has failed by then, so fetching more than a settled graph would
+# need costs a round trip at most; a settled result keeps the strict rule.
 func cycleResult(chosen as map of string to string, missing as list of string) {
     if (len($missing) > 0) {
         return needsFetch($missing);
@@ -518,6 +594,19 @@ func cycleResult(chosen as map of string to string, missing as list of string) {
  * @return {GraphResult} the resolution outcome
  */
 export func resolveGraph(cat as catalog.Catalog, roots as map of string to string) {
+    return resolveCounted($cat, $roots).result;
+}
+
+# Counted is a resolution and the rounds it took, which the overlay checks: a
+# chain settling in a round or two is the point of picking early, and nothing
+# else would notice it creeping back to one round per level.
+def struct Counted {
+    result as GraphResult,
+    rounds as int
+};
+
+# resolveCounted is resolveGraph, counting rounds.
+func resolveCounted(cat as catalog.Catalog, roots as map of string to string) {
     def rootReqs as map of string to string init foldReqs($roots);
     def chosen as map of string to string init {};
     def reached as map of string to list of string init {};
@@ -526,12 +615,20 @@ export func resolveGraph(cat as catalog.Catalog, roots as map of string to strin
     def picked as map of string to string init {};
     def noSkip as map of string to bool init {};
     def limit as int init roundLimit($idx);
+    def everMissing as list of string init [];
     for (def round as int init 0; $round < $limit; $round = $round + 1) {
-        def cons as map of string to list of string init accumulate(
-            $idx,
-            $rootReqs,
-            $chosen,
-            $noSkip);
+        def walk as Walk init accumulate($idx, $rootReqs, $chosen, $noSkip, $reached, $picked);
+        def cons as map of string to list of string init $walk.cons;
+        for (def k in $walk.fresh) {
+            $picked[$k] = $walk.fresh[$k];
+        }
+        # This round's choices: last round's, plus the decks the walk picked
+        # early. An early pick is checked like any other choice, so one the rest
+        # of the walk has overtaken is stale and takes that path.
+        def current as map of string to string init $chosen;
+        for (def name in $walk.early) {
+            $current[$name] = $walk.early[$name];
+        }
         # A stale choice's requirements still count (see the module docblock),
         # but a stale choice keeps the round unsettled, and only a settled round
         # may fail.
@@ -539,27 +636,33 @@ export func resolveGraph(cat as catalog.Catalog, roots as map of string to strin
         def keys as map of string to string init {};
         for (def name in $cons) {
             $keys[$name] = pickKeyOf($name, $cons[$name]);
-            if (not maps.has($chosen, $name)) {
+            if (not maps.has($current, $name)) {
                 continue;
             }
             # The pick for this very constraint set fits by construction, and is
             # what an unchanged deck holds, so only a different choice is tested.
-            if (maps.has($picked, $keys[$name]) and $picked[$keys[$name]] == $chosen[$name]) {
+            if (maps.has($picked, $keys[$name]) and $picked[$keys[$name]] == $current[$name]) {
                 continue;
             }
-            if (not satisfiesAll($chosen[$name], $cons[$name])) {
+            if (not satisfiesAll($current[$name], $cons[$name])) {
                 $stale[$name] = true;
             }
         }
-        def settled as bool init len($stale) == 0 and not hasNewDeck($idx.present, $cons, $reached);
+        def settled as bool init len($stale) == 0 and
+            not hasNewDeck($idx.present, $cons, $reached, $current);
         # What is missing is judged without the stale versions' requirements:
         # they belong to versions that will not be installed, and counting them
         # sent the caller to fetch decks no settled graph needed.
         def needed as map of string to list of string init $cons;
         if (len($stale) > 0) {
-            $needed = accumulate($idx, $rootReqs, $chosen, $stale);
+            $needed = accumulate($idx, $rootReqs, $current, $stale, $reached, $picked).cons;
         }
         def missing as list of string init missingFrom($idx.present, $needed);
+        for (def name in missingFrom($idx.present, $cons)) {
+            if (not listContains($everMissing, $name)) {
+                $everMissing[] = $name;
+            }
+        }
         def next as map of string to string init {};
         def deferred as bool init false;
         for (def name in $cons) {
@@ -583,23 +686,26 @@ export func resolveGraph(cat as catalog.Catalog, roots as map of string to strin
                 continue;
             }
             if ($pick == "") {
-                return noPick($cat, $name, $cons[$name], versionsOf($idx, $name), $missing);
+                return Counted{
+                    result: noPick($cat, $name, $cons[$name], versionsOf($idx, $name), $missing),
+                    rounds: $round + 1
+                };
             }
             $next[$name] = $pick;
         }
-        if (not $deferred and sameChoice($chosen, $next)) {
-            return settledResult($cat, $next, $missing);
+        if (not $deferred and sameChoice($current, $next)) {
+            return Counted{result: settledResult($cat, $next, $missing), rounds: $round + 1};
         }
         # Each round is a function of the last round's choices and reach, so
         # meeting a state again means the rounds will cycle through the same
         # states for ever. Say so now rather than after every remaining round.
         def key as string init stateKey($next, maps.keys($cons));
         if (maps.has($seen, $key)) {
-            return cycleResult($next, $missing);
+            return Counted{result: cycleResult($next, $everMissing), rounds: $round + 1};
         }
         $seen[$key] = true;
         $chosen = $next;
         $reached = $cons;
     }
-    return failed("dependency resolution did not converge");
+    return Counted{result: failed("dependency resolution did not converge"), rounds: $limit};
 }

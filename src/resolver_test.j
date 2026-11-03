@@ -276,18 +276,37 @@ func testADroppedDeckStopsImposingRequirements() {
 }
 
 func testAlternatingChoicesFailAtOnceAndSaySo() {
-    # a@2 wants b<2 and b@2 wants a<2: taking the highest that fits alternates
-    # between {a2, b2} and {a1, b1}. This resolver does not backtrack, so it
-    # cannot find {a1, b2}; what it must do is stop on the first repeat with a
-    # message that names the cycle, not run out its round budget
+    # a@2 wants b<2 and b@1 wants a<2. No set of highest-that-fits picks is
+    # stable: {a1, b1} lifts b, {a1, b2} lifts a, {a2, b1} and {a2, b2} each
+    # hold a version its partner's requirement rules out. This resolver does not
+    # backtrack, so it cannot settle on {a1, b2}; what it must do is stop on the
+    # first repeat with a message that names the cycle, not run out its round
+    # budget.
+    def cat as catalog.Catalog init catalog.empty();
+    $cat = plain($cat, "a", "1.0.0");
+    $cat = put($cat, "a", "2.0.0", {"b": "<2.0.0"});
+    $cat = put($cat, "b", "1.0.0", {"a": "<2.0.0"});
+    $cat = plain($cat, "b", "2.0.0");
+    def g as GraphResult init resolveGraph($cat, {"a": "*", "b": "*"});
+    testing.assertFalse($g.ok);
+    testing.assertContains($g.error, "alternating");
+}
+
+# a@2 wants b<2 and b@2 wants a<2. Picked together from the last round's
+# choices, a and b alternated between {a2, b2} and {a1, b1} and the graph was
+# reported as a conflict. Picked as the walk reaches them, a (first in sorted
+# order) takes 2 and its requirement steers b to 1: {a2, b1} is a solution, and
+# the one both copies of this module find, since the walk order is fixed.
+func testAPickThatSteersTheNextResolvesWhatAlternatedBefore() {
     def cat as catalog.Catalog init catalog.empty();
     $cat = plain($cat, "a", "1.0.0");
     $cat = put($cat, "a", "2.0.0", {"b": "<2.0.0"});
     $cat = plain($cat, "b", "1.0.0");
     $cat = put($cat, "b", "2.0.0", {"a": "<2.0.0"});
-    def g as GraphResult init resolveGraph($cat, {"a": "*", "b": "*"});
-    testing.assertFalse($g.ok);
-    testing.assertContains($g.error, "alternating");
+    def g as GraphResult init resolveGraph($cat, {"b": "*", "a": "*"});
+    testing.assertTrue($g.ok);
+    testing.assertEqual(findVer($g.resolved, "a"), "2.0.0");
+    testing.assertEqual(findVer($g.resolved, "b"), "1.0.0");
 }
 
 func testAnUnusableVersionCannotCrashAFailedResolution() {
@@ -545,8 +564,10 @@ func testBuildMetadataDoesNotDependOnOrder() {
     testing.assertEqual(findVer(resolveGraph($second, $roots).resolved, "@acme/a"), "1.0.0");
 }
 
-# The round bound grows with the catalog, so a chain deeper than the fixed
-# bound converges (verified by hand at 1,100 decks; too slow for the suite).
+# The round bound grows with the catalog, so a graph needing more rounds than
+# the fixed bound still converges. A chain no longer needs a round per level
+# (testADeepChainSettlesInOneRound resolves one 1,100 deep), but a cascade of
+# revisions can.
 func testTheRoundLimitGrowsWithTheCatalog() {
     def cat as catalog.Catalog init plain(catalog.empty(), "@acme/a", "1.0.0");
     $cat = plain($cat, "@acme/b", "1.0.0");
@@ -569,4 +590,116 @@ func testTheIndexKeepsOrderAcrossRuns() {
     }
     def big as Index init indexOf(catalog.addAll(catalog.empty(), $many));
     testing.assertEqual(len($big.versions["@big/one"]), 6000);
+}
+
+# --- picking a deck when the walk reaches it ------------------------------------
+
+# chainCatalog is d0 -> d1 -> ... -> d(n-1), each at 1.0.0, added in one call
+# since `catalog.add` copies the catalog each time.
+func chainCatalog(n as int) {
+    def all as list of catalog.Candidate init [];
+    for (def i as int init 0; $i < $n; $i = $i + 1) {
+        def c as catalog.Candidate init catalog.candidate("@c/d" + convert.toString($i), "1.0.0");
+        if ($i + 1 < $n) {
+            $c.requires["@c/d" + convert.toString($i + 1)] = "^1.0.0";
+        }
+        $all[] = $c;
+    }
+    return catalog.addAll(catalog.empty(), $all);
+}
+
+# A chain took one round per level (21 for 20 decks, 17 s for 1,100). Each deck
+# is now picked as the walk reaches it, so the first round chooses the whole
+# chain and finds nothing to change (0.3 s for 1,100).
+func testADeepChainSettlesInOneRound() {
+    def counted as Counted init resolveCounted(chainCatalog(1100), {"@c/d0": "^1.0.0"});
+    testing.assertTrue($counted.result.ok);
+    testing.assertEqual(len($counted.result.resolved), 1100);
+    testing.assertEqual($counted.rounds, 1);
+}
+
+# d is reached first through a, which takes it as it stands (2.0.0); the longer
+# path through b and c then adds d <2, so the early pick is stale and replaced.
+# The lock is the one picking per round gave: d 1.0.0, and nothing d 2.0.0
+# alone asked for, not even as a deck to fetch.
+func testALaterPathTightensAnEarlyPick() {
+    def cat as catalog.Catalog init catalog.empty();
+    $cat = put($cat, "@x/a", "1.0.0", {"@x/d": "*"});
+    $cat = put($cat, "@x/b", "1.0.0", {"@x/c": "*"});
+    $cat = put($cat, "@x/c", "1.0.0", {"@x/d": "<2.0.0"});
+    $cat = plain($cat, "@x/d", "1.0.0");
+    $cat = put($cat, "@x/d", "2.0.0", {"@x/gone": "*"});
+    def counted as Counted init resolveCounted($cat, {"@x/a": "*", "@x/b": "*"});
+    testing.assertTrue($counted.result.ok);
+    testing.assertEqual(len($counted.result.missing), 0);
+    testing.assertEqual(findVer($counted.result.resolved, "@x/d"), "1.0.0");
+    testing.assertEqual(findVer($counted.result.resolved, "@x/gone"), "");
+    testing.assertEqual($counted.rounds, 2);
+}
+
+# lockOf renders a lock as sorted name@version text, for comparing two.
+func lockOf(g as GraphResult) {
+    def parts as list of string init [];
+    for (def r in $g.resolved) {
+        $parts[] = $r.name + "@" + $r.version;
+    }
+    return strings.join(lists.sort($parts), " ");
+}
+
+# An early pick depends on what the walk has met so far, so the walk's order is
+# fixed (roots and requirements sorted) rather than the order maps were filled
+# in. One graph, entered in opposite orders, locks the same.
+func testTheLockDoesNotDependOnInsertionOrder() {
+    def forward as catalog.Catalog init catalog.empty();
+    $forward = put($forward, "@x/a", "2.0.0", {"@x/b": "<2.0.0", "@x/c": "*"});
+    $forward = plain($forward, "@x/a", "1.0.0");
+    $forward = put($forward, "@x/b", "2.0.0", {"@x/a": "<2.0.0"});
+    $forward = plain($forward, "@x/b", "1.0.0");
+    $forward = put($forward, "@x/c", "1.0.0", {"@x/b": "*", "@x/a": "*"});
+    def backward as catalog.Catalog init catalog.empty();
+    $backward = put($backward, "@x/c", "1.0.0", {"@x/a": "*", "@x/b": "*"});
+    $backward = plain($backward, "@x/b", "1.0.0");
+    $backward = put($backward, "@x/b", "2.0.0", {"@x/a": "<2.0.0"});
+    $backward = plain($backward, "@x/a", "1.0.0");
+    $backward = put($backward, "@x/a", "2.0.0", {"@x/c": "*", "@x/b": "<2.0.0"});
+    def one as GraphResult init resolveGraph($forward, {"@x/a": "*", "@x/b": "*", "@x/c": "*"});
+    def two as GraphResult init resolveGraph($backward, {"@x/c": "*", "@x/b": "*", "@x/a": "*"});
+    testing.assertTrue($one.ok);
+    testing.assertEqual(lockOf($one), lockOf($two));
+    testing.assertEqual(lockOf($one), "@x/a@2.0.0 @x/b@1.0.0 @x/c@1.0.0");
+}
+
+# Found by comparing against the resolver before early picks on random graphs.
+# d0 >=2 from the root is taken at 2.1.0, then d1 adds d0 <2 and nothing fits.
+# Picked early again the next round, under the root's constraint alone, d0
+# went stale every round, the round never settled, and the error said the
+# choices alternate. A deck already reached is no longer picked early, so the
+# precise failure is reported, as it was before.
+func testADeckThatFitsNothingIsNotPickedEarlyAgain() {
+    def cat as catalog.Catalog init catalog.empty();
+    $cat = put($cat, "@g/d0", "1.1.0", {"@g/d1": "<3.0.0"});
+    $cat = plain($cat, "@g/d0", "2.1.0");
+    $cat = put($cat, "@g/d1", "1.0.0", {"@g/d0": "<2.0.0", "@g/d2": ">=1.1.0"});
+    $cat = plain($cat, "@g/d2", "1.1.0");
+    def g as GraphResult init resolveGraph($cat, {"@g/d0": ">=2.0.0", "@g/d1": "<2.0.0"});
+    testing.assertFalse($g.ok);
+    testing.assertContains($g.error, "no version of @g/d0 satisfies >=2.0.0, <2.0.0");
+}
+
+# Also from the comparison: the rounds of a cycle reach different decks, and
+# d0 1.1.0 (chosen in one of them) needs d6, which the catalog lacks. The round
+# that met the repeated state needed nothing missing, and the cycle was
+# reported with d6 never fetched. A cycle now asks for every missing deck any
+# round reached first.
+func testACycleAsksForADeckAnyRoundLacked() {
+    def cat as catalog.Catalog init catalog.empty();
+    $cat = put($cat, "@g/d0", "1.1.0", {"@g/d6": "=1.0.0"});
+    $cat = put($cat, "@g/d0", "2.1.0", {"@g/d6": "*", "@g/d4": "<3.0.0"});
+    $cat = plain($cat, "@g/d2", "1.1.0");
+    $cat = put($cat, "@g/d2", "2.1.0", {"@g/d0": "^1.0.0"});
+    $cat = put($cat, "@g/d4", "1.1.0", {"@g/d2": "*"});
+    def g as GraphResult init resolveGraph($cat, {"@g/d0": "<3.0.0"});
+    testing.assertFalse($g.ok);
+    testing.assertEqual($g.error, "");
+    testing.assertTrue(hasMissing($g.missing, "@g/d6"));
 }
