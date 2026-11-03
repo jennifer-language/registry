@@ -1,0 +1,15 @@
+# Jennifer is not a GitHub Linguist language yet. An override naming a language
+# Linguist does not know is not a label but an exclusion: the .j files drop out
+# of the statistics, and the language bar is left to whatever else is in the
+# repository. Without the override they are guessed as JASS / Objective-J
+# instead.
+#
+# So nothing else is counted either, and the bar stays empty until Linguist
+# learns Jennifer. The Jennifer lines are already right for that day:
+# the sources, and the launchers, which carry a jennifer shebang and no
+# extension.
+* linguist-detectable=false
+*.j linguist-language=Jennifer linguist-detectable=true
+bin/deckadmin linguist-language=Jennifer linguist-detectable=true
+bin/healthcheck linguist-language=Jennifer linguist-detectable=true
+bin/serve linguist-language=Jennifer linguist-detectable=true
