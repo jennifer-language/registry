@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * A caller's forge credential, sealed for storage.
@@ -8,7 +8,10 @@
  * Where identity and forge are one service, the login token is the credential
  * that asks the forge whether a person may push (specification 7.1, route A).
  * It is stored sealed with AES-256-GCM, so a copied database alone yields only
- * ciphertexts and a tampered record fails authentication.
+ * ciphertexts and a tampered record fails authentication. The stored form is
+ * `nonce (12 bytes) || ciphertext || tag (16 bytes)` with no additional data,
+ * the layout the two-argument `crypto.encrypt` of jennifer 0.25 wrote, so
+ * credentials sealed before the 0.26 `crypto` API stay readable.
  *
  * The key is derived from the signing key with HKDF and a purpose label, so the
  * two uses do not share a key. Rotating the signing key makes every sealed
@@ -21,11 +24,15 @@
  */
 
 use crypto;
+use binary;
 use convert;
 use encoding;
 
 # Names this key's purpose. Changing it makes every stored credential unreadable.
 def const KEY_LABEL as string init "jvc-registry forge-credential v1";
+# The AES-GCM nonce and tag lengths: a sealed record is at least both.
+def const NONCE_LEN as int init 12;
+def const TAG_LEN as int init 16;
 
 # sealingKey derives the AES-256 key for this purpose from the signing key.
 func sealingKey(signingKey as bytes) {
@@ -45,10 +52,17 @@ func sealingKey(signingKey as bytes) {
  * @return {string} the sealed form, base64 text safe to store in JSON
  */
 export func seal(signingKey as bytes, credential as string) {
-    def sealed as bytes init crypto.encrypt(
+    # A fresh random nonce per record, stored in front of the box: one key
+    # seals many records, and a nonce must never repeat under one key.
+    def nonce as bytes init crypto.randBytes(NONCE_LEN);
+    def noAad as bytes;
+    def box as bytes init crypto.encrypt(
+        "aes-gcm",
+        convert.bytesFromString("utf-8", $credential),
         sealingKey($signingKey),
-        convert.bytesFromString("utf-8", $credential));
-    return encoding.toText("base64", $sealed);
+        $nonce,
+        $noAad);
+    return encoding.toText("base64", binary.concat($nonce, $box));
 }
 
 /**
@@ -61,5 +75,15 @@ export func seal(signingKey as bytes, credential as string) {
  */
 export func unseal(signingKey as bytes, sealed as string) {
     def raw as bytes init encoding.fromText("base64", $sealed);
-    return convert.stringFromBytes("utf-8", crypto.decrypt(sealingKey($signingKey), $raw));
+    if (len($raw) < NONCE_LEN + TAG_LEN) {
+        throw Error{kind: "runtime", message: "forgecred.unseal: not a sealed credential"};
+    }
+    def noAad as bytes;
+    def plain as bytes init crypto.decrypt(
+        "aes-gcm",
+        $raw[NONCE_LEN..],
+        sealingKey($signingKey),
+        $raw[0..NONCE_LEN],
+        $noAad);
+    return convert.stringFromBytes("utf-8", $plain);
 }

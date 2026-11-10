@@ -1,7 +1,7 @@
 #!/usr/bin/env -S jennifer serve
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 #
 # serve: the deck registry's HTTP API and website. A thin `webapi` app; each
 # handler reads the store and delegates status and body to the view modules

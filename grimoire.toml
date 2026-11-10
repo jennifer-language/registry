@@ -11,8 +11,8 @@
 # implementation must do.
 #
 # See https://github.com/jennifer-language/grimoire. Every key is optional; the
-# defaults build a usable book. Grimoire itself needs Jennifer 0.25.0 or newer,
-# a higher floor than the registry's own.
+# defaults build a usable book. Grimoire itself needs Jennifer 0.26.0 or newer,
+# the same floor as the registry's own.
 
 [book]
 title = "Jennifer Deck Registry - Administrator Manual"

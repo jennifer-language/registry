@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * TLS certificates from Let's Encrypt, stored under the data directory.
@@ -251,7 +251,7 @@ func accountKey(tls as config.Tls) {
         return convert.bytesFromString("utf-8", fs.readString($path));
     }
     fs.mkdirAll($tls.certDir);
-    def key as bytes init crypto.ecGenerateKey("p256");
+    def key as bytes init crypto.keypair("p256").private;
     fs.writeString($path, convert.stringFromBytes("utf-8", $key));
     fs.chmod($path, 0o600);
     return $key;
@@ -315,7 +315,7 @@ export func obtain(tls as config.Tls, now as int) {
     for (def authzUrl in $order.authorizations) {
         settle($client, $tls, $authzUrl);
     }
-    def certKey as bytes init crypto.ecGenerateKey("p256");
+    def certKey as bytes init crypto.keypair("p256").private;
     def csr as bytes init crypto.csr($certKey, $tls.domains);
     def finished as acme.Order init acme.finalize(
         $client,

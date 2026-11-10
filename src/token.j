@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 
 /**
  * The registry's own credential: minting and verifying the short-lived bearer
@@ -37,7 +37,7 @@ import "jwt.j" as jwt;
 # verifier. With HMAC, verifying requires the signing key, so any second
 # verifier (a CDN edge, a companion service) could mint tokens for any account.
 # Adding one means switching to an asymmetric algorithm (`jwt` supports ES256
-# over a `crypto.ecGenerateKey` pair) and publishing the public key
+# over a `crypto.keypair("p256")` pair) and publishing the public key
 # (specification 8.5).
 def const ALG as string init "HS256";
 

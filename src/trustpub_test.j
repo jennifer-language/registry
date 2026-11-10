@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.25.0
+# pragma-jennifer-version: >=0.26.0
 #
 # White-box tests for trustpub.j. Run with:
 #
@@ -301,7 +301,7 @@ func signedBy(privatePem as bytes, claims as string) {
     def body as string init segment(convert.bytesFromString("utf-8", $claims));
     def input as string init $head + "." + $body;
     def signed as bytes init convert.bytesFromString("utf-8", $input);
-    def sig as bytes init crypto.rsaSign("sha256", $signed, $privatePem);
+    def sig as bytes init crypto.sign("rsa-sha256", $signed, $privatePem);
     return $input + "." + segment($sig);
 }
 
@@ -313,7 +313,7 @@ func keySetOf(privatePem as bytes) {
 }
 
 func testATokenSignedByTheIssuerVerifies() {
-    def key as bytes init crypto.rsaGenerateKey(2048);
+    def key as bytes init crypto.keypair("rsa2048").private;
     def exp as string init convert.toString(time.unix(time.utc()) + 300);
     def token as string init signedBy($key, '{"repository_id":"42","exp":' + $exp + '}');
     def c as Claims init verified($token, keySetOf($key), GITHUB);
@@ -322,7 +322,7 @@ func testATokenSignedByTheIssuerVerifies() {
 
 func testATokenWithoutExpiryIsRefused() {
     # a token without exp never expires (RFC 7519) and must not publish
-    def key as bytes init crypto.rsaGenerateKey(2048);
+    def key as bytes init crypto.keypair("rsa2048").private;
     def token as string init signedBy($key, '{"repository_id":"42"}');
     def message as string init "";
     try {
@@ -334,12 +334,12 @@ func testATokenWithoutExpiryIsRefused() {
 }
 
 func testATokenFromAnotherKeyIsRefused() {
-    def key as bytes init crypto.rsaGenerateKey(2048);
+    def key as bytes init crypto.keypair("rsa2048").private;
     def exp as string init convert.toString(time.unix(time.utc()) + 300);
     def token as string init signedBy($key, '{"repository_id":"42","exp":' + $exp + '}');
     def threw as bool init false;
     try {
-        verified($token, keySetOf(crypto.rsaGenerateKey(2048)), GITHUB);
+        verified($token, keySetOf(crypto.keypair("rsa2048").private), GITHUB);
     } catch (err) {
         $threw = true;
     }
@@ -390,7 +390,7 @@ func testTheRunMustHaveBuiltTheRelease() {
 
 func testAnIdentityTokenIsRecognisedByItsIssuer() {
     # 8.9: sent in place of a bearer token, routed by its unverified `iss`
-    def key as bytes init crypto.rsaGenerateKey(2048);
+    def key as bytes init crypto.keypair("rsa2048").private;
     def token as string init signedBy($key, '{"iss":"https://ci.example","repository_id":"42"}');
     testing.assertTrue(isIdentityToken($token, "https://ci.example"));
     testing.assertFalse(isIdentityToken($token, "https://other.example"));

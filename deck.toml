@@ -17,6 +17,6 @@ deck = "https://raw.githubusercontent.com/jennifer-language/registry/main/deck.t
 # Needs the webapi / web engine, flatdb, args, and the semver range surface.
 # Matches the pragma-jennifer-version floor every .j file declares.
 [engines]
-jennifer = ">=0.25.0"
+jennifer = ">=0.26.0"
 
 [decks]
