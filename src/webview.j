@@ -58,8 +58,8 @@ export def struct Page {
  * @return {string} the header value
  */
 export func contentSecurityPolicy() {
-    def digest as bytes init hash.compute(convert.bytesFromString(THEME_SCRIPT, "utf-8"), "sha256");
-    return "default-src 'none'; script-src 'sha256-" + encoding.toText($digest, "base64") +
+    def digest as bytes init hash.compute("sha256", convert.bytesFromString("utf-8", THEME_SCRIPT));
+    return "default-src 'none'; script-src 'sha256-" + encoding.toText("base64", $digest) +
         "'; style-src 'unsafe-inline'; img-src 'self' https: data:; " +
         "form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 }

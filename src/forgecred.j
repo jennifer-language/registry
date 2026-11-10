@@ -29,13 +29,13 @@ def const KEY_LABEL as string init "jvc-registry forge-credential v1";
 
 # sealingKey derives the AES-256 key for this purpose from the signing key.
 func sealingKey(signingKey as bytes) {
-    def salt as bytes init convert.bytesFromString("", "utf-8");
+    def salt as bytes init convert.bytesFromString("utf-8", "");
     return crypto.hkdf(
+        "sha256",
         $signingKey,
         $salt,
-        convert.bytesFromString(KEY_LABEL, "utf-8"),
-        32,
-        "sha256");
+        convert.bytesFromString("utf-8", KEY_LABEL),
+        32);
 }
 
 /**
@@ -47,8 +47,8 @@ func sealingKey(signingKey as bytes) {
 export func seal(signingKey as bytes, credential as string) {
     def sealed as bytes init crypto.encrypt(
         sealingKey($signingKey),
-        convert.bytesFromString($credential, "utf-8"));
-    return encoding.toText($sealed, "base64");
+        convert.bytesFromString("utf-8", $credential));
+    return encoding.toText("base64", $sealed);
 }
 
 /**
@@ -60,6 +60,6 @@ export func seal(signingKey as bytes, credential as string) {
  *     another key, or was altered
  */
 export func unseal(signingKey as bytes, sealed as string) {
-    def raw as bytes init encoding.fromText($sealed, "base64");
-    return convert.stringFromBytes(crypto.decrypt(sealingKey($signingKey), $raw), "utf-8");
+    def raw as bytes init encoding.fromText("base64", $sealed);
+    return convert.stringFromBytes("utf-8", crypto.decrypt(sealingKey($signingKey), $raw));
 }

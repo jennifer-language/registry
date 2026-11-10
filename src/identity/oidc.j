@@ -46,8 +46,8 @@ def const DEFAULT_SCOPES as string init "openid profile";
 def const DISCOVERY_PATH as string init "/.well-known/openid-configuration";
 
 func formField(name as string, value as string) {
-    def raw as bytes init convert.bytesFromString($value, "utf-8");
-    return $name + "=" + encoding.toText($raw, "uri-form");
+    def raw as bytes init convert.bytesFromString("utf-8", $value);
+    return $name + "=" + encoding.toText("uri-form", $raw);
 }
 
 func jsonHeaders() {

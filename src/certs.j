@@ -248,11 +248,11 @@ export func save(tls as config.Tls, domain as string, cert as string, key as str
 func accountKey(tls as config.Tls) {
     def path as string init accountKeyPath($tls);
     if (fs.exists($path)) {
-        return convert.bytesFromString(fs.readString($path), "utf-8");
+        return convert.bytesFromString("utf-8", fs.readString($path));
     }
     fs.mkdirAll($tls.certDir);
     def key as bytes init crypto.ecGenerateKey("p256");
-    fs.writeString($path, convert.stringFromBytes($key, "utf-8"));
+    fs.writeString($path, convert.stringFromBytes("utf-8", $key));
     fs.chmod($path, 0o600);
     return $key;
 }
@@ -266,7 +266,7 @@ func settle(client as acme.Client, tls as config.Tls, authzUrl as string) {
         # challenge file is written for a domain the CA has stopped asking about.
         return null;
     }
-    def ch as acme.Challenge init acme.challenge($authz, "http-01");
+    def ch as acme.Challenge init acme.challenge("http-01", $authz);
     def answer as string init acme.keyAuthorization($client, $ch.token);
     fs.mkdirAll($tls.challengeDir);
     fs.writeString(challengePath($tls, $ch.token), $answer);
@@ -324,7 +324,7 @@ export func obtain(tls as config.Tls, now as int) {
         POLL_INTERVAL_MS,
         POLL_TRIES);
     def chain as string init acme.downloadCertificate($client, $finished);
-    def keyPem as string init convert.stringFromBytes($certKey, "utf-8");
+    def keyPem as string init convert.stringFromBytes("utf-8", $certKey);
     save($tls, $tls.domains[0], $chain, $keyPem, $now);
     return Bundle{cert: $chain, key: $keyPem, issuedAt: $now};
 }

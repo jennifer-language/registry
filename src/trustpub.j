@@ -525,5 +525,5 @@ export func verified(token as string, jwksJson as string, provider as string) {
     # Field by field, not a literal: see token.j `requireExpiry` for why.
     def policy as jwt.Policy;
     $policy.requireExp = true;
-    return claimsFrom($provider, jwt.verifyJwksWith($token, $jwksJson, "RS256", $policy));
+    return claimsFrom($provider, jwt.verifyJwksWith("RS256", $token, $jwksJson, $policy));
 }

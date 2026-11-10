@@ -21,11 +21,11 @@ func nowish() {
 }
 
 func key() {
-    return convert.bytesFromString("a signing secret nobody else has", "utf-8");
+    return convert.bytesFromString("utf-8", "a signing secret nobody else has");
 }
 
 func otherKey() {
-    return convert.bytesFromString("a different signing secret entirely", "utf-8");
+    return convert.bytesFromString("utf-8", "a different signing secret entirely");
 }
 
 # --- minting and verifying --------------------------------------------------
@@ -95,7 +95,7 @@ func throwsOnNoExpiry() {
     $claims = json.set($claims, "/iss", ISSUER);
     $claims = json.set($claims, "/sub", ACCOUNT);
     $claims = json.set($claims, "/login", "alice");
-    verify(key(), ISSUER, jwt.sign($claims, key(), ALG));
+    verify(key(), ISSUER, jwt.sign(ALG, $claims, key()));
 }
 
 func testATokenWithoutExpiryIsRejected() {

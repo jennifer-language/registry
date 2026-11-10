@@ -289,19 +289,19 @@ func testTheDeckKeyIsFolded() {
 
 # segment is one unpadded base64url JWT segment.
 func segment(raw as bytes) {
-    return strings.replace(encoding.toText($raw, "base64-url"), "=", "");
+    return strings.replace(encoding.toText("base64-url", $raw), "=", "");
 }
 
 # signedBy builds an RS256 token carrying `kid`, the way a CI issuer signs one.
 # `jwt.sign` takes no header, and the key set picks its key by `kid`.
 func signedBy(privatePem as bytes, claims as string) {
     def head as string init segment(convert.bytesFromString(
-        '{"alg":"RS256","kid":"ci-1","typ":"JWT"}',
-        "utf-8"));
-    def body as string init segment(convert.bytesFromString($claims, "utf-8"));
+        "utf-8",
+        '{"alg":"RS256","kid":"ci-1","typ":"JWT"}'));
+    def body as string init segment(convert.bytesFromString("utf-8", $claims));
     def input as string init $head + "." + $body;
-    def signed as bytes init convert.bytesFromString($input, "utf-8");
-    def sig as bytes init crypto.rsaSign($privatePem, $signed, "sha256");
+    def signed as bytes init convert.bytesFromString("utf-8", $input);
+    def sig as bytes init crypto.rsaSign("sha256", $signed, $privatePem);
     return $input + "." + segment($sig);
 }
 

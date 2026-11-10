@@ -44,7 +44,7 @@ func config() {
     return Config{
         provider: githubIdentity.provider(),
         providerConfig: providerCfg("Iv1.0123456789abcdef"),
-        signingKey: convert.bytesFromString("a signing secret nobody else has", "utf-8"),
+        signingKey: convert.bytesFromString("utf-8", "a signing secret nobody else has"),
         tokenTtl: TOKEN_TTL,
         refreshTtl: REFRESH_TTL,
         orgMaxAge: ORG_MAX_AGE

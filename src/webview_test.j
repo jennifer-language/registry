@@ -734,10 +734,10 @@ func testThePageParameterIsForgiving() {
 
 func testThePolicyAdmitsOnlyTheThemeScript() {
     def policy as string init contentSecurityPolicy();
-    def digest as bytes init hash.compute(convert.bytesFromString(THEME_SCRIPT, "utf-8"), "sha256");
+    def digest as bytes init hash.compute("sha256", convert.bytesFromString("utf-8", THEME_SCRIPT));
     testing.assertContains(
         $policy,
-        "script-src 'sha256-" + encoding.toText($digest, "base64") + "'");
+        "script-src 'sha256-" + encoding.toText("base64", $digest) + "'");
     testing.assertFalse(strings.contains($policy, "script-src 'unsafe-inline'"));
     testing.assertContains($policy, "frame-ancestors 'none'");
     # an inline handler would need unsafe-inline, so there must be none

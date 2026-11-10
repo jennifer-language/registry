@@ -80,8 +80,8 @@ export func handlesUrl(cfg as forge.Config, url as string) {
  * @return {string} the encoded path, e.g. `group%2Fsub%2Fproject`
  */
 export func projectId(url as string) {
-    def raw as bytes init convert.bytesFromString(forge.pathOf($url), "utf-8");
-    return encoding.toText($raw, "uri-percent");
+    def raw as bytes init convert.bytesFromString("utf-8", forge.pathOf($url));
+    return encoding.toText("uri-percent", $raw);
 }
 
 /**
@@ -241,8 +241,8 @@ func resolveTag(cfg as forge.Config, url as string, tag as string) {
 }
 
 func readFile(cfg as forge.Config, url as string, commit as string, path as string) {
-    def raw as bytes init convert.bytesFromString($path, "utf-8");
-    def encoded as string init encoding.toText($raw, "uri-percent");
+    def raw as bytes init convert.bytesFromString("utf-8", $path);
+    def encoded as string init encoding.toText("uri-percent", $raw);
     def res as http.Response init get(
         $cfg,
         "/projects/" + projectId($url) +
@@ -265,8 +265,8 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
 # would shadow a same-named object in a `?ref=` lookup, and GitLab permits ref
 # names shaped like object ids.
 func refExists(cfg as forge.Config, url as string, name as string) {
-    def raw as bytes init convert.bytesFromString($name, "utf-8");
-    def encoded as string init encoding.toText($raw, "uri-percent");
+    def raw as bytes init convert.bytesFromString("utf-8", $name);
+    def encoded as string init encoding.toText("uri-percent", $raw);
     def branch as http.Response init get(
         $cfg,
         "/projects/" + projectId($url) +
@@ -286,9 +286,9 @@ func refExists(cfg as forge.Config, url as string, name as string) {
 # filePath is the files-API address of one path at one commit. The path is one
 # segment there, so its slashes are escaped too.
 func filePath(url as string, commit as string, path as string) {
-    def raw as bytes init convert.bytesFromString($path, "utf-8");
+    def raw as bytes init convert.bytesFromString("utf-8", $path);
     return "/projects/" + projectId($url) + "/repository/files/" +
-        encoding.toText($raw, "uri-percent") + "?ref=" + $commit;
+        encoding.toText("uri-percent", $raw) + "?ref=" + $commit;
 }
 
 # fileExists asks the files API with a `HEAD`, so the file's content is not sent.

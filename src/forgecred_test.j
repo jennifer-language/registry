@@ -11,7 +11,7 @@ use strings;
 
 # keyOf is a signing key from text, as `bin/serve` makes one from its config.
 func keyOf(text as string) {
-    return convert.bytesFromString($text, "utf-8");
+    return convert.bytesFromString("utf-8", $text);
 }
 
 func testASealedCredentialComesBack() {

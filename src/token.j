@@ -101,7 +101,7 @@ export func mint(
     }
     $claims = json.set($claims, "/orgs", $ids);
     $claims = json.set($claims, "/orgsAt", $checkedAt);
-    return jwt.sign($claims, $key, ALG);
+    return jwt.sign(ALG, $claims, $key);
 }
 
 /**
@@ -118,7 +118,7 @@ export func mint(
 export func verify(key as bytes, issuer as string, token as string) {
     def policy as jwt.Policy init requireExpiry();
     $policy.iss = $issuer;
-    def claims as json.Value init jwt.verifyWith($token, $key, ALG, $policy);
+    def claims as json.Value init jwt.verifyWith(ALG, $token, $key, $policy);
     def orgs as map of string to string init {};
     if (json.has($claims, "/orgs")) {
         for (def name in json.keys($claims, "/orgs")) {
@@ -144,7 +144,7 @@ export func verify(key as bytes, issuer as string, token as string) {
  * @return {string} the refresh token
  */
 export func newRefresh() {
-    return encoding.toText(crypto.randBytes(REFRESH_BYTES), "hex");
+    return encoding.toText("hex", crypto.randBytes(REFRESH_BYTES));
 }
 
 /**
@@ -156,8 +156,8 @@ export func newRefresh() {
  * @return {string} its fingerprint
  */
 export func fingerprint(token as string) {
-    def raw as bytes init convert.bytesFromString($token, "utf-8");
-    return encoding.toText(hash.compute($raw, "sha256"), "hex");
+    def raw as bytes init convert.bytesFromString("utf-8", $token);
+    return encoding.toText("hex", hash.compute("sha256", $raw));
 }
 
 /**

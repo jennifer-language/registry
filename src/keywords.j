@@ -73,7 +73,7 @@ export func blocked() {
 func decodeAll(encoded as list of string) {
     def out as list of string init [];
     for (def one in $encoded) {
-        $out[] = convert.stringFromBytes(encoding.fromText($one, "base64"), "utf-8");
+        $out[] = convert.stringFromBytes("utf-8", encoding.fromText("base64", $one));
     }
     return $out;
 }
@@ -173,7 +173,7 @@ export func blockedSubstrings() {
  * @return {string} its base64 form, ready to paste into a group above
  */
 export func encode(word as string) {
-    return encoding.toText(convert.bytesFromString($word, "utf-8"), "base64");
+    return encoding.toText("base64", convert.bytesFromString("utf-8", $word));
 }
 
 /**
@@ -241,7 +241,7 @@ export func fold(word as string) {
     # Only ASCII is lowered: `strings.lower` maps the Kelvin sign (U+212A) to `k`
     # and the dotted capital I to `i`, folding into another valid name. Left as
     # written, it fails the grammar.
-    if (not encoding.isAscii(convert.bytesFromString($trimmed, "utf-8"))) {
+    if (not encoding.isAscii(convert.bytesFromString("utf-8", $trimmed))) {
         return $trimmed;
     }
     return strings.lower($trimmed);

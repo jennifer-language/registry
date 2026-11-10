@@ -226,7 +226,7 @@ def auth as authview.Config init authview.Config{
         scopes: $cfg.identityScopes,
         metadata: ""
     },
-    signingKey: convert.bytesFromString($cfg.tokenKey, "utf-8"),
+    signingKey: convert.bytesFromString("utf-8", $cfg.tokenKey),
     tokenTtl: TOKEN_TTL,
     refreshTtl: REFRESH_TTL,
     orgMaxAge: $cfg.orgMaxAgeHours * 3600
@@ -856,7 +856,7 @@ func answerAuth(ctx as web.Context, stage as string, out as authview.AuthReply) 
 
 # requestText is the request body decoded as UTF-8 (`web.body` returns bytes).
 func requestText(ctx as web.Context) {
-    return convert.stringFromBytes(web.body($ctx), "utf-8");
+    return convert.stringFromBytes("utf-8", web.body($ctx));
 }
 
 # throttled answers `429` with `Retry-After` and returns true when `key` has
@@ -2011,7 +2011,7 @@ io.printf(
 
 def tlsServer as httpd.Server init httpd.listenTLSWith(
     $cfg.tls.addr,
-    convert.bytesFromString($bundle.cert, "utf-8"),
-    convert.bytesFromString($bundle.key, "utf-8"),
+    convert.bytesFromString("utf-8", $bundle.cert),
+    convert.bytesFromString("utf-8", $bundle.key),
     $limits);
 web.serveOn($app, $tlsServer);

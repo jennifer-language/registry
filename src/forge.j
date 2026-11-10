@@ -451,7 +451,7 @@ export func isFile(doc as json.Value, kind as string) {
  * @return {string} the encoded segment
  */
 export func encodeSegment(s as string) {
-    return encoding.toText(convert.bytesFromString($s, "utf-8"), "uri-percent");
+    return encoding.toText("uri-percent", convert.bytesFromString("utf-8", $s));
 }
 
 /**

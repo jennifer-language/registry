@@ -80,9 +80,9 @@ export def struct Sink {
  */
 export func silent() {
     return Sink{
-        console: log.new(INFO, "text"),
+        console: log.new("text", INFO),
         hasConsole: false,
-        file: log.new(INFO, "text"),
+        file: log.new("text", INFO),
         hasFile: false,
         path: "",
         fileError: ""
@@ -133,9 +133,9 @@ export func open(level as string, format as string, path as string, console as b
     def lvl as string init levelOf($level);
     def fmt as string init formatOf($format);
     def out as Sink init Sink{
-        console: log.new($lvl, "text"),
+        console: log.new("text", $lvl),
         hasConsole: $console,
-        file: log.toFile($lvl, $fmt, $path),
+        file: log.toFile($fmt, $lvl, $path),
         hasFile: false,
         path: strings.trim($path),
         fileError: ""
@@ -239,7 +239,7 @@ export func printable(s as string) {
     def changed as bool init false;
     for (def ch in strings.chars($s)) {
         if ($ch < " " or ($ch >= "\u007f" and $ch <= "\u009f") or strings.contains(BIDI, $ch)) {
-            def hex as string init encoding.toText(convert.bytesFromString($ch, "utf-8"), "hex");
+            def hex as string init encoding.toText("hex", convert.bytesFromString("utf-8", $ch));
             for (def at in 0..convert.toInt(len($hex) / 2)) {
                 $parts[] = "\\x" + strings.substring($hex, $at * 2, $at * 2 + 2);
             }
