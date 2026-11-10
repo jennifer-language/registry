@@ -445,3 +445,27 @@ func testTheNameIsReadFromAnyFormatForErrorAccess() {
     testing.assertEqual(nameOfAs("deck.json", JSON_MANIFEST), "@acme/tool");
     testing.assertEqual(nameOfAs("deck.json", "not json"), "");
 }
+
+# The interpreter engines take the two engine-range forms only, as deckadmin
+# and jvc require; another engine name keeps the general constraint grammar.
+func testEngineRangesTakeTwoFormsOnly() {
+    def caret as Manifest init parse(withBody('[engines]
+jennifer = "^0.25.0"
+'));
+    testing.assertFalse($caret.ok);
+    testing.assertContains($caret.error, "not a valid engine range for jennifer");
+    def inverted as Manifest init parse(withBody('[engines]
+jennifer-tiny = ">=0.26.0 <0.25.0"
+'));
+    testing.assertFalse($inverted.ok);
+    testing.assertContains($inverted.error, "jennifer-tiny");
+    def bounded as Manifest init parse(withBody('[engines]
+jennifer = ">=0.25.0 <0.26.0"
+'));
+    testing.assertTrue($bounded.ok);
+    testing.assertEqual($bounded.engines["jennifer"], ">=0.25.0 <0.26.0");
+    def other as Manifest init parse(withBody('[engines]
+othervm = "^1.2"
+'));
+    testing.assertTrue($other.ok);
+}

@@ -571,7 +571,7 @@ func testBuildMetadataDoesNotDependOnOrder() {
 func testTheRoundLimitGrowsWithTheCatalog() {
     def cat as catalog.Catalog init plain(catalog.empty(), "@acme/a", "1.0.0");
     $cat = plain($cat, "@acme/b", "1.0.0");
-    testing.assertEqual(roundLimit(indexOf($cat)), MAX_ROUNDS + 4);
+    testing.assertEqual(roundLimit(indexOf($cat, anyTarget())), MAX_ROUNDS + 4);
 }
 
 # The index keeps catalog order within a deck, whether its entries are
@@ -581,14 +581,14 @@ func testTheIndexKeepsOrderAcrossRuns() {
     $cat = plain($cat, "@acme/b", "1.0.0");
     $cat = plain($cat, "@acme/a", "1.1.0");
     $cat = yank($cat, "@acme/a", "1.2.0");
-    def idx as Index init indexOf($cat);
+    def idx as Index init indexOf($cat, anyTarget());
     testing.assertEqual(len($idx.versions["@acme/a"]), 2);
     testing.assertEqual($idx.versions["@acme/a"][1], "1.1.0");
     def many as list of catalog.Candidate init [];
     for (def v in 0..6000) {
         $many[] = catalog.candidate("@big/one", "1." + convert.toString($v) + ".0");
     }
-    def big as Index init indexOf(catalog.addAll(catalog.empty(), $many));
+    def big as Index init indexOf(catalog.addAll(catalog.empty(), $many), anyTarget());
     testing.assertEqual(len($big.versions["@big/one"]), 6000);
 }
 
@@ -612,7 +612,10 @@ func chainCatalog(n as int) {
 # is now picked as the walk reaches it, so the first round chooses the whole
 # chain and finds nothing to change (0.3 s for 1,100).
 func testADeepChainSettlesInOneRound() {
-    def counted as Counted init resolveCounted(chainCatalog(1100), {"@c/d0": "^1.0.0"});
+    def counted as Counted init resolveCounted(
+        chainCatalog(1100),
+        {"@c/d0": "^1.0.0"},
+        anyTarget());
     testing.assertTrue($counted.result.ok);
     testing.assertEqual(len($counted.result.resolved), 1100);
     testing.assertEqual($counted.rounds, 1);
@@ -629,7 +632,7 @@ func testALaterPathTightensAnEarlyPick() {
     $cat = put($cat, "@x/c", "1.0.0", {"@x/d": "<2.0.0"});
     $cat = plain($cat, "@x/d", "1.0.0");
     $cat = put($cat, "@x/d", "2.0.0", {"@x/gone": "*"});
-    def counted as Counted init resolveCounted($cat, {"@x/a": "*", "@x/b": "*"});
+    def counted as Counted init resolveCounted($cat, {"@x/a": "*", "@x/b": "*"}, anyTarget());
     testing.assertTrue($counted.result.ok);
     testing.assertEqual(len($counted.result.missing), 0);
     testing.assertEqual(findVer($counted.result.resolved, "@x/d"), "1.0.0");
@@ -702,4 +705,122 @@ func testACycleAsksForADeckAnyRoundLacked() {
     testing.assertFalse($g.ok);
     testing.assertEqual($g.error, "");
     testing.assertTrue(hasMissing($g.missing, "@g/d6"));
+}
+
+# --- [engines] decides which versions the interpreter can run ----------------
+
+# anyTarget resolves for no interpreter in particular: nothing is filtered.
+func anyTarget() {
+    return Target{engine: "", version: ""};
+}
+
+# on is the interpreter a resolution is for: jennifer at a version.
+func on(version as string) {
+    return Target{engine: "jennifer", version: $version};
+}
+
+# ranged adds one version of a deck whose [engines] holds the given entries.
+func ranged(
+    cat as catalog.Catalog,
+    name as string,
+    version as string,
+    engines as map of string to string) {
+    def c as catalog.Candidate init catalog.candidate($name, $version);
+    $c.engines = $engines;
+    return catalog.add($cat, $c);
+}
+
+# twoReleases is a deck that shipped a capped patch release for the old
+# interpreter and a minor release for the new one, plus an older release with
+# no [engines] at all.
+func twoReleases() {
+    def cat as catalog.Catalog init catalog.empty();
+    $cat = plain($cat, "@e/deck", "0.9.0");
+    $cat = ranged($cat, "@e/deck", "1.0.1", {"jennifer": ">=0.25.0 <0.26.0"});
+    $cat = ranged($cat, "@e/deck", "1.1.0", {"jennifer": ">=0.26.0"});
+    return $cat;
+}
+
+func testTheNewestVersionThatRunsOnTheInterpreterWins() {
+    def cat as catalog.Catalog init twoReleases();
+    def roots as map of string to string init {"@e/deck": "^1.0.0"};
+    testing.assertEqual(
+        findVer(resolveGraphOn($cat, $roots, on("0.25.3")).resolved, "@e/deck"),
+        "1.0.1");
+    testing.assertEqual(
+        findVer(resolveGraphOn($cat, $roots, on("0.26.0")).resolved, "@e/deck"),
+        "1.1.0");
+    # Without an interpreter, nothing is filtered.
+    testing.assertEqual(findVer(resolveGraph($cat, $roots).resolved, "@e/deck"), "1.1.0");
+}
+
+# A development build passes every floor and fails every upper bound.
+func testADevelopmentBuildSkipsCappedVersions() {
+    def cat as catalog.Catalog init twoReleases();
+    def roots as map of string to string init {"@e/deck": "^1.0.0"};
+    def g as GraphResult init resolveGraphOn($cat, $roots, on("0.25.0-dev+131.afd9207"));
+    testing.assertEqual(findVer($g.resolved, "@e/deck"), "1.1.0");
+    $cat = catalog.empty();
+    $cat = ranged($cat, "@e/deck", "1.0.1", {"jennifer": ">=0.25.0 <0.26.0"});
+    $g = resolveGraphOn($cat, $roots, on("dev"));
+    testing.assertFalse($g.ok);
+    testing.assertContains($g.error, "1.0.1 needs jennifer >=0.25.0 <0.26.0");
+}
+
+# A version with no [engines] (older registry data) runs anywhere.
+func testAVersionWithoutEnginesIsEligible() {
+    def cat as catalog.Catalog init twoReleases();
+    def g as GraphResult init resolveGraphOn($cat, {"@e/deck": "<1.0.0"}, on("0.30.0"));
+    testing.assertEqual(findVer($g.resolved, "@e/deck"), "0.9.0");
+    # Falling back past the capped release to it, when the floor is not met.
+    $g = resolveGraphOn($cat, {"@e/deck": "*"}, on("0.24.0"));
+    testing.assertEqual(findVer($g.resolved, "@e/deck"), "0.9.0");
+}
+
+func testNoneFittingListsEachVersionWithItsRange() {
+    def cat as catalog.Catalog init twoReleases();
+    def g as GraphResult init resolveGraphOn($cat, {"@e/deck": "^1.0.0"}, on("0.24.0"));
+    testing.assertFalse($g.ok);
+    testing.assertContains(
+        $g.error,
+        "no version of @e/deck that satisfies ^1.0.0 runs on jennifer 0.24.0");
+    testing.assertContains($g.error, "1.0.1 needs jennifer >=0.25.0 <0.26.0");
+    testing.assertContains($g.error, "1.1.0 needs jennifer >=0.26.0");
+    # Only the versions the constraint allows are listed.
+    testing.assertFalse(strings.contains($g.error, "0.9.0"));
+}
+
+# When nothing satisfies the constraint at all, the engines are not the reason.
+func testAConstraintNothingSatisfiesIsNotAnEnginesError() {
+    def g as GraphResult init resolveGraphOn(twoReleases(), {"@e/deck": "^2.0.0"}, on("0.24.0"));
+    testing.assertFalse($g.ok);
+    testing.assertContains($g.error, "no version of @e/deck satisfies ^2.0.0");
+}
+
+# The keys are an allowlist: a version that lists only jennifer-tiny does not
+# run on jennifer.
+func testAnEngineTheVersionDoesNotListMakesItIneligible() {
+    def cat as catalog.Catalog init catalog.empty();
+    $cat = ranged($cat, "@e/tiny", "1.0.0", {"jennifer-tiny": ">=0.25.0"});
+    def g as GraphResult init resolveGraphOn($cat, {"@e/tiny": "*"}, on("0.25.0"));
+    testing.assertFalse($g.ok);
+    testing.assertContains(
+        $g.error,
+        "1.0.0 does not list jennifer in [engines] (jennifer-tiny >=0.25.0)");
+}
+
+# A transitive dependency is filtered the same way.
+func testATransitiveDependencyIsFilteredToo() {
+    def cat as catalog.Catalog init catalog.empty();
+    $cat = put($cat, "@e/app", "1.0.0", {"@e/deck": "^1.0.0"});
+    $cat = catalog.addAll($cat, twoReleases().entries);
+    def g as GraphResult init resolveGraphOn($cat, {"@e/app": "*"}, on("0.25.9"));
+    testing.assertTrue($g.ok);
+    testing.assertEqual(findVer($g.resolved, "@e/deck"), "1.0.1");
+}
+
+# An unknown interpreter version is judged by the engine list alone.
+func testAnUnknownVersionDoesNotFilterByRange() {
+    def g as GraphResult init resolveGraphOn(twoReleases(), {"@e/deck": "^1.0.0"}, on(""));
+    testing.assertEqual(findVer($g.resolved, "@e/deck"), "1.1.0");
 }

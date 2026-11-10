@@ -45,6 +45,7 @@ use maps;
 import "./deckname.j" as deckname;
 import "./keywords.j" as keywords;
 import "./constraint.j" as constraint;
+import "./enginerange.j" as enginerange;
 
 # The file a deck declares itself in, at the root of its repository, in TOML.
 export def const FILENAME as string init "deck.toml";
@@ -233,6 +234,17 @@ func tableProblem(
         if (strings.trim($value) == "") {
             return "empty version constraint for " + $key + " in " + $label +
                 ": write \"*\" for any version";
+        }
+        # The interpreter engines take only `>=X.Y.Z` or `>=X.Y.Z <A.B.C`, the
+        # forms jvc's resolver judges and the version pragma accepts; deckadmin
+        # holds `--engines` to the same rule.
+        if (not $decks and enginerange.isEngineKey($key)) {
+            def parsed as enginerange.Range init enginerange.parse($value);
+            if (not $parsed.ok) {
+                return "not a valid engine range for " + $key + " in " + $label + ": " +
+                    $value + " (" + $parsed.problem + "; write " + enginerange.FORMS + ")";
+            }
+            continue;
         }
         if (not constraint.isValidConstraint($value)) {
             return "not a valid version constraint for " + $key + " in " + $label + ": " +

@@ -54,6 +54,15 @@
  * found no solution", not a proof that none exists. Finding those would take
  * backtracking or a SAT-style solver.
  *
+ * **A version the interpreter cannot run is not a candidate.** Given the
+ * interpreter a resolution is for (`resolveGraphOn`), a version whose
+ * `[engines]` does not admit it (`enginerange.runsOn`: the running engine must be
+ * listed, and its version inside that range) is left out like a yanked one, so
+ * the newest version that fits both the constraints and the interpreter wins.
+ * When versions satisfy the constraints but none runs on the interpreter, the
+ * error lists each with its range. A version with no `[engines]` runs anywhere.
+ * `resolveGraph` resolves for no interpreter in particular and filters nothing.
+ *
  * The resolver is **pure**: it reads a `catalog` of candidates and never
  * fetches. A deck it has never heard of is reported in `GraphResult.missing`
  * rather than failing, which is what lets a caller run the fetch loop:
@@ -78,6 +87,7 @@ use convert;
 import "./catalog.j" as catalog;
 import "./constraint.j" as constraint;
 import "./deckname.j" as deckname;
+import "./enginerange.j" as enginerange;
 
 # The resolution rounds allowed beyond the catalog's own size before declaring
 # non-convergence. A chain settles in one round now that a deck is picked as
@@ -106,6 +116,28 @@ export def struct GraphResult {
     missing as list of string,
     error as string
 };
+
+/**
+ * The interpreter a resolution is for: only versions whose `[engines]` let it
+ * run them (`enginerange.runsOn`) are chosen. An empty `engine` filters
+ * nothing; an empty `version` (unknown) filters by the engine list alone.
+ * @field engine {string} the running engine, "jennifer" or "jennifer-tiny" ("" for any)
+ * @field version {string} its version, prerelease included ("" when unknown)
+ */
+export def struct Target {
+    engine as string,
+    version as string
+};
+
+# eligible reports whether a candidate may be chosen for the target: not yanked,
+# and runnable by its interpreter.
+func eligible(e as catalog.Candidate, target as Target) {
+    if ($e.yanked) {
+        return false;
+    }
+    return $target.engine == "" or
+        enginerange.runsOn($e.engines, $target.engine, $target.version);
+}
 
 # listContains reports whether a string list already holds a value.
 func listContains(items as list of string, value as string) {
@@ -174,8 +206,9 @@ def struct Index {
 };
 
 # indexOf reads a catalog into an Index in one pass. `versions` holds only the
-# selectable ones (not yanked), as `catalog.selectableVersions` does; `present`
-# records every deck the catalog knows, yanked or not, for the missing check.
+# selectable ones (not yanked, as `catalog.selectableVersions` has it, and
+# runnable by the target interpreter); `present` records every deck the catalog
+# knows, eligible or not, for the missing check.
 #
 # Names are folded, here and wherever a name enters a round (`foldReqs`), since
 # a deck name is case-insensitive: a root spelled `@Acme/App` against a catalog
@@ -188,7 +221,7 @@ def struct Index {
 # which is how every filler adds them, and stored once per run. Copying the
 # deck's list out of the map and back for every entry was quadratic in its
 # versions: 8,000 of one deck took 7.9 s to index.
-func indexOf(cat as catalog.Catalog) {
+func indexOf(cat as catalog.Catalog, target as Target) {
     def present as map of string to bool init {};
     def requires as map of string to map of string to string init {};
     def order as map of string to list of string init {};
@@ -205,7 +238,7 @@ func indexOf(cat as catalog.Catalog) {
         $present[$name] = true;
         $requires[$key] = foldReqs($e.requires);
         $order[$key] = lists.sort(maps.keys($requires[$key]));
-        if ($e.yanked) {
+        if (not eligible($e, $target)) {
             continue;
         }
         if (not ($name == $runName) and len($run) > 0) {
@@ -511,9 +544,14 @@ func noPick(
     name as string,
     cons as list of string,
     open as list of string,
-    missing as list of string) {
+    missing as list of string,
+    target as Target) {
     if (len($missing) > 0) {
         return needsFetch($missing);
+    }
+    def engineCause as string init engineFailure($cat, $name, $cons, $target);
+    if (not ($engineCause == "")) {
+        return failed($engineCause);
     }
     return failed("no version of " + $name + " satisfies " + joinConstraints($cons) +
         invalidHint($cons) + yankedHint($cat, $name, $cons) +
@@ -536,6 +574,52 @@ func yankedHint(cat as catalog.Catalog, name as string, cons as list of string) 
         return "";
     }
     return " (" + strings.join($hits, ", ") + " would, but is yanked)";
+}
+
+# engineFailure is the error when versions of a deck satisfy every constraint
+# but none runs on the target interpreter, listing each with its `[engines]`;
+# "" when that is not why nothing fits. Only the failure path pays for the scan.
+func engineFailure(
+    cat as catalog.Catalog,
+    name as string,
+    cons as list of string,
+    target as Target) {
+    if ($target.engine == "") {
+        return "";
+    }
+    def seen as list of string init [];
+    def lines as list of string init [];
+    for (def e in $cat.entries) {
+        if ($e.yanked or not (deckname.fold($e.name) == $name) or
+            listContains($seen, $e.version) or not satisfiesAll($e.version, $cons)) {
+            continue;
+        }
+        $seen[] = $e.version;
+        $lines[] = $e.version + " " + engineNeed($e.engines, $target.engine);
+    }
+    if (len($lines) == 0) {
+        return "";
+    }
+    def running as string init $target.version;
+    if ($running == "") {
+        $running = "of unknown version";
+    }
+    return "no version of " + $name + " that satisfies " + joinConstraints($cons) +
+        " runs on " + $target.engine + " " + $running + ":\n  " +
+        strings.join($lines, "\n  ");
+}
+
+# engineNeed says what a version's `[engines]` asks of the running engine.
+func engineNeed(engines as map of string to string, engine as string) {
+    def range as string init enginerange.rangeFor($engines, $engine);
+    if (not ($range == "")) {
+        return "needs " + $engine + " " + $range;
+    }
+    def listed as list of string init [];
+    for (def key in lists.sort(maps.keys($engines))) {
+        $listed[] = $key + " " + $engines[$key];
+    }
+    return "does not list " + $engine + " in [engines] (" + strings.join($listed, ", ") + ")";
 }
 
 # settledResult is the result once the choices have stopped changing: the
@@ -594,7 +678,25 @@ func cycleResult(chosen as map of string to string, missing as list of string) {
  * @return {GraphResult} the resolution outcome
  */
 export func resolveGraph(cat as catalog.Catalog, roots as map of string to string) {
-    return resolveCounted($cat, $roots).result;
+    return resolveCounted($cat, $roots, Target{engine: "", version: ""}).result;
+}
+
+/**
+ * Resolve as `resolveGraph` does, for one interpreter: a version whose
+ * `[engines]` does not let it run (`enginerange.runsOn`) is never chosen, so
+ * each deck gets the newest version that fits both its constraints and the
+ * interpreter. When some versions satisfy the constraints but none runs on it,
+ * the error lists each of them with its range.
+ * @param cat {catalog.Catalog} the known candidate versions
+ * @param roots {map of string to string} the root requirements (name -> constraint)
+ * @param target {Target} the interpreter the resolution is for
+ * @return {GraphResult} the resolution outcome
+ */
+export func resolveGraphOn(
+    cat as catalog.Catalog,
+    roots as map of string to string,
+    target as Target) {
+    return resolveCounted($cat, $roots, $target).result;
 }
 
 # Counted is a resolution and the rounds it took, which the overlay checks: a
@@ -606,12 +708,12 @@ def struct Counted {
 };
 
 # resolveCounted is resolveGraph, counting rounds.
-func resolveCounted(cat as catalog.Catalog, roots as map of string to string) {
+func resolveCounted(cat as catalog.Catalog, roots as map of string to string, target as Target) {
     def rootReqs as map of string to string init foldReqs($roots);
     def chosen as map of string to string init {};
     def reached as map of string to list of string init {};
     def seen as map of string to bool init {};
-    def idx as Index init indexOf($cat);
+    def idx as Index init indexOf($cat, $target);
     def picked as map of string to string init {};
     def noSkip as map of string to bool init {};
     def limit as int init roundLimit($idx);
@@ -687,7 +789,13 @@ func resolveCounted(cat as catalog.Catalog, roots as map of string to string) {
             }
             if ($pick == "") {
                 return Counted{
-                    result: noPick($cat, $name, $cons[$name], versionsOf($idx, $name), $missing),
+                    result: noPick(
+                        $cat,
+                        $name,
+                        $cons[$name],
+                        versionsOf($idx, $name),
+                        $missing,
+                        $target),
                     rounds: $round + 1
                 };
             }

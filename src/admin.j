@@ -34,6 +34,7 @@ import "./reserved.j" as reserved;
 import "./keywords.j" as keywords;
 import "./token.j" as token;
 import "./constraint.j" as constraint;
+import "./enginerange.j" as enginerange;
 
 # The identity providers a scope may be bound to: the modules under
 # src/identity/, as `config.IDENTITIES` names them (not exported, so repeated here).
@@ -413,6 +414,26 @@ func urlProblem(url as string) {
     return "";
 }
 
+# engineRangeProblem is why one `--engines` entry cannot be published, or "".
+# The range of `jennifer` and `jennifer-tiny` takes only the two forms
+# `enginerange` accepts, `>=X.Y.Z` and `>=X.Y.Z <A.B.C` with the bound above the
+# floor: what jvc's manifest check and the interpreter's version pragma accept,
+# and what jvc's resolver can judge. Another engine name takes any constraint.
+func engineRangeProblem(engine as string, range as string) {
+    if (enginerange.isEngineKey($engine)) {
+        def parsed as enginerange.Range init enginerange.parse($range);
+        if ($parsed.ok) {
+            return "";
+        }
+        return "not a valid engine range for engine " + $engine + ": " + $range + " (" +
+            $parsed.problem + "; write " + enginerange.FORMS + ")";
+    }
+    if (not constraint.isValidConstraint($range)) {
+        return "not a valid version constraint for engine " + $engine + ": " + $range;
+    }
+    return "";
+}
+
 /**
  * Publish a version (the `add` / `update` upsert). Reads its arguments from the
  * parsed command line and returns the edited store; the caller persists it when
@@ -466,11 +487,9 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
         }
     }
     for (def engine in $engines) {
-        if (not constraint.isValidConstraint($engines[$engine])) {
-            return failResult(
-                $db,
-                "not a valid version constraint for engine " + $engine + ": " +
-                    $engines[$engine]);
+        def badRange as string init engineRangeProblem($engine, $engines[$engine]);
+        if (not ($badRange == "")) {
+            return failResult($db, $badRange);
         }
     }
     def urlComplaint as string init urlProblem($url);

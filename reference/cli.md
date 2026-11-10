@@ -691,7 +691,12 @@ reported the same way, before anything touches the store.
 Flags may appear anywhere; they are stripped before the positional arguments are
 read, so `[description]` keeps its place whatever precedes or follows it. In
 `--requires` and `--engines`, each comma-separated entry is a `name constraint`
-pair separated by a space, and an entry with no space defaults to `*`.
+pair separated by a space, and an entry with no space defaults to `*`. The range
+of `jennifer` and `jennifer-tiny` takes only the two forms the interpreter's
+version pragma takes, `>=X.Y.Z` or `>=X.Y.Z <A.B.C` (one space, an exclusive
+upper bound above the floor), so `--engines "jennifer >=0.25.0 <0.26.0"` is a
+release for 0.25 only; a caret, tilde or bare name is refused for them. jvc's
+resolver skips a version whose range does not admit the consumer's interpreter.
 
 `add` over an existing version replaces the whole record: a `yanked` flag, and
 the licence and keywords a `POST /publish` recorded, are reset, so re-add a

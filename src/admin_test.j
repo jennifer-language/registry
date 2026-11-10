@@ -482,13 +482,13 @@ func testAddCapturesEngines() {
         "--commit",
         COMMIT,
         "--engines",
-        "jennifer ^0.24.0, jennifer-tiny ^0.5.0"
+        "jennifer >=0.24.0 <0.25.0, jennifer-tiny >=0.5.0"
     ];
     def r as AdminResult init dispatch(registered(), $args);
     testing.assertTrue($r.ok);
     def e as map of string to string init store.versionEngines($r.db, "@acme/ansi", "1.0.0");
-    testing.assertEqual($e["jennifer"], "^0.24.0");
-    testing.assertEqual($e["jennifer-tiny"], "^0.5.0");
+    testing.assertEqual($e["jennifer"], ">=0.24.0 <0.25.0");
+    testing.assertEqual($e["jennifer-tiny"], ">=0.5.0");
     # the positional description survives however many flags precede or follow it
     def rec as json.Value init store.getVersionJson($r.db, "@acme/ansi", "1.0.0");
     testing.assertEqual(json.asString($rec, "/description"), "styling");
@@ -1048,6 +1048,30 @@ func testAddRefusesAnInvalidEngineConstraint() {
     def r as AdminResult init dispatch(registered(), $argv);
     testing.assertFalse($r.ok);
     testing.assertContains($r.message, "engine jennifer");
+}
+
+# A Jennifer engine takes only the two forms; the refusal names both.
+func testAddRefusesAnEngineRangeOutsideTheTwoForms() {
+    for (def bad in ["^0.25.0", "~0.25.0", ">=0.25.0 <=0.26.0", ">=0.26.0 <0.26.0", "*"]) {
+        def argv as list of string init gitAdd("@acme/ansi", "1.0.0", "https://x/a");
+        $argv[] = "--engines";
+        $argv[] = "jennifer-tiny " + $bad;
+        def r as AdminResult init dispatch(registered(), $argv);
+        testing.assertFalse($r.ok);
+        testing.assertContains($r.message, "not a valid engine range for engine jennifer-tiny");
+        testing.assertContains($r.message, "\">=X.Y.Z\" or \">=X.Y.Z <A.B.C\"");
+        testing.assertFalse(store.hasVersion($r.db, "@acme/ansi", "1.0.0"));
+    }
+}
+
+func testEngineRangeProblem() {
+    testing.assertEqual(engineRangeProblem("jennifer", ">=0.25.0"), "");
+    testing.assertEqual(engineRangeProblem("jennifer", ">=0.25.0 <0.26.0"), "");
+    testing.assertContains(engineRangeProblem("jennifer", "^0.25.0"), "starts with a \">=\" floor");
+    testing.assertContains(engineRangeProblem("Jennifer", ">=1.0.0 <1.0.0"), "not above the floor");
+    # Another engine name keeps the general constraint grammar.
+    testing.assertEqual(engineRangeProblem("other", "^1.0.0"), "");
+    testing.assertContains(engineRangeProblem("other", "^abc"), "not a valid version constraint");
 }
 
 func testAddRefusesASecondBuildOfOneVersion() {
