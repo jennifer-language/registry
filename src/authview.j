@@ -127,7 +127,7 @@ export func stateReply(db as flatdb.DB, state as string, detail as string) {
             return fail($db, 400, "the identity provider does not know this device code");
         }
         when "spent" {
-            # A 400, not a 502: jvc retries a 5xx, and this code cannot succeed.
+            # A 400, not a 503: jvc retries a 5xx, and this code cannot succeed.
             return fail(
                 $db,
                 400,
@@ -140,7 +140,7 @@ export func stateReply(db as flatdb.DB, state as string, detail as string) {
     # needs to see (`incorrect_client_credentials`, `device_flow_disabled`).
     return fail(
         $db,
-        502,
+        503,
         "the identity provider answered the poll with an unexpected error: " + $detail);
 }
 
@@ -236,7 +236,7 @@ export func device(cfg as Config, db as flatdb.DB) {
     try {
         $dev = $cfg.provider.startDevice($cfg.providerConfig);
     } catch (err) {
-        return fail($db, 502, "the provider could not start the login: " + $err.message);
+        return fail($db, 503, "the provider could not start the login: " + $err.message);
     }
     def body as json.Value init json.map();
     $body = json.set($body, "/deviceCode", $dev.deviceCode);
@@ -315,7 +315,7 @@ export func login(cfg as Config, body as string) {
     try {
         $result = $cfg.provider.poll($cfg.providerConfig, $deviceCode);
     } catch (err) {
-        return early(fail(noStore(), 502, "the provider could not be reached: " +
+        return early(fail(noStore(), 503, "the provider could not be reached: " +
             $err.message));
     }
     if (not ($result.state == "ok")) {
@@ -404,7 +404,7 @@ func identify(cfg as Config, accessToken as string) {
     } catch (err) {
         return early(fail(
             noStore(),
-            502,
+            503,
             "the provider could not identify the account: " +
                 $err.message));
     }
@@ -423,7 +423,7 @@ func identify(cfg as Config, accessToken as string) {
     # The subject is stored and compared as an opaque string (8.1); an OIDC `sub`
     # is often a UUID.
     if (not identity.isSubject($who.id)) {
-        return early(fail(noStore(), 502, "the provider returned an unusable subject id"));
+        return early(fail(noStore(), 503, "the provider returned an unusable subject id"));
     }
     return Login{
         ok: true,
@@ -564,7 +564,7 @@ export func checkGrant(cfg as Config, db as flatdb.DB, body as string) {
  * The presented token is deleted before its replacement is recorded, so a
  * captured token works once and the theft shows as an unexpected logout. A
  * revoked grant ends the login and drops the kept provider token; a provider
- * that could not be asked is a `502` that keeps the refresh token for a retry.
+ * that could not be asked is a `503` that keeps the refresh token for a retry.
  * @param cfg {Config} the issuing configuration
  * @param db {flatdb.DB} the store holding the refresh tokens
  * @param body {string} the raw request body, carrying `refreshToken`
@@ -627,7 +627,7 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int, 
     if (not ($grant == GRANT_VALID)) {
         return fail(
             $db,
-            502,
+            503,
             "the provider could not be asked whether this login still stands; try again");
     }
     def rotated as flatdb.DB init store.deleteRefresh($db, $print);

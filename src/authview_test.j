@@ -310,7 +310,7 @@ func testAMissingGrantEndsTheLogin() {
     testing.assertFalse(store.hasRefresh($out.db, token.fingerprint($given)));
 }
 
-func testAnUnaskableProviderIs502AndKeepsTheRefreshToken() {
+func testAnUnaskableProviderIs503AndKeepsTheRefreshToken() {
     def got as AuthReply init loggedIn(emptyDb());
     def given as string init json.asString($got.body, "/refreshToken");
     def out as AuthReply init refresh(
@@ -319,7 +319,7 @@ func testAnUnaskableProviderIs502AndKeepsTheRefreshToken() {
         refreshBody($given),
         nowish(),
         GRANT_UNKNOWN);
-    testing.assertEqual($out.status, 502);
+    testing.assertEqual($out.status, 503);
     testing.assertTrue(store.hasRefresh($out.db, token.fingerprint($given)));
 }
 
@@ -351,7 +351,7 @@ func testPendingCarriesAStatusBody() {
 
 func testAnUnknownStateIsTerminalNotPending() {
     # treating it as pending would spin a client until its code expired
-    testing.assertEqual(stateReply(emptyDb(), "something-new", "x").status, 502);
+    testing.assertEqual(stateReply(emptyDb(), "something-new", "x").status, 503);
 }
 
 # --- issuing ----------------------------------------------------------------
@@ -630,7 +630,7 @@ func testAnOpaqueSubjectLogsIn() {
 func testAnUnexpectedPollErrorIsAProviderFaultWithItsCode() {
     # a misconfigured client id must reach the operator, not read as a denial
     def out as AuthReply init stateReply(emptyDb(), "failed", "incorrect_client_credentials");
-    testing.assertEqual($out.status, 502);
+    testing.assertEqual($out.status, 503);
     testing.assertContains(json.asString($out.body, "/error"), "incorrect_client_credentials");
     testing.assertEqual(stateReply(emptyDb(), "invalid", "incorrect_device_code").status, 400);
 }

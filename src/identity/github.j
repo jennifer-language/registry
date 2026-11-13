@@ -178,7 +178,7 @@ export func pollFrom(doc as json.Value) {
  * (observed 2026-10-28, an HTML page), so it is `STATE_SPENT`: polling again
  * cannot succeed. Any other 5xx, a body that is not JSON, or one with neither a
  * token nor an error throws, which the caller reports as a provider it could
- * not reach (502, retried by clients).
+ * not reach (503, retried by clients).
  * @param status {int} the HTTP status
  * @param body {string} the response body
  * @return {identity.Poll} the outcome

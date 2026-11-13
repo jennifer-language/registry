@@ -265,7 +265,7 @@ func testAMappingNeedsTheForgeToAgreeOnTheUsername() {
 }
 
 func testANotFoundReadIsTheAbsentKind() {
-    # a publish answers ABSENT with 400 (the publisher's to fix), anything else 502
+    # a publish answers ABSENT with 400 (the publisher's to fix), anything else 503
     testing.assertEqual(kindOf(404), ABSENT);
     testing.assertEqual(kindOf(500), "forge");
     testing.assertEqual(kindOf(403), "forge");

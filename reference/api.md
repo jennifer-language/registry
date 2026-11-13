@@ -123,7 +123,7 @@ slow down, `403` denied, `410` expired. A success carries `token`, `expiresIn`
 (3600), `refreshToken`, `login`, `subject` (the provider's subject id, a string),
 `accountId` (the same as a number, only when it is one), and `orgs`, the
 organisation logins the token carries. A body without its field is `400`; a provider that cannot be
-reached is `502`. A rejected or expired refresh token is `401`.
+reached is `503`. A rejected or expired refresh token is `401`.
 
 Under `authcode` (an OIDC provider without a device endpoint) discovery carries
 `authorizeUrl`, `clientId` and `scopes` (an array) instead of `deviceUrl`. The
@@ -133,7 +133,7 @@ result to `/auth/token`. `redirectUri` must be `http://127.0.0.1:<port>/...` or
 
 Every refresh asks the provider, with the provider token kept sealed from the
 login, whether it still names the same account. A revoked or expired provider
-token ends the login (`401`); a provider that cannot be asked is `502` and leaves
+token ends the login (`401`); a provider that cannot be asked is `503` and leaves
 the refresh token valid. A provider whose user tokens expire (a GitHub App with
 expiring user tokens: 8 hours) therefore bounds a login to that lifetime.
 
@@ -412,7 +412,7 @@ A). Success is `201`:
 | `403` | the scope is not registered or not the caller's; the token or binding does not cover this deck; the forge does not confirm push access |
 | `409` | that version, build metadata aside, is already published |
 | `501` | a bearer token without the login surface, or an identity token without trusted publishing |
-| `502` | the forge could not be read |
+| `503` | the forge could not be read |
 
 The credential is checked before any forge call, and the version-conflict `409`
 comes after every authorisation check, so a stranger cannot learn which versions
@@ -484,8 +484,11 @@ else, `404` for an unregistered scope or removing an absent binding.
 | `404` | no such deck, version, scope, or endpoint |
 | `409` | the version is already published; the scope is already held |
 | `501` | a write mechanism this deployment has not configured |
-| `502` | the forge or identity provider could not be reached |
-| `503` | the respond timeout (120 s by default) passed; the engine answers this itself |
+| `503` | the forge or identity provider could not be reached; or the respond timeout (120 s by default) passed, which the engine answers itself |
+
+Upstream failures are `503`, not `502`: Cloudflare, and other CDNs, replace an
+origin's `502` and `504` bodies with their own, so the message would not reach
+`jvc`.
 
 A manifest that fails validation is `400`.
 

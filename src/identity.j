@@ -224,7 +224,7 @@ export def const STATE_INVALID as string init "invalid";
 # code that was already exchanged); polling again cannot succeed (400).
 export def const STATE_SPENT as string init "spent";
 # An error code outside the grant's vocabulary: a misconfigured client id, a
-# disabled flow, or a provider fault; the code is carried in `Poll.detail` (502).
+# disabled flow, or a provider fault; the code is carried in `Poll.detail` (503).
 export def const STATE_FAILED as string init "failed";
 
 /**

@@ -249,7 +249,7 @@ def readLimiter as ratelimit.Limiter init throttle.limiter($readRateLimit);
 # The provider's discovery document, fetched once at boot (12.2) and carried in
 # the configuration, so a login makes no extra round trip. A provider that cannot
 # be asked gets no `auth` advertised: every login would fail, and the reason
-# belongs in the boot log, not in a poll's 502.
+# belongs in the boot log, not in a poll's 503.
 if ($authOn) {
     try {
         $auth.providerConfig.metadata = $auth.provider.discover($auth.providerConfig);
@@ -1030,7 +1030,7 @@ func publishRequestProblem(repository as string, tag as string) {
 # manifestAt reads the commit's manifest, whichever of `manifest.FILENAMES` it
 # is. Every name is asked for, since two at once are refused rather than one
 # silently preferred. None, or several, throws kind "manifest", which the
-# handler answers with 400; a forge that fails throws its own kind (502).
+# handler answers with 400; a forge that fails throws its own kind (503).
 func manifestAt(repository as string, tag as string, commit as string) {
     def found as map of string to string init {};
     for (def name in manifest.FILENAMES) {
@@ -1051,17 +1051,32 @@ func manifestAt(repository as string, tag as string, commit as string) {
 
 # sourceFailure answers a publish whose forge reads threw. Not there, or a
 # manifest that is missing or doubled, is the publisher's to fix (5.7: 400); a
-# forge that failed is a 502.
+# forge that failed is a 503. Not 502: Cloudflare replaces an origin's 502 and
+# 504 with its own page, so the reason never reached the client (2026-11-14,
+# a publish answered "error code: 502"); it leaves 503 alone.
 func sourceFailure(ctx as web.Context, err as Error, repository as string, tag as string) {
     if ($err.kind == forge.ABSENT or $err.kind == "manifest") {
         def why as string init $err.message;
         if (strings.startsWith($why, "could not resolve the tag")) {
             $why = publishview.missingTag($repository, $tag);
         }
-        webapi.fail($ctx, 400, $why);
+        refusePublish($ctx, 400, $why);
         return;
     }
-    webapi.fail($ctx, 502, "could not read " + $repository + " at " + $tag + ": " + $err.message);
+    refusePublish($ctx, 503, "could not read " + $repository + " at " + $tag + ": " + $err.message);
+}
+
+# refusePublish answers a publish that ends before `publishview` judges it, and
+# records why in the audit log first: the log is the operator's only record
+# when something in front of the registry rewrites the answer, and these
+# exits wrote nothing before (2026-11-14).
+func refusePublish(ctx as web.Context, status as int, why as string) {
+    audit.write($logSink, audit.publishRefused($why, $status));
+    if ($status == 401) {
+        webapi.unauthorized($ctx, $why);
+        return;
+    }
+    webapi.fail($ctx, $status, $why);
 }
 
 # sourceFrom makes every forge call of a publish and assembles the result for
@@ -1090,7 +1105,7 @@ func sourceFrom(repository as string, tag as string) {
     }
     # Commit shadowing, for `checkSource` to judge: forges resolve `?ref=` as a
     # name before an object, so a ref named `<commit>` would answer the reads
-    # below. `refExists` throws when the forge will not say, which becomes a 502.
+    # below. `refExists` throws when the forge will not say, which becomes a 503.
     def shadowed as bool init $theForge.refExists($forgeConfig, $repository, $commit);
     def mf as publishview.ManifestFile init manifestAt($repository, $tag, $commit);
     def r as forge.Repo init $theForge.repo($forgeConfig, $repository);
@@ -1272,7 +1287,7 @@ func apiPublish(ctx as web.Context) {
     try {
         $body = json.decode(requestText($ctx));
     } catch (err) {
-        webapi.fail($ctx, 400, "the request body is not JSON");
+        refusePublish($ctx, 400, "the request body is not JSON");
         return;
     }
     def repository as string init fieldOf($body, "/repository");
@@ -1291,13 +1306,13 @@ func apiPublish(ctx as web.Context) {
     if (not ($identityToken == "")) {
         $mode = "trusted";
         if (not $tpOn) {
-            webapi.fail($ctx, 501, "this registry does not accept trusted publishing");
+            refusePublish($ctx, 501, "this registry does not accept trusted publishing");
             return;
         }
         try {
             $claims = trustpub.verified($identityToken, $tpKeys, $tpProvider);
         } catch (err) {
-            webapi.fail($ctx, 401, "the identity token did not verify: " + $err.message);
+            refusePublish($ctx, 401, "the identity token did not verify: " + $err.message);
             return;
         }
     } else {
@@ -1306,17 +1321,20 @@ func apiPublish(ctx as web.Context) {
             $mode = "ci";
             $ciRec = store.getCiToken($db, token.fingerprint($presented));
             if ($ciRec.fingerprint == "") {
-                webapi.unauthorized($ctx, "no such CI token");
+                refusePublish($ctx, 401, "no such CI token");
                 return;
             }
         } else {
             if (not $authOn) {
-                webapi.fail($ctx, 501, "this registry accepts no logins, so it accepts no writes");
+                refusePublish(
+                    $ctx,
+                    501,
+                    "this registry accepts no logins, so it accepts no writes");
                 return;
             }
             $who = callerOf($ctx);
             if ($who.id == "") {
-                webapi.unauthorized($ctx, "a bearer token is required to publish");
+                refusePublish($ctx, 401, "a bearer token is required to publish");
                 return;
             }
         }
@@ -1327,7 +1345,7 @@ func apiPublish(ctx as web.Context) {
     }
     def requestComplaint as string init publishRequestProblem($repository, $tag);
     if (not ($requestComplaint == "")) {
-        webapi.fail($ctx, 400, $requestComplaint);
+        refusePublish($ctx, 400, $requestComplaint);
         return;
     }
 

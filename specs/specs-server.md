@@ -793,8 +793,11 @@ offered. Both are conveniences; neither is depended on.
 | `409` | the version already exists (section 7) |
 | `429` | rate limited |
 | `501` | the operation is not configured on this registry (e.g. a write when it accepts no logins) |
-| `502` | the identity provider or the forge failed or could not be reached |
-| `503` | the registry did not answer within its respond timeout |
+| `503` | the identity provider or the forge failed or could not be reached, or the registry did not answer within its respond timeout |
+
+An upstream failure is `503`, not `502`: a CDN in front of the registry may
+replace an origin's `502` or `504` body with its own (Cloudflare does), which
+hides the reason from the developer; it passes a `503` through.
 
 Every error body **SHOULD** be `{"error": "<human-readable message>"}`. The
 message is shown directly to a developer in a terminal, so write it for that
@@ -1489,7 +1492,7 @@ use.
 A refresh is where 8.5's revocation rule is enforced: the registry asks the
 provider, with the provider token kept (sealed) from the login, whether it still
 names the same account. A token the provider refuses, or one naming another
-account, ends the login with `401`. A provider that cannot be asked is `502`,
+account, ends the login with `401`. A provider that cannot be asked is `503`,
 and the refresh token stays valid for a retry.
 
 ### 8.5 Authorization is a bearer token
