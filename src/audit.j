@@ -64,6 +64,8 @@ export def struct Event {
  * @field hasFile {bool} whether events are written to a file
  * @field path {string} the configured file path, for reporting ("" when none)
  * @field fileError {string} why the file sink is off despite a path being set
+ * @field requestId {string} the id of the request whose events this sink
+ *     writes, added to each as the `request` field ("" outside a request)
  */
 export def struct Sink {
     console as log.Logger,
@@ -71,7 +73,8 @@ export def struct Sink {
     file as log.Logger,
     hasFile as bool,
     path as string,
-    fileError as string
+    fileError as string,
+    requestId as string
 };
 
 /**
@@ -85,8 +88,45 @@ export func silent() {
         file: log.new("text", INFO),
         hasFile: false,
         path: "",
-        fileError: ""
+        fileError: "",
+        requestId: ""
     };
+}
+
+/**
+ * The id a request is logged under: Cloudflare's `cf-ray` when it has the
+ * shape Cloudflare gives it (letters, digits and `-`, at most 64), so the id
+ * `jvc` prints for a Cloudflare error page finds the registry's lines; else
+ * the generated fallback. Pure.
+ * @param cfRay {string} the `cf-ray` request header, or ""
+ * @param fallback {string} a freshly generated id
+ * @return {string} the id
+ */
+export func requestIdOf(cfRay as string, fallback as string) {
+    def ray as string init strings.trim($cfRay);
+    if ($ray == "" or len($ray) > 64) {
+        return $fallback;
+    }
+    for (def c in strings.chars($ray)) {
+        if (not (($c >= "a" and $c <= "z") or ($c >= "A" and $c <= "Z") or
+            ($c >= "0" and $c <= "9") or $c == "-")) {
+            return $fallback;
+        }
+    }
+    return $ray;
+}
+
+/**
+ * The same sink, stamping every event it writes with a request's id, so the
+ * lines one request produces can be found together. Pure.
+ * @param sink {Sink} the shared sink
+ * @param requestId {string} the request's id
+ * @return {Sink} a copy carrying the id
+ */
+export func withRequest(sink as Sink, requestId as string) {
+    def out as Sink init $sink;
+    $out.requestId = $requestId;
+    return $out;
 }
 
 /**
@@ -138,7 +178,8 @@ export func open(level as string, format as string, path as string, console as b
         file: log.toFile($fmt, $lvl, $path),
         hasFile: false,
         path: strings.trim($path),
-        fileError: ""
+        fileError: "",
+        requestId: ""
     };
     if ($out.path == "") {
         return $out;
@@ -183,6 +224,9 @@ export func describe(sink as Sink) {
 export func write(sink as Sink, ev as Event) {
     if ($ev.level == "") {
         return false;
+    }
+    if (not ($sink.requestId == "") and not maps.has($ev.fields, "request")) {
+        $ev.fields["request"] = $sink.requestId;
     }
     $ev = cleaned($ev);
     def wrote as bool init false;
@@ -622,6 +666,57 @@ export func deckPublishedFrom(
 export func publishRefused(reason as string, status as int) {
     def f as map of string to string init {"status": convert.toString($status), "reason": $reason};
     return Event{level: WARN, message: "publish refused", fields: $f};
+}
+
+/**
+ * A publish was refused because the forge is rate-limiting the registry: the
+ * `publishRefused` record plus the wait the client was told (`Retry-After`).
+ * @param reason {string} what the caller was told
+ * @param retryAfter {int} seconds until the forge answers again
+ * @return {Event} the event, at warn
+ */
+export func publishRateLimited(reason as string, retryAfter as int) {
+    def ev as Event init publishRefused($reason, 503);
+    $ev.fields["retryAfter"] = convert.toString($retryAfter);
+    return $ev;
+}
+
+/**
+ * One line per publish attempt, written when it ends however it ends, so an
+ * attempt that left no other trace shows by this line, or by its absence.
+ * Carries no credential: the deck and tag are public, the repository is the
+ * URL the publish was asked about.
+ * @param deck {string} the deck the manifest names ("" when it was not read)
+ * @param tag {string} the tag asked for
+ * @param repository {string} the repository asked for
+ * @param outcome {string} "published", "refused" or "failed" (the handler threw)
+ * @param status {int} the HTTP status answered (0 when none was recorded)
+ * @param ms {int} how long the attempt took
+ * @param calls {int} how many forge calls it made
+ * @return {Event} the event: info when published, warn otherwise
+ */
+export func publishAttempt(
+    deck as string,
+    tag as string,
+    repository as string,
+    outcome as string,
+    status as int,
+    ms as int,
+    calls as int) {
+    def f as map of string to string init {
+        "deck": $deck,
+        "tag": $tag,
+        "repository": $repository,
+        "outcome": $outcome,
+        "status": convert.toString($status),
+        "ms": convert.toString($ms),
+        "forgeCalls": convert.toString($calls)
+    };
+    def level as string init WARN;
+    if ($outcome == "published") {
+        $level = INFO;
+    }
+    return Event{level: $level, message: "publish attempt", fields: $f};
 }
 
 /**

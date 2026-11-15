@@ -271,3 +271,64 @@ func testARemovedScopeIsAWarningNamingItsFormerOwner() {
     # a reserved scope had nobody to name
     testing.assertFalse(maps.has(scopeRemoved("acme", "", "").fields, "subject"));
 }
+
+# --- request ids and the publish summary --------------------------------------
+
+func testARequestIdIsCloudflaresRayWhenItLooksLikeOne() {
+    # the id jvc prints for a Cloudflare error page must find the registry's lines
+    testing.assertEqual(requestIdOf("a5b027ff28098e61-VIE", "gen"), "a5b027ff28098e61-VIE");
+    testing.assertEqual(requestIdOf("", "gen"), "gen");
+    # anything else is not trusted as an id
+    testing.assertEqual(requestIdOf("a b", "gen"), "gen");
+    testing.assertEqual(requestIdOf("x\ny", "gen"), "gen");
+    testing.assertEqual(requestIdOf(strings.repeat("a", 65), "gen"), "gen");
+}
+
+func testEveryLineARequestWritesCarriesItsId() {
+    def dir as string init fs.makeTempDir("", "jvc-audit");
+    def path as string init $dir + "/registry.log";
+    def shared as Sink init open("debug", "logfmt", $path, false);
+    def one as Sink init withRequest($shared, "ray-1");
+    write($one, requestSeen("POST", "/v1/publish", "127.0.0.1"));
+    write($one, publishRefused("no such CI token", 401));
+    write($one, publishAttempt("", "1.0.0", "https://github.com/acme/deck", "refused", 401, 3, 0));
+    # the shared sink itself stamps nothing
+    write($shared, requestSeen("GET", "/health", "127.0.0.1"));
+    def lines as list of string init strings.split(strings.trim(fs.readString($path)), "\n");
+    testing.assertEqual(len($lines), 4);
+    for (def i in 0..3) {
+        testing.assertContains($lines[$i], "request=ray-1");
+    }
+    testing.assertFalse(strings.contains($lines[3], "request="));
+    fs.removeAll($dir);
+}
+
+func testAPublishAttemptIsSummarisedHoweverItEnds() {
+    def ok as Event init publishAttempt(
+        "@acme/tool",
+        "1.2.0",
+        "https://github.com/acme/deck-tool",
+        "published",
+        201,
+        640,
+        14);
+    testing.assertEqual($ok.level, INFO);
+    testing.assertEqual($ok.message, "publish attempt");
+    testing.assertEqual($ok.fields["deck"], "@acme/tool");
+    testing.assertEqual($ok.fields["tag"], "1.2.0");
+    testing.assertEqual($ok.fields["outcome"], "published");
+    testing.assertEqual($ok.fields["status"], "201");
+    testing.assertEqual($ok.fields["ms"], "640");
+    testing.assertEqual($ok.fields["forgeCalls"], "14");
+    def failed as Event init publishAttempt("", "1.2.0", "https://x/a/b", "failed", 0, 9, 3);
+    testing.assertEqual($failed.level, WARN);
+    testing.assertEqual($failed.fields["outcome"], "failed");
+}
+
+func testARateLimitedPublishRecordsTheWait() {
+    def ev as Event init publishRateLimited("the forge is rate-limiting this registry", 1800);
+    testing.assertEqual($ev.level, WARN);
+    testing.assertEqual($ev.message, "publish refused");
+    testing.assertEqual($ev.fields["status"], "503");
+    testing.assertEqual($ev.fields["retryAfter"], "1800");
+}
