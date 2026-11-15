@@ -1169,23 +1169,20 @@ func manifestAt(fc as forge.Config, repository as string, tag as string, commit 
 # forge that failed. Not 502: Cloudflare replaces an origin's 502 and 504 with
 # its own page, so the reason never reached the client (2026-11-14, a publish
 # answered "error code: 502"); it leaves 503 alone. A rate-limited forge's wait
-# goes out as `Retry-After`. Takes the kind and message, not the error, since
-# a forge error is a `forge.ForgeError` struct, which an `Error` parameter
-# refuses.
-func sourceFailure(
-    ctx as web.Context,
-    kind as string,
-    message as string,
-    retryAfter as int,
-    repository as string,
-    tag as string) {
+# goes out as `Retry-After`; a refused registry credential is logged for the
+# operator as well (2026-11-15: an organisation policy refused the token, and
+# the publisher read "could not resolve the tag" as their own mistake).
+func sourceFailure(ctx as web.Context, e as forge.ForgeError, repository as string, tag as string) {
     def out as publishview.SourceRefusal init publishview.sourceRefusal(
         $repository,
         $tag,
-        $kind,
-        $message,
-        $retryAfter,
+        $e,
         not (strings.trim($forgeConfig.apiToken) == ""));
+    if ($out.credentialRefused) {
+        audit.write(
+            sinkOf($ctx),
+            audit.forgeCredentialRefused($forgeName, $e.status, $e.said, $e.message));
+    }
     if ($out.retryAfter > 0) {
         audit.write(sinkOf($ctx), audit.publishRateLimited($out.why, $out.retryAfter));
         notePublish($ctx, PUBLISH_STATUS_KEY, convert.toString($out.status));
@@ -1193,7 +1190,7 @@ func sourceFailure(
         webapi.fail($ctx, $out.status, $out.why);
         return;
     }
-    refusePublish($ctx, $out.status, $out.why);
+    refusePublishWith($ctx, $out.status, $out.why, $out.reason);
 }
 
 # refusePublish answers a publish that ends before `publishview` judges it, and
@@ -1201,13 +1198,25 @@ func sourceFailure(
 # when something in front of the registry rewrites the answer, and these
 # exits wrote nothing before (2026-11-14).
 func refusePublish(ctx as web.Context, status as int, why as string) {
+    refusePublishWith($ctx, $status, $why, "");
+}
+
+# refusePublishWith is `refusePublish` with a `reason` a client may act on
+# (`publishview.ABSENT_REASON`, `publishview.HOST_REASON`), sent beside `error`
+# so that it never has to match the message.
+func refusePublishWith(ctx as web.Context, status as int, why as string, reason as string) {
     audit.write(sinkOf($ctx), audit.publishRefused($why, $status));
     notePublish($ctx, PUBLISH_STATUS_KEY, convert.toString($status));
     if ($status == 401) {
         webapi.unauthorized($ctx, $why);
         return;
     }
-    webapi.fail($ctx, $status, $why);
+    if ($reason == "") {
+        webapi.fail($ctx, $status, $why);
+        return;
+    }
+    def reply as json.Value init json.set(json.map(), "/error", $why);
+    webapi.sendJson($ctx, $status, json.set($reply, "/reason", $reason));
 }
 
 # refusedRequest answers 400 and returns true when the repository or tag cannot
@@ -1217,7 +1226,12 @@ func refusedRequest(ctx as web.Context, repository as string, tag as string) {
     if ($problem == "") {
         return false;
     }
-    refusePublish($ctx, 400, $problem);
+    def reason as string init "";
+    if (forge.repositoryProblem($repository) == "" and
+        not $theForge.handles($forgeConfig, $repository)) {
+        $reason = publishview.HOST_REASON;
+    }
+    refusePublishWith($ctx, 400, $problem, $reason);
     return true;
 }
 
@@ -1589,13 +1603,27 @@ func apiPublish(ctx as web.Context) {
     } catch (err) {
         # A network failure reaching the forge is a net.NetError (jennifer
         # M28.65), a struct; so is every `absent` or "forge" error
-        # (`forge.ForgeError`), whose `retryAfter` is read only once the kind
-        # says it is one. `sourceFailure` takes the parts, not the error.
-        def wait as int init 0;
+        # (`forge.ForgeError`), whose other fields are read only once the kind
+        # says it is one. Anything else is passed on by kind and message.
+        def e as forge.ForgeError init forge.ForgeError{
+            kind: $err.kind,
+            message: $err.message,
+            status: 0,
+            retryAfter: 0,
+            credential: "",
+            said: ""
+        };
         if ($err.kind == forge.ABSENT or $err.kind == "forge") {
-            $wait = $err.retryAfter;
+            $e = forge.ForgeError{
+                kind: $err.kind,
+                message: $err.message,
+                status: $err.status,
+                retryAfter: $err.retryAfter,
+                credential: $err.credential,
+                said: $err.said
+            };
         }
-        sourceFailure($ctx, $err.kind, $err.message, $wait, $repository, $tag);
+        sourceFailure($ctx, $e, $repository, $tag);
         return;
     }
     # The lock is taken after the forge calls, so a slow forge cannot serialise

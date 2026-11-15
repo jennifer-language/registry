@@ -467,7 +467,19 @@ A). Success is `201`:
 | `403` | the scope is not registered or not the caller's; the token or binding does not cover this deck; the forge does not confirm push access |
 | `409` | that version, build metadata aside, is already published |
 | `501` | a bearer token without the login surface, or an identity token without trusted publishing |
-| `503` | the forge could not be read or reached, or is rate-limiting the registry; a rate limit carries `Retry-After` with the forge's wait |
+| `503` | the forge could not be read or reached, is rate-limiting the registry (with `Retry-After`, the forge's wait), or refused the registry's own credential (`REGISTRY_FORGE_TOKEN` expired, revoked, or forbidden by an organisation's policy: the registry's to fix, not the repository's) |
+
+A refusal is `{"error": "<why>"}`. When the forge's own error message explains
+it, the reason quotes it, cut to 200 printable characters; a message holding
+the token the registry sent is never passed on. Two refusals add `reason`, so a
+client can act on them without reading the message:
+
+| `reason` | Status | When |
+| -------- | ------ | ---- |
+| `absent` | `400` | the forge has no such repository, or no such tag in it (a private repository the registry cannot see looks the same) |
+| `host` | `400` | the repository is on a host this registry does not read from |
+
+`jvc` suggests publishing from another remote only for these two.
 
 The credential is checked before any forge call, and the version-conflict `409`
 comes after every authorisation check, so a stranger cannot learn which versions

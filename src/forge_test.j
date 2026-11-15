@@ -347,3 +347,48 @@ func testAFailureKeepsItsKindStatusAndWait() {
     testing.assertEqual($unasked.status, 0);
     testing.assertEqual($unasked.kind, "forge");
 }
+
+# --- a refused registry credential ----------------------------------------------
+
+func testWhoseTokenARequestCarries() {
+    def c as Config init serviceCfg("service-token");
+    testing.assertEqual(credentialOf($c, "caller"), CALLER_CRED);
+    testing.assertEqual(credentialOf($c, ""), REGISTRY_CRED);
+    testing.assertEqual(credentialOf(serviceCfg(""), ""), "");
+}
+
+func testOnlyTheRegistrysOwnTokenRefusedIsTheRegistrysProblem() {
+    def e as ForgeError init answered(
+        403,
+        {},
+        '{"message":"The org forbids this token"}',
+        REGISTRY_CRED,
+        "ghp_service",
+        "could not resolve the tag 1",
+        0);
+    testing.assertTrue(credentialRefused($e));
+    testing.assertEqual($e.said, "The org forbids this token");
+    $e.status = 401;
+    testing.assertTrue(credentialRefused($e));
+    # the caller's token, no token, a rate limit, or another status: not this
+    $e.credential = CALLER_CRED;
+    testing.assertFalse(credentialRefused($e));
+    $e.credential = "";
+    testing.assertFalse(credentialRefused($e));
+    $e.credential = REGISTRY_CRED;
+    $e.retryAfter = 60;
+    testing.assertFalse(credentialRefused($e));
+    $e.retryAfter = 0;
+    $e.status = 404;
+    testing.assertFalse(credentialRefused($e));
+}
+
+func testWhatTheForgeSaidIsPrintableAndNeverTheToken() {
+    def raw as string init "line one\nline two" + convert.fromCodepoint(27) + "[31m";
+    def body as string init json.encode(json.map({"message": $raw}));
+    testing.assertEqual(saidBy($body, ""), "line one line two [31m");
+    # a forge echoing the token it was sent: nothing is passed on
+    testing.assertEqual(saidBy('{"message":"bad token ghp_secret123"}', "ghp_secret123"), "");
+    testing.assertEqual(len(saidBy('{"message":"' + strings.repeat("y", 400) + '"}', "")), 203);
+    testing.assertEqual(saidBy("<html>", ""), "");
+}

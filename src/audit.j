@@ -669,6 +669,27 @@ export func publishRefused(reason as string, status as int) {
 }
 
 /**
+ * The forge refused the registry's own token (`REGISTRY_FORGE_TOKEN`): it
+ * expired, was revoked, or an organisation's policy forbids it. Every publish
+ * reading that organisation fails until the operator replaces it, so it logs
+ * at warn with what the forge said. The token itself is not a parameter.
+ * @param forge {string} the forge's name
+ * @param status {int} the status it answered (401 or 403)
+ * @param said {string} its own error message, already cut and printable
+ * @param what {string} the read that was refused
+ * @return {Event} the event
+ */
+export func forgeCredentialRefused(forge as string, status as int, said as string, what as string) {
+    def f as map of string to string init {
+        "forge": $forge,
+        "status": convert.toString($status),
+        "message": $said,
+        "read": $what
+    };
+    return Event{level: WARN, message: "forge credential refused", fields: $f};
+}
+
+/**
  * A publish was refused because the forge is rate-limiting the registry: the
  * `publishRefused` record plus the wait the client was told (`Retry-After`).
  * @param reason {string} what the caller was told

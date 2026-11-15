@@ -332,3 +332,17 @@ func testARateLimitedPublishRecordsTheWait() {
     testing.assertEqual($ev.fields["status"], "503");
     testing.assertEqual($ev.fields["retryAfter"], "1800");
 }
+
+func testARefusedForgeCredentialIsAWarningForTheOperator() {
+    def ev as Event init forgeCredentialRefused(
+        "github",
+        403,
+        "The 'deckyard' organization forbids access",
+        "could not resolve the tag 0.3.0");
+    testing.assertEqual($ev.level, WARN);
+    testing.assertEqual($ev.message, "forge credential refused");
+    testing.assertEqual($ev.fields["forge"], "github");
+    testing.assertEqual($ev.fields["status"], "403");
+    testing.assertContains($ev.fields["message"], "organization forbids");
+    testing.assertEqual($ev.fields["read"], "could not resolve the tag 0.3.0");
+}

@@ -156,3 +156,42 @@ func testARateLimitedReadThrowsTheForgesWait() {
     testing.assertTrue($wait > 1790);
     task.wait($server);
 }
+
+# serveRefusal answers one request the way GitHub answers a token an
+# organisation's policy forbids.
+func serveRefusal(srv as httpd.Server) {
+    def req as httpd.Request init httpd.accept($srv);
+    httpd.setHeader($req, "Content-Type", "application/json; charset=utf-8");
+    httpd.setHeader($req, "x-ratelimit-remaining", "4990");
+    def said as string init "The 'deckyard' organization forbids access via a fine-grained " +
+        "personal access tokens if the token's lifetime is greater than 366 days.";
+    httpd.respond($req, 403, json.encode(json.map({"message": $said, "documentation_url": "x"})));
+    return null;
+}
+
+func testARefusedServiceTokenIsTheRegistrys() {
+    def srv as httpd.Server init httpd.listen("127.0.0.1:0");
+    defer httpd.shutdown($srv);
+    def server as task of null init spawn {
+        return serveRefusal($srv);
+    };
+    def c as forge.Config init cfg();
+    $c.baseUrl = "http://" + httpd.address($srv);
+    $c.apiToken = "github_pat_service";
+    def credential as string init "";
+    def said as string init "";
+    def refused as bool init false;
+    try {
+        resolveTag($c, "https://github.com/deckyard/deck-routeros", "0.3.0");
+    } catch (e) {
+        testing.assertEqual($e.status, 403);
+        testing.assertEqual($e.retryAfter, 0);
+        $credential = $e.credential;
+        $said = $e.said;
+        $refused = forge.credentialRefused($e);
+    }
+    task.wait($server);
+    testing.assertEqual($credential, forge.REGISTRY_CRED);
+    testing.assertTrue($refused);
+    testing.assertContains($said, "organization forbids access via a fine-grained");
+}

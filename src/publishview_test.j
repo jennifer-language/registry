@@ -954,17 +954,35 @@ func testExactlyOneManifestIsChosen() {
 
 # --- forge failures -------------------------------------------------------------
 
+func forgeError(kind as string, status as int, message as string) {
+    return forge.ForgeError{
+        kind: $kind,
+        message: $message,
+        status: $status,
+        retryAfter: 0,
+        credential: "",
+        said: ""
+    };
+}
+
 func testAMissingTagIsThePublishersToFix() {
     def r as SourceRefusal init sourceRefusal(
         "https://github.com/acme/deck-x",
         "1.0.0",
-        "absent",
-        "could not resolve the tag 1.0.0: the forge answered 404",
-        0,
+        forgeError("absent", 404, "could not resolve the tag 1.0.0: the forge answered 404"),
         false);
     testing.assertEqual($r.status, 400);
     testing.assertContains($r.why, "push it there first");
     testing.assertEqual($r.retryAfter, 0);
+    # the one refusal a client may answer with "publish from another remote"
+    testing.assertEqual($r.reason, ABSENT_REASON);
+    def bad as SourceRefusal init sourceRefusal(
+        "https://x/a/b",
+        "1",
+        forgeError("manifest", 0, "no deck.toml"),
+        true);
+    testing.assertEqual($bad.status, 400);
+    testing.assertEqual($bad.reason, "");
 }
 
 func testAFailedForgeIsA503NeverA502() {
@@ -972,32 +990,36 @@ func testAFailedForgeIsA503NeverA502() {
     def r as SourceRefusal init sourceRefusal(
         "https://github.com/acme/deck-x",
         "1.0.0",
-        "forge",
-        "could not read the repository: the forge answered 500",
-        0,
+        forgeError("forge", 500, "could not read the repository: the forge answered 500"),
         true);
     testing.assertEqual($r.status, 503);
     testing.assertContains($r.why, "answered 500");
+    testing.assertEqual($r.reason, "");
     def net as SourceRefusal init sourceRefusal(
         "https://x/a/b",
         "1.0.0",
-        "net",
-        "refused",
-        0,
+        forgeError("net", 0, "refused"),
         true);
     testing.assertEqual($net.status, 503);
     testing.assertContains($net.why, "could not reach the forge");
-    def slow as SourceRefusal init sourceRefusal("https://x/a/b", "1.0.0", "timeout", "t", 0, true);
+    def slow as SourceRefusal init sourceRefusal(
+        "https://x/a/b",
+        "1.0.0",
+        forgeError("timeout", 0, "t"),
+        true);
     testing.assertEqual($slow.status, 503);
 }
 
 func testARateLimitedForgeIsA503WithItsWait() {
+    def e as forge.ForgeError init forgeError(
+        "forge",
+        403,
+        "could not read deck.toml at 59ffb51: the forge answered 403");
+    $e.retryAfter = 1800;
     def anon as SourceRefusal init sourceRefusal(
         "https://github.com/deckyard/deck-forgejo.git",
         "0.4.0",
-        "forge",
-        "could not read deck.toml at 59ffb51: the forge answered 403",
-        1800,
+        $e,
         false);
     testing.assertEqual($anon.status, 503);
     testing.assertEqual($anon.retryAfter, 1800);
@@ -1005,7 +1027,41 @@ func testARateLimitedForgeIsA503WithItsWait() {
     testing.assertContains($anon.why, "retry in 1800 s");
     # an anonymous registry tells its operator how to raise the limit
     testing.assertContains($anon.why, "REGISTRY_FORGE_TOKEN");
-    def withToken as SourceRefusal init sourceRefusal("https://x/a/b", "1", "forge", "m", 60, true);
+    $e.retryAfter = 60;
+    def withToken as SourceRefusal init sourceRefusal("https://x/a/b", "1", $e, true);
     testing.assertEqual($withToken.retryAfter, 60);
     testing.assertFalse(strings.contains($withToken.why, "REGISTRY_FORGE_TOKEN"));
+    testing.assertFalse($withToken.credentialRefused);
+}
+
+func testARefusedRegistryCredentialIsTheRegistrysProblem() {
+    # 2026-11-15: an organisation policy refused REGISTRY_FORGE_TOKEN and the
+    # publisher was told "could not resolve the tag", read as a wrong repository
+    def e as forge.ForgeError init forgeError(
+        "forge",
+        403,
+        "could not resolve the tag 0.3.0: the forge answered 403");
+    $e.credential = forge.REGISTRY_CRED;
+    $e.said = "The 'deckyard' organization forbids access via a fine-grained personal access " +
+        "tokens if the token's lifetime is greater than 366 days.";
+    def r as SourceRefusal init sourceRefusal(
+        "https://github.com/deckyard/deck-routeros.git",
+        "0.3.0",
+        $e,
+        true);
+    testing.assertEqual($r.status, 503);
+    testing.assertTrue($r.credentialRefused);
+    testing.assertEqual($r.reason, "");
+    testing.assertContains($r.why, "refused the registry's own credential (403: The 'deckyard'");
+    testing.assertContains($r.why, "this is a registry problem, not your repository");
+    testing.assertContains($r.why, "the operator has been told in the log");
+    testing.assertFalse(strings.contains($r.why, "could not resolve the tag"));
+    # the same status on the caller's own token, or with no token, is not this
+    $e.credential = forge.CALLER_CRED;
+    testing.assertFalse(sourceRefusal("https://x/a/b", "1", $e, true).credentialRefused);
+    $e.credential = "";
+    def anon as SourceRefusal init sourceRefusal("https://x/a/b", "1", $e, false);
+    testing.assertFalse($anon.credentialRefused);
+    # any other failure passes on what the forge said
+    testing.assertContains($anon.why, "(the forge said: The 'deckyard' organization");
 }

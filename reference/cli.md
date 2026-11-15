@@ -189,6 +189,15 @@ It is `info` when published and `warn` otherwise. A refusal also has its
 `publish refused` line with the `reason` the client was told; a rate-limited
 forge adds `retryAfter`, the seconds sent as `Retry-After`.
 
+**`forge credential refused`** (warn) means the forge answered `401` or `403`
+to a read made with `REGISTRY_FORGE_TOKEN`: the token expired, was revoked, or
+an organisation's policy forbids it (GitHub: "The '<org>' organization forbids
+access via a fine-grained personal access tokens if the token's lifetime is
+greater than 366 days"). Fields: `forge`, `status`, `message` (the forge's own
+words) and `read` (what was being read). Every publish from that organisation
+fails with a `503` telling the publisher it is the registry's problem until the
+token is replaced.
+
 ### Outbound calls
 
 Every request the registry makes to the forge or the identity provider that

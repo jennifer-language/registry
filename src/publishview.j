@@ -227,12 +227,28 @@ export func missingTag(repository as string, tag as string) {
  *     a forge that failed (never 502 or 504, which a CDN replaces)
  * @field why {string} the reason, for the client and the log
  * @field retryAfter {int} seconds for a `Retry-After` header, 0 for none
+ * @field reason {string} what a client may act on, sent as the reply's
+ *     `reason`: `ABSENT_REASON` when the forge has no such repository or tag
+ *     (the publisher may be publishing from the wrong remote), else ""
+ * @field credentialRefused {bool} the forge refused the registry's own token:
+ *     the operator's to fix, logged as `forge credential refused`
  */
 export def struct SourceRefusal {
     status as int,
     why as string,
-    retryAfter as int
+    retryAfter as int,
+    reason as string,
+    credentialRefused as bool
 };
+
+/** `SourceRefusal.reason` when the forge has no such repository or tag. */
+export def const ABSENT_REASON as string init "absent";
+
+/**
+ * The publish refusal's `reason` when the repository is on a host this
+ * registry does not read from (`Forge.handles`).
+ */
+export def const HOST_REASON as string init "host";
 
 /**
  * The answer to a publish whose forge reads threw. Pure.
@@ -242,54 +258,77 @@ export def struct SourceRefusal {
  * rate-limiting the registry is a 503 with the forge's wait as `Retry-After`,
  * and, when the registry reads anonymously, says that a forge token raises the
  * limit (GitHub allows 60 anonymous requests an hour, and a publish makes
- * about a dozen).
+ * about a dozen). A forge that refused the registry's own token is a 503 that
+ * says the registry, not the repository, is at fault. Whatever the forge said
+ * (`ForgeError.said`, printable, at most 200 characters, never a token) is
+ * passed on.
  * @param repository {string} the repository URL
  * @param tag {string} the tag
- * @param kind {string} the error kind: `absent`, "manifest", "forge", "net"
- *     (the forge was not reached), or another transport kind ("timeout",
- *     "closed", "http", "limit", ...)
- * @param message {string} the error's message
- * @param retryAfter {int} the forge's wait for a rate limit, else 0
+ * @param e {forge.ForgeError} the error; any other error is passed as one with
+ *     its kind and message (`absent`, "manifest", "forge", "net" for a forge
+ *     not reached, or another transport kind: "timeout", "closed", ...)
  * @param hasToken {bool} whether the registry reads with a forge token
  * @return {SourceRefusal} the status, the reason, and the wait
  */
 export func sourceRefusal(
     repository as string,
     tag as string,
-    kind as string,
-    message as string,
-    retryAfter as int,
+    e as forge.ForgeError,
     hasToken as bool) {
-    if ($kind == "absent" or $kind == "manifest") {
-        def why as string init $message;
-        if (strings.startsWith($why, "could not resolve the tag")) {
-            $why = missingTag($repository, $tag);
-        }
-        return SourceRefusal{status: 400, why: $why, retryAfter: 0};
-    }
-    if ($kind == "net") {
-        # A net.NetError: the forge was not reached at all.
-        return SourceRefusal{
-            status: 503,
-            why: "could not reach the forge for " + $repository + " at " + $tag + ": " +
-                $message,
-            retryAfter: 0
-        };
-    }
-    if ($retryAfter > 0) {
-        def why as string init "the forge is rate-limiting this registry (" + $message +
-            "); retry in " + convert.toString($retryAfter) + " s";
-        if (not $hasToken) {
-            $why = $why + ". The registry reads the forge without a token; its operator " +
-                "can raise the limit by setting REGISTRY_FORGE_TOKEN";
-        }
-        return SourceRefusal{status: 503, why: $why, retryAfter: $retryAfter};
-    }
-    return SourceRefusal{
+    def out as SourceRefusal init SourceRefusal{
         status: 503,
-        why: "could not read " + $repository + " at " + $tag + ": " + $message,
-        retryAfter: 0
+        why: "",
+        retryAfter: 0,
+        reason: "",
+        credentialRefused: false
     };
+    if ($e.kind == forge.ABSENT or $e.kind == "manifest") {
+        $out.status = 400;
+        $out.why = $e.message;
+        if ($e.kind == forge.ABSENT) {
+            $out.reason = ABSENT_REASON;
+        }
+        if (strings.startsWith($out.why, "could not resolve the tag")) {
+            $out.why = missingTag($repository, $tag);
+        }
+        return $out;
+    }
+    if ($e.kind == "net") {
+        # A net.NetError: the forge was not reached at all.
+        $out.why = "could not reach the forge for " + $repository + " at " + $tag + ": " +
+            $e.message;
+        return $out;
+    }
+    if ($e.retryAfter > 0) {
+        $out.retryAfter = $e.retryAfter;
+        $out.why = "the forge is rate-limiting this registry (" + $e.message + "); retry in " +
+            convert.toString($e.retryAfter) + " s";
+        if (not $hasToken) {
+            $out.why = $out.why + ". The registry reads the forge without a token; its " +
+                "operator can raise the limit by setting REGISTRY_FORGE_TOKEN";
+        }
+        return $out;
+    }
+    if (forge.credentialRefused($e)) {
+        $out.credentialRefused = true;
+        $out.why = "the forge refused the registry's own credential (" +
+            convert.toString($e.status) + saidPart($e.said, ": ") + "); this is a registry " +
+            "problem, not your repository; the operator has been told in the log";
+        return $out;
+    }
+    $out.why = "could not read " + $repository + " at " + $tag + ": " + $e.message +
+        saidPart($e.said, " (the forge said: ");
+    if (not ($e.said == "")) {
+        $out.why = $out.why + ")";
+    }
+    return $out;
+}
+
+func saidPart(said as string, lead as string) {
+    if ($said == "") {
+        return "";
+    }
+    return $lead + $said;
 }
 
 /**

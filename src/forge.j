@@ -245,13 +245,111 @@ export func kindOf(status as int) {
  * @field status {int} the HTTP status the forge answered with; 0 when it was not asked
  * @field retryAfter {int} seconds until the forge will answer again when it
  *     refused for a rate limit (`rateLimitWait`), else 0
+ * @field credential {string} whose token the request carried: `REGISTRY_CRED`
+ *     (the registry's own `Config.apiToken`), `CALLER_CRED` (the publisher's,
+ *     in a permission check), or "" (none)
+ * @field said {string} the forge's own error message (`saidBy`), "" when none
  */
 export def struct ForgeError {
     kind as string,
     message as string,
     status as int,
-    retryAfter as int
+    retryAfter as int,
+    credential as string,
+    said as string
 };
+
+/** `ForgeError.credential` when the request carried the registry's own token. */
+export def const REGISTRY_CRED as string init "registry";
+/** `ForgeError.credential` when it carried the publisher's token. */
+export def const CALLER_CRED as string init "caller";
+
+/**
+ * Whose token a request carries: the caller's when one is given (a permission
+ * check asks with it), else the registry's own when configured, else none.
+ * Every adapter picks its `Authorization` header the same way. Pure.
+ * @param cfg {Config} the forge configuration
+ * @param callerToken {string} the caller's token, or ""
+ * @return {string} `CALLER_CRED`, `REGISTRY_CRED`, or ""
+ */
+export func credentialOf(cfg as Config, callerToken as string) {
+    if (not ($callerToken == "")) {
+        return CALLER_CRED;
+    }
+    if (not (strings.trim($cfg.apiToken) == "")) {
+        return REGISTRY_CRED;
+    }
+    return "";
+}
+
+/**
+ * The forge's own error message from a JSON error body (`outbound.messageOf`:
+ * at most 200 characters), with every control character made a space so it can
+ * go into a reply, and "" if it contains `secret`, so a forge echoing the token
+ * it was sent cannot hand it on. Pure.
+ * @param body {string} the response body
+ * @param secret {string} the token the request carried, or ""
+ * @return {string} the message, or ""
+ */
+export func saidBy(body as string, secret as string) {
+    def said as string init outbound.messageOf($body);
+    if (not (strings.trim($secret) == "") and strings.contains($said, strings.trim($secret))) {
+        return "";
+    }
+    def out as list of string init [];
+    for (def c in strings.chars($said)) {
+        def cp as int init convert.toCodepoint($c);
+        if ($cp < 32 or ($cp >= 127 and $cp < 160) or $cp == 8232 or $cp == 8233) {
+            $out[] = " ";
+        } else {
+            $out[] = $c;
+        }
+    }
+    return strings.trim(strings.join($out, ""));
+}
+
+/**
+ * The error for a forge answer that is not the one wanted, with whose token
+ * was refused and what the forge said. Pure.
+ * @param status {int} the HTTP status
+ * @param headers {map of string to string} the response headers, keys lowercased
+ * @param body {string} the response body (only its error message is kept)
+ * @param credential {string} whose token the request carried (`credentialOf`)
+ * @param secret {string} that token, so it is never kept (`saidBy`)
+ * @param message {string} what failed
+ * @param now {int} the current time (Unix seconds)
+ * @return {ForgeError} kind `kindOf(status)`, with `retryAfter` set for a rate limit
+ */
+export func answered(
+    status as int,
+    headers as map of string to string,
+    body as string,
+    credential as string,
+    secret as string,
+    message as string,
+    now as int) {
+    return ForgeError{
+        kind: kindOf($status),
+        message: $message,
+        status: $status,
+        retryAfter: rateLimitWait($status, $headers, $now),
+        credential: $credential,
+        said: saidBy($body, $secret)
+    };
+}
+
+/**
+ * Whether a forge refused the registry's own token: a `401` or `403` that is
+ * not a rate limit, on a request made with `Config.apiToken`. The request was
+ * fine and the registry is misconfigured (an expired token, or one an
+ * organisation's policy forbids), so a publish is a 503 that says so. Pure.
+ * @param e {ForgeError} the error
+ * @return {bool} true when the registry's credential was refused
+ */
+export func credentialRefused(e as ForgeError) {
+    return ($e.status == 401 or $e.status == 403) and $e.retryAfter == 0 and
+        $e.credential == REGISTRY_CRED;
+}
 
 /**
  * The error for a forge answer that is not the one wanted. Pure.
@@ -266,12 +364,7 @@ export func failure(
     headers as map of string to string,
     message as string,
     now as int) {
-    return ForgeError{
-        kind: kindOf($status),
-        message: $message,
-        status: $status,
-        retryAfter: rateLimitWait($status, $headers, $now)
-    };
+    return answered($status, $headers, "", "", "", $message, $now);
 }
 
 /**
@@ -280,7 +373,14 @@ export func failure(
  * @return {ForgeError} kind "forge", status 0
  */
 export func complaint(message as string) {
-    return ForgeError{kind: "forge", message: $message, status: 0, retryAfter: 0};
+    return ForgeError{
+        kind: "forge",
+        message: $message,
+        status: 0,
+        retryAfter: 0,
+        credential: "",
+        said: ""
+    };
 }
 
 # The wait assumed for a rate limit that names no time, and the longest one
