@@ -49,6 +49,15 @@ From a terminal, the same search is available as JSON:
 curl 'https://example.registry/search?q=router'
 ```
 
+## Following new decks
+
+New and updated decks are a feed: `/feed.atom` (Atom) or `/feed.rss` (RSS), or
+one publisher's at `/feed/@<scope>.atom`. Each item is one published version,
+marked `new` for a deck's first version and `updated` for a later one. A feed
+shows what was published in the last 30 days, at most 50 items and at least
+the latest 10; `?days=` (up to 365) and `?limit=` (up to 100) change that.
+Yanked versions are left out.
+
 ## Deck names
 
 A registry deck name is always scoped: `@scope/deck`, as in

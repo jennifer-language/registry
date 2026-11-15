@@ -586,6 +586,30 @@ func testAScopePageListsTheScopesDecks() {
     testing.assertContains($page.body, "@acme/two");
 }
 
+func testEveryPageHeadAdvertisesTheFeed() {
+    for (def body in [home(emptyDb(), NOW).body, notFound("gone").body]) {
+        def head as string init $body[0..strings.indexOf($body, "</head>")];
+        testing.assertContains(
+            $head,
+            '<link rel="alternate" type="application/atom+xml" ' +
+                'title="Jennifer registry: new and updated decks" href="/feed.atom">');
+        testing.assertContains($head, 'type="application/rss+xml"');
+    }
+    testing.assertContains(home(emptyDb(), NOW).body, '<a href="/feed.atom">Atom</a>');
+}
+
+func testAScopePageAdvertisesItsOwnFeed() {
+    def body as string init scope(
+        taggedDb(),
+        search.index(taggedDb()),
+        "acme",
+        1,
+        DEFAULT_PAGE_SIZE).body;
+    def head as string init $body[0..strings.indexOf($body, "</head>")];
+    testing.assertContains($head, 'href="/feed/@acme.atom"');
+    testing.assertContains($body, '<a href="/feed/@acme.rss">RSS</a>');
+}
+
 func testAnUnknownScopeIs404() {
     testing.assertEqual(
         scope(taggedDb(), search.index(taggedDb()), "nobody", 1, DEFAULT_PAGE_SIZE).status,

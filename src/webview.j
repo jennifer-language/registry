@@ -377,12 +377,34 @@ tr.is-yanked td:first-child { text-decoration: line-through; }
 # layout wraps a page body in the site chrome. `title` is plain text and is
 # escaped here; `body` is markup with everything untrusted already escaped.
 func layout(title as string, body as string) {
+    return layoutFeeds($title, $body, "");
+}
+
+# FEED_LINKS points feed readers at the registry's feed (`feedview`) from every
+# page's head.
+def const FEED_LINKS as string init '<link rel="alternate" type="application/atom+xml" ' +
+    'title="Jennifer registry: new and updated decks" href="/feed.atom">
+<link rel="alternate" type="application/rss+xml" ' +
+    'title="Jennifer registry: new and updated decks (RSS)" href="/feed.rss">';
+
+# scopeFeedLinks is the head links of one scope's feed, for its page. `folded`
+# is a folded, valid scope; it is escaped all the same.
+func scopeFeedLinks(folded as string) {
+    def safe as string init esc($folded);
+    return '
+<link rel="alternate" type="application/atom+xml" title="@' + $safe +
+        ': new and updated decks" href="/feed/@' + $safe + '.atom">';
+}
+
+# layoutFeeds is `layout` with more feed links in the head (`extra`, markup).
+func layoutFeeds(title as string, body as string, extra as string) {
     return '<!doctype html>
 <html lang="en" class="no-js">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>' + esc($title) + '</title>
+' + FEED_LINKS + $extra + '
 <style>' + STYLE + '</style>
 <script>' + THEME_SCRIPT +
         '</script>
@@ -516,7 +538,9 @@ export func homeFrom(total as int, picks as json.Value) {
         '<nav class="ways" aria-label="Find decks">' +
         wayCard("/browse", BROWSE_ICON, "Browse", "All " + $count + ", by name") +
         wayCard("/tags", TAG_ICON, "Tags", "Decks grouped by what they are for") +
-        '</nav>' + featuredSection(featured.fromJson($picks));
+        '</nav>' + featuredSection(featured.fromJson($picks)) +
+        '<p class="muted">New and updated decks as a feed: ' +
+        '<a href="/feed.atom">Atom</a> or <a href="/feed.rss">RSS</a>.</p>';
     return Page{status: 200, body: layout("Jennifer registry", $body)};
 }
 
@@ -1157,7 +1181,10 @@ export func scopeIn(
     $body = $body + '<h2>Decks (' + convert.toString($count) + ')</h2>';
     def none as string init "Nothing is published under this scope yet.";
     $body = $body + pageOf($index, $decks, $page, $size, "/scope/" + $safe + "?", $none);
-    return Page{status: 200, body: layout("@" + $folded, $body)};
+    $body = $body + '<p class="muted">New and updated decks of @' + $safe + ' as a feed: ' +
+        '<a href="/feed/@' + $safe + '.atom">Atom</a> or <a href="/feed/@' + $safe +
+        '.rss">RSS</a>.</p>';
+    return Page{status: 200, body: layoutFeeds("@" + $folded, $body, scopeFeedLinks($folded))};
 }
 
 # scopeFacts renders who holds a scope. Logins only, never subject ids.
