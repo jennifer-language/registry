@@ -123,7 +123,7 @@ failure; a failed first issuance leaves the registry on plain HTTP with an
 | `REGISTRY_TLS_RENEW_BEFORE_DAYS` | `30` | `serve` | how early to renew |
 | `REGISTRY_FORGE` | `github` | `serve` | which forge module: `github`, `gitlab`, `gitea`, `forgejo` |
 | `REGISTRY_FORGE_BASEURL` | unset | `serve` | the forge's API root, for a self-hosted instance |
-| `REGISTRY_FORGE_TOKEN` | unset | `serve` | a service token, where the forge needs one to read |
+| `REGISTRY_FORGE_TOKEN` | unset | `serve` | a service token, where the forge needs one to read; on GitHub, also what lifts the read limit (below) |
 | `REGISTRY_FORGE_HOST` | unset | `serve` | the hostname whose URLs this forge claims |
 | `REGISTRY_MAX_IN_FLIGHT` | `32` | `serve` | requests worked on at once (below) |
 | `REGISTRY_RESPOND_TIMEOUT` | `120` | `serve` | seconds before the server answers `503` itself (below) |
@@ -158,6 +158,58 @@ and a proxy that appends (the usual setting) leaves a forged one in front.
 `info` far more often than the rest of `debug`, and a container with a 30-second
 health probe otherwise fills its log with probes.
 
+### Request ids
+
+Every request gets an id: Cloudflare's `CF-Ray` when the request carries one
+(letters, digits and `-`, at most 64), else 16 random hex digits. It is sent
+back as `X-Request-Id`, and every line the request writes carries it as
+`request=`, so one publish's lines are found with
+`grep 'request=a5b027ff28098e61-VIE' data/registry.log`. Behind Cloudflare the
+id is the ray id `jvc` prints for a Cloudflare error page (`[answered by
+cloudflare, request ...]`), so a reply Cloudflare replaced can still be
+traced. The one line without it is `handler failed`, which the engine writes
+after the request is gone.
+
+### What a publish logs
+
+Each publish attempt ends with one `publish attempt` line, however it ends, so
+an attempt with no other trace shows by this line, and one that never reached
+the registry by its absence:
+
+| Field | Value |
+| ----- | ----- |
+| `deck` | the deck the manifest names, "" when the manifest was not read |
+| `tag`, `repository` | what the publish asked for |
+| `outcome` | `published`; `refused` (any answer the registry gave, with `status`); `failed` (the handler threw, `status=0`) |
+| `status` | the HTTP status answered |
+| `ms` | how long the attempt took |
+| `forgeCalls` | how many forge requests it made |
+
+It is `info` when published and `warn` otherwise. A refusal also has its
+`publish refused` line with the `reason` the client was told; a rate-limited
+forge adds `retryAfter`, the seconds sent as `Retry-After`.
+
+### Outbound calls
+
+Every request the registry makes to the forge or the identity provider that
+fails is one `outbound call failed` line at `warn`; the rest are `debug`, so
+they show only at `REGISTRY_LOG_LEVEL=debug`. A `404` is not a failure: it is
+how the registry asks whether a manifest name, a ref or a file exists.
+
+| Field | Value |
+| ----- | ----- |
+| `service` | `github`, `gitea`, `gitlab`, or `identity` |
+| `method`, `path` | the request, without host or query string (a query can carry a token) |
+| `status` | the status the service answered, `0` when it did not answer |
+| `ms` | how long the call took |
+| `kind` | `status` for an answer that is not wanted; else the error kind: `net` (with `reason`, `sent` and `replied` from the `net.NetError`), `timeout`, `closed`, `limit`, `http` |
+| `x-github-request-id` | GitHub's id for the request, to quote to GitHub support |
+| `x-ratelimit-remaining`, `x-ratelimit-reset`, `retry-after` | the rate-limit headers, when sent (GitLab's `ratelimit-*` too) |
+| `message` | the first 200 characters of the service's own error `message` |
+
+No line holds a header the registry sent, a token, or a response body other
+than that error message.
+
 **`REGISTRY_IDENTITY_CLIENTID` and `REGISTRY_TOKEN_KEY` gate the login surface.**
 Set both and the registry serves the token exchange, `POST /claim`, `/owners`,
 `/yank` and `/unyank`, and advertises them; leave either unset and those routes
@@ -182,6 +234,18 @@ every publish and make the registry unavailable whenever the issuer is.
 `REGISTRY_FORGE*` configures how a publish reads a repository: resolving a tag to a
 commit and reading the manifest at it. Identity and forge are configured
 separately; they coincide only on `github.com`.
+
+**Set `REGISTRY_FORGE_TOKEN` on GitHub, even for public repositories.** Without
+it the registry reads anonymously, and GitHub allows 60 anonymous requests an
+hour per address. A publish makes about a dozen forge reads (a tag, the ref
+checks, four manifest names, the repository, the README, the entry module), so
+the fifth publish within an hour runs out. GitHub then answers `403` with
+`x-ratelimit-remaining: 0`, and the publish is answered `503` with a
+`Retry-After` taken from GitHub's reset time and a reason that names this
+setting. A fine-grained token with read-only access to public repositories is
+enough, and raises the limit to 5,000 an hour. A `429`, or a `403` with
+`retry-after` (GitHub's secondary limit, GitLab, Gitea and Forgejo), is treated
+the same way.
 
 A missing database file opens as an empty registry, so a first run needs no seed
 file.
@@ -251,9 +315,18 @@ Read-only: no form that writes anything, no session, no account UI.
 | `/tags`, `/tag/<keyword>` | the keywords in use, and the decks carrying one |
 | `/scope/<name>` | the decks under one scope |
 | `/deck/<scope>/<deck>` | a deck page: versions, pins, dependencies, engines, capabilities |
+| `/feed.atom`, `/feed.rss` | new and updated decks as a feed (`?limit=`, `?days=`; see [api.md](api.md#the-feeds)) |
+| `/feed/@<scope>.atom`, `.rss` | the same for one scope |
 | `/manual/` | the user manual: finding, using, and publishing decks |
 | `/reference/` | these pages, rendered |
 | `/specs/` | the server and client specifications |
+
+Every page's head links the Atom and RSS feeds (`rel="alternate"`), and a
+scope page its own; the front page and scope pages also link them in the text.
+The feeds' links and ids are absolute, built on `url` (`REGISTRY_URL`): set it.
+Behind Cloudflare, `.atom` and `.rss` are not cached by default; a Cache Rule
+for `/feed*` with "Eligible for cache" and the origin's cache-control lets the
+edge answer them for five minutes (keep the query string in the cache key).
 
 `/` and `/search` pick their format from the request's `Accept` header, so a
 browser and a client can share one URL. Deck pages sit under `/deck/` because

@@ -16,7 +16,8 @@ func cfg() {
         clientId: "registry",
         clientSecret: "",
         scopes: "",
-        metadata: ""
+        metadata: "",
+        trace: outbound.none()
     };
 }
 
@@ -34,7 +35,8 @@ func throwsWithoutABase() {
         clientId: "x",
         clientSecret: "",
         scopes: "",
-        metadata: ""
+        metadata: "",
+        trace: outbound.none()
     };
     endpointFor($blank, "user");
 }

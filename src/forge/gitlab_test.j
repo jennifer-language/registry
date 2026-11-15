@@ -12,7 +12,13 @@ use testing;
 use json;
 
 func cfg() {
-    return forge.Config{name: "gitlab", baseUrl: "", apiToken: "", host: ""};
+    return forge.Config{
+        name: "gitlab",
+        baseUrl: "",
+        apiToken: "",
+        host: "",
+        trace: outbound.none()
+    };
 }
 
 func doc(text as string) {

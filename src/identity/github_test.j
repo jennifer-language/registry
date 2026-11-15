@@ -16,7 +16,8 @@ func cfg() {
         clientId: "Iv1.abc",
         clientSecret: "",
         scopes: "",
-        metadata: ""
+        metadata: "",
+        trace: outbound.none()
     };
 }
 
@@ -83,7 +84,8 @@ func testEnterpriseOverridesTheBase() {
         clientId: "x",
         clientSecret: "",
         scopes: "",
-        metadata: ""
+        metadata: "",
+        trace: outbound.none()
     };
     testing.assertEqual(endpointFor($ent, "device"), "https://gh.corp.test/login/device/code");
 }
@@ -96,7 +98,8 @@ func testScopesDefaultButAreOverridable() {
         clientId: "x",
         clientSecret: "",
         scopes: "read:user",
-        metadata: ""
+        metadata: "",
+        trace: outbound.none()
     };
     testing.assertEqual(scopesFor($custom), "read:user");
 }

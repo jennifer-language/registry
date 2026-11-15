@@ -24,6 +24,8 @@ use strings;
 use httpd;
 use path;
 use task;
+use crypto;
+use encoding;
 import "flatdb.j" as flatdb;
 import "web.j" as web;
 import "webapi.j" as webapi;
@@ -60,6 +62,8 @@ import "../src/policy/derived.j" as derivedPolicy;
 import "../src/policy/firstcome.j" as firstcomePolicy;
 import "../src/reserved.j" as reserved;
 import "../src/throttle.j" as throttle;
+import "../src/outbound.j" as outbound;
+import "../src/feedview.j" as feedview;
 import "ratelimit.j" as ratelimit;
 
 # Configuration: defaults, then config.toml, then the environment, which wins.
@@ -139,6 +143,18 @@ if (not ($complaint == "")) {
 
 def dbPath as string init $cfg.dbPath;
 def addr as string init $cfg.addr;
+
+# The public base URL a feed's absolute links and ids are built on: the
+# configured `url`, else the first TLS name, else the plain listener. Not the
+# request's Host header, which a client chooses and a cache would keep.
+def feedBase as string init $cfg.canonicalUrl;
+if ($feedBase == "") {
+    if ($cfg.tls.enabled and len($cfg.tls.domains) > 0) {
+        $feedBase = "https://" + $cfg.tls.domains[0];
+    } else {
+        $feedBase = config.displayUrl("http", $addr);
+    }
+}
 
 # The operational log. The console sink is always on for the server; the file
 # is shared with `deckadmin`, so one file records both programs' events.
@@ -224,7 +240,8 @@ def auth as authview.Config init authview.Config{
         clientId: $cfg.identityClientId,
         clientSecret: $cfg.identitySecret,
         scopes: $cfg.identityScopes,
-        metadata: ""
+        metadata: "",
+        trace: outbound.none()
     },
     signingKey: convert.bytesFromString("utf-8", $cfg.tokenKey),
     tokenTtl: TOKEN_TTL,
@@ -291,8 +308,12 @@ def forgeConfig as forge.Config init forge.Config{
     name: $forgeName,
     baseUrl: $cfg.forgeBaseUrl,
     apiToken: $cfg.forgeToken,
-    host: $cfg.forgeHost
+    host: $cfg.forgeHost,
+    trace: outbound.none()
 };
+
+# Outbound calls per request, for the publish summary (`outbound.calls`).
+def outboundCalls as kv.Store init kv.open();
 
 # How a publish proves push access to its repository (7.1 route A): `login` asks
 # with the caller's own sealed provider token, `service` with the registry's
@@ -628,6 +649,77 @@ func siteSpecs(ctx as web.Context) {
 }
 
 /**
+ * GET /feed.atom: the feed of new and updated decks, Atom 1.0.
+ * @param ctx {web.Context} the request context
+ */
+func siteFeedAtom(ctx as web.Context) {
+    answerFeed($ctx, feedview.ATOM, "");
+}
+
+/**
+ * GET /feed.rss: the same feed, RSS 2.0.
+ * @param ctx {web.Context} the request context
+ */
+func siteFeedRss(ctx as web.Context) {
+    answerFeed($ctx, feedview.RSS, "");
+}
+
+/**
+ * GET /feed/@scope.atom and /feed/@scope.rss: one scope's feed.
+ * @param ctx {web.Context} the request context
+ */
+func siteScopeFeed(ctx as web.Context) {
+    def file as feedview.ScopeFile init feedview.scopeFile(web.param($ctx, "file"));
+    if (not $file.ok) {
+        webapi.notFound($ctx, "no such feed: " + web.path($ctx));
+        return;
+    }
+    answerFeed($ctx, $file.format, $file.scope);
+}
+
+# answerFeed answers a feed request (`feedview`). Not rate limited: it reads the
+# shared items, sorted once per change of the file (`sharedFeedItems`), and
+# walks at most `MAX_LIMIT` of them past the scope filter, about the cost of a
+# deck page, which is not limited either; with `Cache-Control` a cache in front
+# answers most requests. Errors are 400 (parameters) and 404 (scope); a throw
+# is the engine's 500. Nothing here answers 502 or 504.
+func answerFeed(ctx as web.Context, format as string, scope as string) {
+    def out as feedview.FeedReply init feedview.prepare(
+        sharedStore(),
+        sharedFeedItems(),
+        $format,
+        $scope,
+        web.rawQuery($ctx),
+        nowSeconds(),
+        $feedBase);
+    if (not ($out.status == 200)) {
+        webapi.fail($ctx, $out.status, $out.message);
+        return;
+    }
+    # One representation per URL, whatever the Accept header (`notModified`
+    # set `Vary: Accept` for the pages that have two).
+    web.setHeader($ctx, "Vary", "Accept-Encoding");
+    web.setHeader(
+        $ctx,
+        "Cache-Control",
+        "public, max-age=" + convert.toString(feedview.MAX_AGE_SECONDS));
+    if ($out.lastModified > 0) {
+        web.setHeader($ctx, "Last-Modified", feedview.httpDate($out.lastModified));
+    }
+    if (web.etag($ctx, $out.etag)) {
+        return;
+    }
+    # If-None-Match takes precedence: If-Modified-Since only counts without it.
+    if (web.header($ctx, "If-None-Match") == "" and
+        feedview.unchangedSince(web.header($ctx, "If-Modified-Since"), $out.lastModified)) {
+        web.respond($ctx, 304, "");
+        return;
+    }
+    web.setHeader($ctx, "Content-Type", $out.contentType);
+    web.respond($ctx, 200, feedview.render($out));
+}
+
+/**
  * GET /.well-known/jennifer-registry: the discovery document a client reads to
  * negotiate the API version before any other call.
  * @param ctx {web.Context} the request context
@@ -731,6 +823,27 @@ func sharedScopeMap() {
 # per request would cost what the index does.
 func sharedFeatured() {
     return sharedPart("featured");
+}
+
+# sharedFeedItems is every feed item, sorted (`feedview.collect`), built once per
+# change of the file and shared like the store. Sorting every version is the
+# expensive part of a feed; picking a request's items from the sorted list is
+# not.
+func sharedFeedItems() {
+    if (not fs.exists($dbPath)) {
+        return feedview.collect(store.open($dbPath));
+    }
+    def key as string init "feed " + fileVersion();
+    if (kv.has($shared, $key) or awaitBuild($key, $key)) {
+        try {
+            return kv.getValue($shared, $key);
+        } catch (err) { # lint-disable: L103
+            # expired between the two calls; build it again below
+        }
+    }
+    def items as json.Value init feedview.collect(sharedStore());
+    keepShared("current feed", $key, $items);
+    return $items;
 }
 
 # sharedPart is one of the five by name. One reader builds all five while the
@@ -840,16 +953,16 @@ func answerAuth(ctx as web.Context, stage as string, out as authview.AuthReply) 
         }
         def orgs as string init strings.join($names, ",");
         audit.write(
-            $logSink,
+            sinkOf($ctx),
             audit.tokenIssued($stage, $who, json.asString($out.body, "/login"), $orgs));
     } elseif ($out.status == 200) {
-        audit.write($logSink, audit.loginStarted($providerName));
+        audit.write(sinkOf($ctx), audit.loginStarted($providerName));
     } else {
         def why as string init "";
         if (json.has($out.body, "/error")) {
             $why = json.asString($out.body, "/error");
         }
-        audit.write($logSink, audit.loginRefused($stage, $out.status, $why));
+        audit.write(sinkOf($ctx), audit.loginRefused($stage, $out.status, $why));
     }
     webapi.sendJson($ctx, $out.status, $out.body);
 }
@@ -881,7 +994,7 @@ func throttled(
         "key": $key
     };
     # Debug: under a flood this is one line per refused request.
-    audit.write($logSink, audit.event("debug", "rate limited", $fields));
+    audit.write(sinkOf($ctx), audit.event("debug", "rate limited", $fields));
     web.setHeader($ctx, "Retry-After", convert.toString($got.retryAfter));
     webapi.fail(
         $ctx,
@@ -933,7 +1046,7 @@ func apiAuthDevice(ctx as web.Context) {
     }
     # Writes nothing, so no lock is held across the provider call.
     def db as flatdb.DB init sharedStore();
-    answerAuth($ctx, "device", authview.device($auth, $db));
+    answerAuth($ctx, "device", authview.device(authFor($ctx), $db));
 }
 
 /**
@@ -945,7 +1058,7 @@ func apiAuthToken(ctx as web.Context) {
         return;
     }
     # Provider calls run unlocked; the lock covers only recording the refresh token.
-    def got as authview.Login init authview.login($auth, requestText($ctx));
+    def got as authview.Login init authview.login(authFor($ctx), requestText($ctx));
     if (not $got.ok) {
         answerAuth($ctx, "issued", $got.reply);
         return;
@@ -957,7 +1070,9 @@ func apiAuthToken(ctx as web.Context) {
     def linked as forge.Account init forge.noAccount();
     if ($sourceAuthority == "service") {
         try {
-            $linked = forge.agreedAccount($got.login, $theForge.account($forgeConfig, $got.login));
+            $linked = forge.agreedAccount(
+                $got.login,
+                $theForge.account(forgeFor($ctx), $got.login));
             $mapped = "answered";
         } catch (err) {
             $mapped = "unknown";
@@ -999,7 +1114,7 @@ func apiAuthRefresh(ctx as web.Context) {
     def held as store.Lock init lockedStore();
     defer store.unlock($held);
     def db as flatdb.DB init store.open($dbPath);
-    answerAuth($ctx, "refreshed", authview.refresh($auth, $db, $body, token.now(), $grant));
+    answerAuth($ctx, "refreshed", authview.refresh(authFor($ctx), $db, $body, token.now(), $grant));
 }
 
 # publishRequestProblem is why a publish request cannot be sent to the forge,
@@ -1031,11 +1146,11 @@ func publishRequestProblem(repository as string, tag as string) {
 # is. Every name is asked for, since two at once are refused rather than one
 # silently preferred. None, or several, throws kind "manifest", which the
 # handler answers with 400; a forge that fails throws its own kind (503).
-func manifestAt(repository as string, tag as string, commit as string) {
+func manifestAt(fc as forge.Config, repository as string, tag as string, commit as string) {
     def found as map of string to string init {};
     for (def name in manifest.FILENAMES) {
         try {
-            $found[$name] = $theForge.readFile($forgeConfig, $repository, $commit, $name);
+            $found[$name] = $theForge.readFile($fc, $repository, $commit, $name);
         } catch (err) {
             if (not ($err.kind == forge.ABSENT)) {
                 throw $err;
@@ -1049,21 +1164,36 @@ func manifestAt(repository as string, tag as string, commit as string) {
     return $got;
 }
 
-# sourceFailure answers a publish whose forge reads threw. Not there, or a
-# manifest that is missing or doubled, is the publisher's to fix (5.7: 400); a
-# forge that failed is a 503. Not 502: Cloudflare replaces an origin's 502 and
-# 504 with its own page, so the reason never reached the client (2026-11-14,
-# a publish answered "error code: 502"); it leaves 503 alone.
-func sourceFailure(ctx as web.Context, err as Error, repository as string, tag as string) {
-    if ($err.kind == forge.ABSENT or $err.kind == "manifest") {
-        def why as string init $err.message;
-        if (strings.startsWith($why, "could not resolve the tag")) {
-            $why = publishview.missingTag($repository, $tag);
-        }
-        refusePublish($ctx, 400, $why);
+# sourceFailure answers a publish whose forge reads threw, by
+# `publishview.sourceRefusal`: 400 for what the publisher must fix, 503 for a
+# forge that failed. Not 502: Cloudflare replaces an origin's 502 and 504 with
+# its own page, so the reason never reached the client (2026-11-14, a publish
+# answered "error code: 502"); it leaves 503 alone. A rate-limited forge's wait
+# goes out as `Retry-After`. Takes the kind and message, not the error, since
+# a forge error is a `forge.ForgeError` struct, which an `Error` parameter
+# refuses.
+func sourceFailure(
+    ctx as web.Context,
+    kind as string,
+    message as string,
+    retryAfter as int,
+    repository as string,
+    tag as string) {
+    def out as publishview.SourceRefusal init publishview.sourceRefusal(
+        $repository,
+        $tag,
+        $kind,
+        $message,
+        $retryAfter,
+        not (strings.trim($forgeConfig.apiToken) == ""));
+    if ($out.retryAfter > 0) {
+        audit.write(sinkOf($ctx), audit.publishRateLimited($out.why, $out.retryAfter));
+        notePublish($ctx, PUBLISH_STATUS_KEY, convert.toString($out.status));
+        web.setHeader($ctx, "Retry-After", convert.toString($out.retryAfter));
+        webapi.fail($ctx, $out.status, $out.why);
         return;
     }
-    refusePublish($ctx, 503, "could not read " + $repository + " at " + $tag + ": " + $err.message);
+    refusePublish($ctx, $out.status, $out.why);
 }
 
 # refusePublish answers a publish that ends before `publishview` judges it, and
@@ -1071,7 +1201,8 @@ func sourceFailure(ctx as web.Context, err as Error, repository as string, tag a
 # when something in front of the registry rewrites the answer, and these
 # exits wrote nothing before (2026-11-14).
 func refusePublish(ctx as web.Context, status as int, why as string) {
-    audit.write($logSink, audit.publishRefused($why, $status));
+    audit.write(sinkOf($ctx), audit.publishRefused($why, $status));
+    notePublish($ctx, PUBLISH_STATUS_KEY, convert.toString($status));
     if ($status == 401) {
         webapi.unauthorized($ctx, $why);
         return;
@@ -1079,12 +1210,97 @@ func refusePublish(ctx as web.Context, status as int, why as string) {
     webapi.fail($ctx, $status, $why);
 }
 
+# refusedRequest answers 400 and returns true when the repository or tag cannot
+# be sent to the forge (`publishRequestProblem`).
+func refusedRequest(ctx as web.Context, repository as string, tag as string) {
+    def problem as string init publishRequestProblem($repository, $tag);
+    if ($problem == "") {
+        return false;
+    }
+    refusePublish($ctx, 400, $problem);
+    return true;
+}
+
+# answeredByTimeout reports whether the respond timeout already answered `503`
+# while the forge was asked; the publish is then dropped rather than recorded.
+# The request is closed by then, so its sink and id come from the trace.
+func answeredByTimeout(ctx as web.Context, trace as outbound.Trace) {
+    if (web.isOpen($ctx)) {
+        return false;
+    }
+    def why as string init "the forge outlasted the respond timeout; the client got 503";
+    audit.write($trace.sink, audit.publishRefused($why, 503));
+    kv.set($outboundCalls, noteKey($trace.requestId, PUBLISH_STATUS_KEY), "503", NOTE_TTL_SECONDS);
+    return true;
+}
+
+# What `publishSummary` reads back at the end of a publish: the status it was
+# answered with and the deck its manifest named. They are kept in the shared
+# `kv` store under the request id, not as request values: an interpreter older
+# than jennifer main refuses `httpd.requestValue` once the request is answered.
+def const PUBLISH_STATUS_KEY as string init "status";
+def const PUBLISH_DECK_KEY as string init "deck";
+def const NOTE_TTL_SECONDS as int init 600;
+
+func noteKey(requestId as string, key as string) {
+    return "publish " + $requestId + " " + $key;
+}
+
+# notePublish records one fact about the publish in progress, before the
+# request is answered.
+func notePublish(ctx as web.Context, key as string, value as string) {
+    kv.set($outboundCalls, noteKey(requestIdOf($ctx), $key), $value, NOTE_TTL_SECONDS);
+}
+
+# notedOf reads a fact back, and forgets it.
+func notedOf(requestId as string, key as string) {
+    def k as string init noteKey($requestId, $key);
+    if (not kv.has($outboundCalls, $k)) {
+        return "";
+    }
+    def v as string init kv.get($outboundCalls, $k);
+    kv.delete($outboundCalls, $k);
+    return $v;
+}
+
+# publishSummary writes the one line every publish attempt ends with, deferred
+# at its start so it runs however the handler ends. It is handed the trace
+# then, since the request may be answered (and closed) by the time it runs. No
+# status recorded means the handler threw (the engine answered 500).
+func publishSummary(
+    trace as outbound.Trace,
+    tag as string,
+    repository as string,
+    startedMs as int) {
+    def noted as string init notedOf($trace.requestId, PUBLISH_STATUS_KEY);
+    def status as int init 0;
+    def outcome as string init "failed";
+    if (not ($noted == "")) {
+        $status = convert.toInt($noted);
+        $outcome = "refused";
+        if ($status >= 200 and $status < 300) {
+            $outcome = "published";
+        }
+    }
+    audit.write(
+        $trace.sink,
+        audit.publishAttempt(
+            notedOf($trace.requestId, PUBLISH_DECK_KEY),
+            $tag,
+            $repository,
+            $outcome,
+            $status,
+            time.unixMillis(time.now()) - $startedMs,
+            outbound.calls($trace)));
+    outbound.forget($trace);
+}
+
 # sourceFrom makes every forge call of a publish and assembles the result for
 # publishview: resolve the tag to a commit, read its manifest at that commit, and
 # look up the repository. The manifest never comes from the request body
 # (specification 7), so the scope check is made against the repository content.
-func sourceFrom(repository as string, tag as string) {
-    def commit as string init $theForge.resolveTag($forgeConfig, $repository, $tag);
+func sourceFrom(fc as forge.Config, repository as string, tag as string) {
+    def commit as string init $theForge.resolveTag($fc, $repository, $tag);
     # The commit goes into every read URL below, so anything but a full SHA stops
     # here, for `checkSource` to refuse as a 400.
     if (not store.isCommit($commit)) {
@@ -1106,13 +1322,13 @@ func sourceFrom(repository as string, tag as string) {
     # Commit shadowing, for `checkSource` to judge: forges resolve `?ref=` as a
     # name before an object, so a ref named `<commit>` would answer the reads
     # below. `refExists` throws when the forge will not say, which becomes a 503.
-    def shadowed as bool init $theForge.refExists($forgeConfig, $repository, $commit);
-    def mf as publishview.ManifestFile init manifestAt($repository, $tag, $commit);
-    def r as forge.Repo init $theForge.repo($forgeConfig, $repository);
+    def shadowed as bool init $theForge.refExists($fc, $repository, $commit);
+    def mf as publishview.ManifestFile init manifestAt($fc, $repository, $tag, $commit);
+    def r as forge.Repo init $theForge.repo($fc, $repository);
     # The README is optional and read at the same commit as the manifest.
     def readme as string init "";
     try {
-        $readme = $theForge.readFile($forgeConfig, $repository, $commit, "README.md");
+        $readme = $theForge.readFile($fc, $repository, $commit, "README.md");
     } catch (err) {
         $readme = "";
     }
@@ -1121,12 +1337,12 @@ func sourceFrom(repository as string, tag as string) {
     def entry as string init publishview.entryPathFor($mf.name, $mf.text);
     def entryPresent as bool init false;
     if (not ($entry == "")) {
-        $entryPresent = $theForge.fileExists($forgeConfig, $repository, $commit, $entry);
+        $entryPresent = $theForge.fileExists($fc, $repository, $commit, $entry);
     }
     # Asked again after the reads, to catch a shadowing ref created meanwhile.
     # A shadow at either end refuses.
     if (not $shadowed) {
-        $shadowed = $theForge.refExists($forgeConfig, $repository, $commit);
+        $shadowed = $theForge.refExists($fc, $repository, $commit);
     }
     return publishview.Source{
         repository: $repository,
@@ -1147,9 +1363,11 @@ func sourceFrom(repository as string, tag as string) {
 # authorityFor asks the forge whether the account behind a publish may push to
 # its repository (7.1 route A): the caller for a bearer token, `ciPrincipal` for
 # a CI token. Not asked for trusted publishing, whose token proves the
-# repository. Never throws: a check that cannot be made is `unknown`, which
-# publishview refuses.
+# repository. A check that cannot be made is `unknown`, which publishview
+# refuses; it throws only for a forge that is rate-limiting the registry
+# (a `forge.ForgeError` with `retryAfter`), which the publish answers with 503.
 func authorityFor(
+    fc as forge.Config,
     mode as string,
     db as flatdb.DB,
     who as identity.Subject,
@@ -1166,8 +1384,13 @@ func authorityFor(
             publishview.deckNameOf($src.manifestName, $src.manifestText));
     }
     try {
-        return askForge($db, $principal, $src.repository);
+        return askForge($fc, $db, $principal, $src.repository);
     } catch (err) {
+        # A rate limit says nothing about access: the publish answers 503 with
+        # the forge's wait rather than refusing it as unverified.
+        if ($err.kind == "forge" and $err.retryAfter > 0) {
+            throw $err;
+        }
         return forge.unknown("the forge could not be asked: " + $err.message);
     }
 }
@@ -1175,7 +1398,11 @@ func authorityFor(
 # askForge asks with the configured credential: the account's own sealed
 # provider token (`login`), or the registry's forge token about the forge
 # account linked to the subject at login (`service`, 12.5).
-func askForge(db as flatdb.DB, principal as identity.Subject, repository as string) {
+func askForge(
+    fc as forge.Config,
+    db as flatdb.DB,
+    principal as identity.Subject,
+    repository as string) {
     if ($principal.id == "") {
         return forge.unknown("there is no account behind this publish whose access " +
             "could be checked; a CI token for an organisation scope needs one");
@@ -1192,12 +1419,12 @@ func askForge(db as flatdb.DB, principal as identity.Subject, repository as stri
             return forge.unknown("no forge account is linked to this account; log in " +
                 "again so the registry can map it onto one");
         }
-        def current as forge.Account init $theForge.accountById($forgeConfig, $link.forgeId);
+        def current as forge.Account init $theForge.accountById($fc, $link.forgeId);
         if ($current.id == "") {
             return forge.unknown("the forge account " + $link.forgeLogin +
                 " linked to this account no longer exists");
         }
-        return $theForge.permissionFor($forgeConfig, $repository, $current.login);
+        return $theForge.permissionFor($fc, $repository, $current.login);
     }
     def sealed as string init store.getForgeToken($db, $principal.id);
     if ($sealed == "") {
@@ -1210,7 +1437,7 @@ func askForge(db as flatdb.DB, principal as identity.Subject, repository as stri
     } catch (err) {
         return forge.unknown("the stored forge credential cannot be read; log in again");
     }
-    return $theForge.permission($forgeConfig, $repository, $credential);
+    return $theForge.permission($fc, $repository, $credential);
 }
 
 # callerOf turns an Authorization header into an identity, or an empty Subject
@@ -1247,7 +1474,8 @@ func answerPublish(ctx as web.Context, out as publishview.PublishReply) {
     if ($out.changed) {
         store.save($out.db);
     }
-    audit.write($logSink, $out.event);
+    audit.write(sinkOf($ctx), $out.event);
+    notePublish($ctx, PUBLISH_STATUS_KEY, convert.toString($out.status));
     webapi.sendJson($ctx, $out.status, $out.body);
 }
 
@@ -1292,6 +1520,8 @@ func apiPublish(ctx as web.Context) {
     }
     def repository as string init fieldOf($body, "/repository");
     def tag as string init fieldOf($body, "/tag");
+    # Arguments are evaluated here, so the duration counts from the body read.
+    defer publishSummary(traceOf($ctx), $tag, $repository, time.unixMillis(time.now()));
     def db as flatdb.DB init sharedStore();
 
     # The credential is checked from local state before any forge call, so an
@@ -1340,44 +1570,37 @@ func apiPublish(ctx as web.Context) {
         }
     }
 
-    if (writeThrottled($ctx, publishBudgetKey($ctx, $mode, $who, $ciRec))) {
-        return;
-    }
-    def requestComplaint as string init publishRequestProblem($repository, $tag);
-    if (not ($requestComplaint == "")) {
-        refusePublish($ctx, 400, $requestComplaint);
+    if (writeThrottled($ctx, publishBudgetKey($ctx, $mode, $who, $ciRec)) or
+        refusedRequest($ctx, $repository, $tag)) {
         return;
     }
 
+    def fc as forge.Config init forgeFor($ctx);
     def src as publishview.Source;
     try {
-        $src = sourceFrom($repository, $tag);
+        $src = sourceFrom($fc, $repository, $tag);
+        notePublish(
+            $ctx,
+            PUBLISH_DECK_KEY,
+            publishview.deckNameOf($src.manifestName, $src.manifestText));
+        # Source authority (7.1 route A) is asked before the lock; publishview
+        # judges the answer under it. It throws only for a rate limit.
+        $src.authority = authorityFor($fc, $mode, $db, $who, $ciRec, $src);
     } catch (err) {
         # A network failure reaching the forge is a net.NetError (jennifer
-        # M28.65), a struct the `err as Error` parameter below would reject
-        # with a type error, so it is answered here: the same 503.
-        if ($err.kind == "net") {
-            refusePublish(
-                $ctx,
-                503,
-                "could not reach the forge for " + $repository + " at " +
-                    $tag + ": " + $err.message);
-            return;
+        # M28.65), a struct; so is every `absent` or "forge" error
+        # (`forge.ForgeError`), whose `retryAfter` is read only once the kind
+        # says it is one. `sourceFailure` takes the parts, not the error.
+        def wait as int init 0;
+        if ($err.kind == forge.ABSENT or $err.kind == "forge") {
+            $wait = $err.retryAfter;
         }
-        sourceFailure($ctx, $err, $repository, $tag);
+        sourceFailure($ctx, $err.kind, $err.message, $wait, $repository, $tag);
         return;
     }
-    # Source authority (7.1 route A) is asked before the lock; publishview judges
-    # the answer under it.
-    $src.authority = authorityFor($mode, $db, $who, $ciRec, $src);
     # The lock is taken after the forge calls, so a slow forge cannot serialise
     # every write on the server.
-    #
-    # If the respond timeout already answered `503`, the publish is dropped
-    # rather than recorded.
-    if (not web.isOpen($ctx)) {
-        def why as string init "the forge outlasted the respond timeout; the client got 503";
-        audit.write($logSink, audit.publishRefused($why, 503));
+    if (answeredByTimeout($ctx, $fc.trace)) {
         return;
     }
     def held as store.Lock init lockedStore();
@@ -1472,7 +1695,7 @@ func answerScope(ctx as web.Context, out as scopeview.ScopeReply) {
     if ($out.changed) {
         store.save($out.db);
     }
-    audit.write($logSink, $out.event);
+    audit.write(sinkOf($ctx), $out.event);
     webapi.sendJson($ctx, $out.status, $out.body);
 }
 
@@ -1784,11 +2007,18 @@ func forwardedFor(ctx as web.Context) {
  * The access log, as a `before` middleware. Registered ahead of the `webapi`
  * guard so a rejected request is still recorded.
  *
+ * It also gives the request its id (`requestIdOf`), sent back as
+ * `X-Request-Id` and carried by every event the request writes (`sinkOf`).
  * It records no status: `web` has no after-handler hook.
  * @param ctx {web.Context} the request context
  * @return {bool} always true; observing a request never refuses it
  */
 func accessLog(ctx as web.Context) {
+    def id as string init audit.requestIdOf(
+        web.header($ctx, "CF-Ray"),
+        encoding.toText("hex", crypto.randBytes(8)));
+    httpd.setRequestValue($ctx.req, REQUEST_ID_KEY, $id);
+    web.setHeader($ctx, "X-Request-Id", $id);
     def ev as audit.Event init audit.requestSeen(
         web.method($ctx),
         web.path($ctx),
@@ -1797,8 +2027,48 @@ func accessLog(ctx as web.Context) {
         # Promoted from debug, so the access log does not need debug logging.
         $ev.level = audit.INFO;
     }
-    audit.write($logSink, $ev);
+    audit.write(sinkOf($ctx), $ev);
     return true;
+}
+
+# Where a request's id is kept between the access log and the handler.
+def const REQUEST_ID_KEY as string init "registry.requestId";
+
+# sinkOf is the log sink for one request: the shared one, stamping each event
+# with the request's id.
+func sinkOf(ctx as web.Context) {
+    return audit.withRequest($logSink, requestIdOf($ctx));
+}
+
+# requestIdOf is the id `accessLog` gave the request, or "" once the request
+# is answered: an interpreter older than jennifer main refuses
+# `httpd.requestValue` then, and losing the id must not lose the event.
+func requestIdOf(ctx as web.Context) {
+    try {
+        return httpd.requestValue($ctx.req, REQUEST_ID_KEY);
+    } catch (err) {
+        return "";
+    }
+}
+
+# traceOf counts and logs the forge and identity calls one request makes
+# (`outbound`), under its id.
+func traceOf(ctx as web.Context) {
+    return outbound.traced(sinkOf($ctx), requestIdOf($ctx), $outboundCalls);
+}
+
+# forgeFor is the forge configuration for one request, its calls traced.
+func forgeFor(ctx as web.Context) {
+    def out as forge.Config init $forgeConfig;
+    $out.trace = traceOf($ctx);
+    return $out;
+}
+
+# authFor is the identity configuration for one request, its calls traced.
+func authFor(ctx as web.Context) {
+    def out as authview.Config init $auth;
+    $out.providerConfig.trace = traceOf($ctx);
+    return $out;
 }
 
 # notModified answers a repeat read of a page or listing with `304` when the
@@ -1918,6 +2188,9 @@ $app = web.get($app, "/scope/:name", siteScope);
 $app = web.get($app, "/manual/*rest", siteManual);
 $app = web.get($app, "/reference/*rest", siteReference);
 $app = web.get($app, "/specs/*rest", siteSpecs);
+$app = web.get($app, "/feed.atom", siteFeedAtom);
+$app = web.get($app, "/feed.rss", siteFeedRss);
+$app = web.get($app, "/feed/:file", siteScopeFeed);
 
 # The counter flusher, a task so a handler pays only one atomic increment. It
 # runs for the life of the process and logs its own failures rather than

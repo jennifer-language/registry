@@ -28,9 +28,11 @@
 use json;
 use strings;
 use convert;
+use time;
 use encoding;
 import "http.j" as http;
 import "../forge.j" as forge;
+import "../outbound.j" as outbound;
 
 def const HOSTED_HOST as string init "gitlab.com";
 def const HOSTED_BASE as string init "https://gitlab.com";
@@ -214,7 +216,37 @@ func send(cfg as forge.Config, method as string, path as string, callerToken as 
     } elseif (not ($cfg.apiToken == "")) {
         $h["Authorization"] = "Bearer " + $cfg.apiToken;
     }
-    return http.requestWith($method, apiBase($cfg) + $path, $h, "", TIMEOUT_MS, MAX_BYTES);
+    return outbound.request(
+        $cfg.trace,
+        "gitlab",
+        $method,
+        apiBase($cfg) + $path,
+        $h,
+        "",
+        TIMEOUT_MS,
+        MAX_BYTES);
+}
+
+# failed is the `forge.ForgeError` for an answer that is not the one wanted
+# (`forge.failure`, built here as a literal so lint sees what is thrown).
+func failed(status as int, headers as map of string to string, message as string, now as int) {
+    def f as forge.ForgeError init forge.failure($status, $headers, $message, $now);
+    return forge.ForgeError{
+        kind: $f.kind,
+        message: $f.message,
+        status: $f.status,
+        retryAfter: $f.retryAfter
+    };
+}
+
+# complained is the `forge.ForgeError` for a forge that was not asked.
+func complained(message as string) {
+    return forge.ForgeError{kind: "forge", message: $message, status: 0, retryAfter: 0};
+}
+
+# nowSeconds is the clock a rate limit's reset time is measured against.
+func nowSeconds() {
+    return time.unix(time.utc());
 }
 
 func handles(cfg as forge.Config, url as string) {
@@ -228,14 +260,12 @@ func resolveTag(cfg as forge.Config, url as string, tag as string) {
         "/projects/" + projectId($url) + "/repository/tags/" + forge.encodeSegment($tag),
         "");
     if (not ($res.status == 200)) {
-        throw Error{
-            kind: forge.kindOf($res.status),
-            message: "could not resolve the tag " + $tag + ": the forge answered " +
+        throw failed(
+            $res.status,
+            $res.headers,
+            "could not resolve the tag " + $tag + ": the forge answered " +
                 convert.toString($res.status),
-            file: "",
-            line: 0,
-            col: 0
-        };
+            nowSeconds());
     }
     return tagCommitFrom(json.decode($res.body));
 }
@@ -249,14 +279,12 @@ func readFile(cfg as forge.Config, url as string, commit as string, path as stri
             "/repository/files/" + $encoded + "/raw?ref=" + $commit,
         "");
     if (not ($res.status == 200)) {
-        throw Error{
-            kind: forge.kindOf($res.status),
-            message: "could not read " + $path + " at " + $commit + ": the forge answered " +
+        throw failed(
+            $res.status,
+            $res.headers,
+            "could not read " + $path + " at " + $commit + ": the forge answered " +
                 convert.toString($res.status),
-            file: "",
-            line: 0,
-            col: 0
-        };
+            nowSeconds());
     }
     return $res.body;
 }
@@ -272,7 +300,7 @@ func refExists(cfg as forge.Config, url as string, name as string) {
         "/projects/" + projectId($url) +
             "/repository/branches/" + $encoded,
         "");
-    if (forge.refPresence($branch.status)) {
+    if (forge.refPresence($branch.status, $branch.headers, nowSeconds())) {
         return true;
     }
     def tag as http.Response init get(
@@ -280,7 +308,7 @@ func refExists(cfg as forge.Config, url as string, name as string) {
         "/projects/" + projectId($url) +
             "/repository/tags/" + $encoded,
         "");
-    return forge.refPresence($tag.status);
+    return forge.refPresence($tag.status, $tag.headers, nowSeconds());
 }
 
 # filePath is the files-API address of one path at one commit. The path is one
@@ -296,7 +324,7 @@ func filePath(url as string, commit as string, path as string) {
 # any other failure throws through `refPresence`.
 func fileExists(cfg as forge.Config, url as string, commit as string, path as string) {
     def res as http.Response init send($cfg, "HEAD", filePath($url, $commit, $path), "");
-    return forge.refPresence($res.status);
+    return forge.refPresence($res.status, $res.headers, nowSeconds());
 }
 
 # permission asks with the caller's token only (see forge/github.j).
@@ -306,6 +334,14 @@ func permission(cfg as forge.Config, url as string, callerToken as string) {
     }
     def res as http.Response init get($cfg, "/projects/" + projectId($url), $callerToken);
     if (not ($res.status == 200)) {
+        # A rate limit says nothing about access: the publish is a 503, not a refusal.
+        if (forge.rateLimitWait($res.status, $res.headers, nowSeconds()) > 0) {
+            throw failed(
+                $res.status,
+                $res.headers,
+                "the forge is rate-limiting permission checks",
+                nowSeconds());
+        }
         return forge.unknown("the forge answered " + convert.toString($res.status) +
             " when asked about this project");
     }
@@ -323,6 +359,14 @@ func permissionFor(cfg as forge.Config, url as string, username as string) {
     }
     def users as http.Response init get($cfg, "/users?username=" + $username, "");
     if (not ($users.status == 200)) {
+        # A rate limit says nothing about access: the publish is a 503, not a refusal.
+        if (forge.rateLimitWait($users.status, $users.headers, nowSeconds()) > 0) {
+            throw failed(
+                $users.status,
+                $users.headers,
+                "the forge is rate-limiting permission checks",
+                nowSeconds());
+        }
         return forge.unknown("the forge answered " + convert.toString($users.status) +
             " when asked for the account " + $username);
     }
@@ -336,6 +380,14 @@ func permissionFor(cfg as forge.Config, url as string, username as string) {
             "/members/all/" + $uid,
         "");
     if (not ($res.status == 200)) {
+        # A rate limit says nothing about access: the publish is a 503, not a refusal.
+        if (forge.rateLimitWait($res.status, $res.headers, nowSeconds()) > 0) {
+            throw failed(
+                $res.status,
+                $res.headers,
+                "the forge is rate-limiting permission checks",
+                nowSeconds());
+        }
         return forge.unknown("the forge answered " + convert.toString($res.status) +
             " when asked what " + $username + " may do in this project");
     }
@@ -345,14 +397,12 @@ func permissionFor(cfg as forge.Config, url as string, username as string) {
 func repo(cfg as forge.Config, url as string) {
     def res as http.Response init get($cfg, "/projects/" + projectId($url), "");
     if (not ($res.status == 200)) {
-        throw Error{
-            kind: "forge",
-            message: "could not read the project: the forge answered " +
+        throw failed(
+            $res.status,
+            $res.headers,
+            "could not read the project: the forge answered " +
                 convert.toString($res.status),
-            file: "",
-            line: 0,
-            col: 0
-        };
+            nowSeconds());
     }
     return repoFrom(json.decode($res.body));
 }
@@ -366,18 +416,19 @@ func repo(cfg as forge.Config, url as string) {
 func account(cfg as forge.Config, username as string) {
     def problem as string init forge.askProblem($cfg, $username);
     if (not ($problem == "")) {
-        throw Error{kind: "forge", message: $problem};
+        throw complained($problem);
     }
     def res as http.Response init get($cfg, "/users?username=" + $username, "");
     if ($res.status == 404) {
         return forge.noAccount();
     }
     if (not ($res.status == 200)) {
-        throw Error{
-            kind: "forge",
-            message: "the forge answered " + convert.toString($res.status) +
-                " when asked for the account " + $username
-        };
+        throw failed(
+            $res.status,
+            $res.headers,
+            "the forge answered " + convert.toString($res.status) +
+                " when asked for the account " + $username,
+            nowSeconds());
     }
     return forge.accountFromList(json.decode($res.body), "username", $username);
 }
@@ -392,11 +443,12 @@ func accountById(cfg as forge.Config, id as string) {
         return forge.noAccount();
     }
     if (not ($res.status == 200)) {
-        throw Error{
-            kind: "forge",
-            message: "the forge answered " + convert.toString($res.status) +
-                " when asked for account " + $id
-        };
+        throw failed(
+            $res.status,
+            $res.headers,
+            "the forge answered " + convert.toString($res.status) +
+                " when asked for account " + $id,
+            nowSeconds());
     }
     def found as forge.Account init forge.accountFrom(json.decode($res.body), "username");
     if (not ($found.id == $id)) {

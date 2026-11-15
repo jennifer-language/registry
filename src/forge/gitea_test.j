@@ -14,7 +14,8 @@ func cfg() {
         name: "gitea",
         baseUrl: "https://git.corp.test",
         apiToken: "",
-        host: "git.corp.test"
+        host: "git.corp.test",
+        trace: outbound.none()
     };
 }
 
@@ -33,7 +34,8 @@ func testAnInstanceWithNoHostClaimsNothing() {
         name: "gitea",
         baseUrl: "https://git.corp.test",
         apiToken: "",
-        host: ""
+        host: "",
+        trace: outbound.none()
     };
     testing.assertFalse(handlesUrl($blank, "https://git.corp.test/acme/deck.git"));
 }

@@ -19,7 +19,8 @@ func cfg() {
         clientId: "registry",
         clientSecret: "",
         scopes: "",
-        metadata: ""
+        metadata: "",
+        trace: outbound.none()
     };
 }
 

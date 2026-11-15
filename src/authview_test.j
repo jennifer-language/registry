@@ -12,6 +12,7 @@ use testing;
 use json;
 use convert;
 import "./identity/github.j" as githubIdentity;
+import "./outbound.j" as outbound;
 
 def const ACCOUNT as string init "1234567";
 def const TOKEN_TTL as int init 3600;
@@ -36,7 +37,8 @@ func providerCfg(clientId as string) {
         clientId: $clientId,
         clientSecret: "",
         scopes: "",
-        metadata: ""
+        metadata: "",
+        trace: outbound.none()
     };
 }
 

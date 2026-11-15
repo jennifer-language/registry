@@ -170,6 +170,9 @@ unversioned.
 "Logins only" routes are registered only when the login surface is configured;
 otherwise they are `404`.
 
+The feeds of new and updated decks (`/feed.atom`, `/feed.rss`, and one per
+scope) are website routes, unversioned, described [below](#the-feeds).
+
 Two of these answer HTML when the request's `Accept` prefers it, because the
 website lives on the same origin: `/` is the landing page for a browser and the
 service index for an API client, and `/search` is the results page or the JSON
@@ -363,6 +366,58 @@ changes.
 `status` is `owned` or `reserved`; an owned scope names its owner's **login**,
 never the account id that ownership binds to.
 
+## The feeds
+
+| Route | Returns |
+| ----- | ------- |
+| `GET /feed.atom` | new and updated decks, Atom 1.0 (`application/atom+xml`) |
+| `GET /feed.rss` | the same, RSS 2.0 (`application/rss+xml`) |
+| `GET /feed/@<scope>.atom`, `GET /feed/@<scope>.rss` | the same for one scope |
+
+One item per published version that is not yanked, newest first; versions
+published in the same second are ordered by deck name, then version. A version
+without a `publishedAt` is left out.
+
+| Field | Atom | RSS |
+| ----- | ---- | --- |
+| `@scope/deck 1.2.0` | `title` | `title` |
+| the deck's page, `/deck/<scope>/<deck>` | `link` | `link` |
+| `tag:<host>,<publish day>:@scope/deck/1.2.0` | `id` | `guid isPermaLink="false"` |
+| `publishedAt` | `published`, `updated` (RFC 3339) | `pubDate` (RFC 822) |
+| the version's description, else the deck's | `summary` | `description` |
+| `@scope` | `author/name` | `dc:creator` |
+| `new` for a deck's first version, else `updated` | `category term` | `category` |
+
+The host in the id, and every absolute link, come from the registry's `url`
+(`REGISTRY_URL`); without one, from the first TLS name, else the listen
+address. Set it, or the ids change with the deployment. A deck's first version
+is its earliest, yanked ones included, so yanking it does not make the next
+version "new".
+
+**Limits.** The newest 50 items, none older than 30 days; when fewer than 10
+are that recent, the newest 10 anyway (never more than `limit`), so a quiet
+registry's feed is not empty. Two query parameters change that:
+
+| Parameter | Range | Default |
+| --------- | ----- | ------- |
+| `limit` | 1 to 100 | 50 |
+| `days` | 1 to 365 | 30 |
+
+Each is a plain decimal number, given at most once: a sign, a leading zero, an
+escape, an empty value or a repeat is `400` with the usual `{"error": ...}`
+body. Other parameters are ignored. A scope that is neither registered nor has
+decks is `404`; a registered scope with nothing published is an empty feed.
+
+**Caching.** A feed carries `Cache-Control: public, max-age=300`, an `ETag`
+(a hash of each item's id, time, kind and summary) and `Last-Modified` (the
+newest item, or the moment the window last pushed an older item out). A
+matching `If-None-Match` is answered `304`; so is an `If-Modified-Since` no
+earlier than `Last-Modified`, but only on a request without `If-None-Match`.
+A yank that removes an item without adding one changes the `ETag` but not
+`Last-Modified`, so a reader revalidating by date alone sees it with the next
+publish. The feeds are not rate-limited; they read a sorted list of every item
+that the server builds once per change of the database.
+
 ## Writes
 
 Every write is a `POST` with a JSON body, and is authorised by the caller, not
@@ -412,7 +467,7 @@ A). Success is `201`:
 | `403` | the scope is not registered or not the caller's; the token or binding does not cover this deck; the forge does not confirm push access |
 | `409` | that version, build metadata aside, is already published |
 | `501` | a bearer token without the login surface, or an identity token without trusted publishing |
-| `503` | the forge could not be read |
+| `503` | the forge could not be read or reached, or is rate-limiting the registry; a rate limit carries `Retry-After` with the forge's wait |
 
 The credential is checked before any forge call, and the version-conflict `409`
 comes after every authorisation check, so a stranger cannot learn which versions
@@ -490,6 +545,9 @@ Upstream failures are `503`, not `502`: Cloudflare, and other CDNs, replace an
 origin's `502` and `504` bodies with their own, so the message would not reach
 `jvc`.
 
+Every response carries `X-Request-Id`, the id the registry logs the request
+under: Cloudflare's `CF-Ray` when there is one. Quote it to the operator.
+
 A manifest that fails validation is `400`.
 
 `429` carries a `Retry-After` header and comes from three budgets, each a
@@ -528,7 +586,9 @@ The pages and listings that are a function of the database alone (`/`,
 answered `304 Not Modified` to a matching `If-None-Match`, from a tag of the
 database file's size and change time, before the database is read. The three
 counted lookups (`/deck`, `/decks/:name`, `/resolve`) are excluded, since a
-`304` would skip the count.
+`304` would skip the count. The feeds have validators of their own (see
+[The feeds](#the-feeds)) and `Vary: Accept-Encoding` instead, since they have
+one representation.
 
 Reads share one parsed copy of the database, re-parsed when the file changes
 and at most 30 seconds old, so `deckadmin` edits appear without a restart.

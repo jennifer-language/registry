@@ -27,6 +27,7 @@ use encoding;
 use time;
 import "http.j" as http;
 import "../identity.j" as identity;
+import "../outbound.j" as outbound;
 
 # The hosted endpoints. A GitHub Enterprise instance overrides `baseUrl`, and
 # the API is then addressed from the same root. Unverified: GitHub Enterprise
@@ -54,8 +55,10 @@ def const RETRY_DELAY_MS as int init 400;
 # getRetrying issues a GET and retries a 5xx a couple of times. The device code
 # is already spent when the account is read, so a transient 503 would otherwise
 # cost the person the whole flow. A 4xx is a real answer and is not retried.
-func getRetrying(url as string, headers as map of string to string) {
-    def res as http.Response init http.requestWith(
+func getRetrying(cfg as identity.Config, url as string, headers as map of string to string) {
+    def res as http.Response init outbound.request(
+        $cfg.trace,
+        "identity",
         "GET",
         $url,
         $headers,
@@ -65,7 +68,15 @@ func getRetrying(url as string, headers as map of string to string) {
     def attempt as int init 1;
     while ($res.status >= 500 and $attempt < RETRY_TRIES) {
         time.sleep(time.fromMilliseconds(RETRY_DELAY_MS * $attempt));
-        $res = http.requestWith("GET", $url, $headers, "", TIMEOUT_MS, MAX_BYTES);
+        $res = outbound.request(
+            $cfg.trace,
+            "identity",
+            "GET",
+            $url,
+            $headers,
+            "",
+            TIMEOUT_MS,
+            MAX_BYTES);
         $attempt = $attempt + 1;
     }
     return $res;
@@ -304,8 +315,10 @@ export func scopesFor(cfg as identity.Config) {
 }
 
 # post issues a form-urlencoded POST and returns the decoded JSON body.
-func post(url as string, body as string) {
-    def res as http.Response init http.requestWith(
+func post(cfg as identity.Config, url as string, body as string) {
+    def res as http.Response init outbound.request(
+        $cfg.trace,
+        "identity",
         "POST",
         $url,
         jsonHeaders(),
@@ -331,7 +344,7 @@ func flowOf(cfg as identity.Config) {
 func start(cfg as identity.Config) {
     def body as string init formField("client_id", $cfg.clientId) + "&" +
         formField("scope", scopesFor($cfg));
-    return deviceFrom(post(endpointFor($cfg, "device"), $body));
+    return deviceFrom(post($cfg, endpointFor($cfg, "device"), $body));
 }
 
 # pollOnce polls for the user's approval.
@@ -339,7 +352,9 @@ func pollOnce(cfg as identity.Config, deviceCode as string) {
     def body as string init formField("client_id", $cfg.clientId) + "&" +
         formField("device_code", $deviceCode) + "&" +
         formField("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
-    def res as http.Response init http.requestWith(
+    def res as http.Response init outbound.request(
+        $cfg.trace,
+        "identity",
         "POST",
         endpointFor($cfg, "token"),
         jsonHeaders(),
@@ -364,7 +379,7 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
     def h as map of string to string init jsonHeaders();
     $h["Authorization"] = "Bearer " + $accessToken;
     $h["User-Agent"] = "jennifer-registry";
-    def res as http.Response init getRetrying(endpointFor($cfg, "user"), $h);
+    def res as http.Response init getRetrying($cfg, endpointFor($cfg, "user"), $h);
     if ($res.status >= 500) {
         # GitHub could not answer; say so, so nobody goes checking the token,
         # client id or scopes.
@@ -400,7 +415,7 @@ func membershipsOf(cfg as identity.Config, accessToken as string) {
     $h["Authorization"] = "Bearer " + $accessToken;
     $h["User-Agent"] = "jennifer-registry";
     def none as map of string to string init {};
-    def res as http.Response init getRetrying(endpointFor($cfg, "memberships"), $h);
+    def res as http.Response init getRetrying($cfg, endpointFor($cfg, "memberships"), $h);
     if (not ($res.status == 200)) {
         return $none;
     }

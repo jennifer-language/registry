@@ -22,6 +22,7 @@
  */
 
 use strings;
+import "./outbound.j" as outbound;
 
 /**
  * Where a provider lives and what it is registered as. Self-hosted GitLab,
@@ -34,6 +35,8 @@ use strings;
  * @field scopes {string} the scopes to request, space-separated
  * @field metadata {string} the provider's discovery document, as fetched once at
  *     boot by `Provider.discover` ("" for a provider that publishes none)
+ * @field trace {outbound.Trace} where the provider calls are counted and logged
+ *     (`outbound.none()` outside a request)
  */
 export def struct Config {
     name as string,
@@ -41,7 +44,8 @@ export def struct Config {
     clientId as string,
     clientSecret as string,
     scopes as string,
-    metadata as string
+    metadata as string,
+    trace as outbound.Trace
 };
 
 /**

@@ -35,6 +35,7 @@ use convert;
 use encoding;
 import "http.j" as http;
 import "../identity.j" as identity;
+import "../outbound.j" as outbound;
 
 def const TIMEOUT_MS as int init 10000;
 def const MAX_BYTES as int init 131072;
@@ -235,7 +236,9 @@ func clientFields(cfg as identity.Config) {
 # there rather than at every poll.
 func discoverOf(cfg as identity.Config) {
     def url as string init discoveryUrl($cfg);
-    def res as http.Response init http.requestWith(
+    def res as http.Response init outbound.request(
+        $cfg.trace,
+        "identity",
         "GET",
         $url,
         jsonHeaders(),
@@ -266,8 +269,10 @@ func metadata(cfg as identity.Config) {
     return json.decode(discoverOf($cfg));
 }
 
-func post(url as string, body as string) {
-    def res as http.Response init http.requestWith(
+func post(cfg as identity.Config, url as string, body as string) {
+    def res as http.Response init outbound.request(
+        $cfg.trace,
+        "identity",
         "POST",
         $url,
         jsonHeaders(),
@@ -294,14 +299,14 @@ func start(cfg as identity.Config) {
     }
     def body as string init clientFields($cfg) + "&" +
         formField("scope", scopesFor($cfg));
-    return deviceFrom(post($url, $body));
+    return deviceFrom(post($cfg, $url, $body));
 }
 
 func pollOnce(cfg as identity.Config, deviceCode as string) {
     def body as string init clientFields($cfg) + "&" +
         formField("device_code", $deviceCode) + "&" +
         formField("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
-    return pollFrom(post(endpointFrom(metadata($cfg), "token_endpoint"), $body));
+    return pollFrom(post($cfg, endpointFrom(metadata($cfg), "token_endpoint"), $body));
 }
 
 func authorize(cfg as identity.Config) {
@@ -314,7 +319,7 @@ func exchange(cfg as identity.Config, code as string, verifier as string, redire
         formField("code", $code) + "&" +
         formField("code_verifier", $verifier) + "&" +
         formField("redirect_uri", $redirectUri);
-    def doc as json.Value init post(endpointFrom(metadata($cfg), "token_endpoint"), $body);
+    def doc as json.Value init post($cfg, endpointFrom(metadata($cfg), "token_endpoint"), $body);
     return json.asString($doc, "/access_token");
 }
 
@@ -322,7 +327,15 @@ func subjectOf(cfg as identity.Config, accessToken as string) {
     def url as string init endpointFrom(metadata($cfg), "userinfo_endpoint");
     def h as map of string to string init jsonHeaders();
     $h["Authorization"] = "Bearer " + $accessToken;
-    def res as http.Response init http.requestWith("GET", $url, $h, "", TIMEOUT_MS, MAX_BYTES);
+    def res as http.Response init outbound.request(
+        $cfg.trace,
+        "identity",
+        "GET",
+        $url,
+        $h,
+        "",
+        TIMEOUT_MS,
+        MAX_BYTES);
     if (not ($res.status == 200)) {
         throw Error{
             kind: identity.rejectionKind($res.status),

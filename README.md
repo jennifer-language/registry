@@ -33,7 +33,8 @@ seed.
 The same server hosts a small read-only site: search at `/`, the full listing at
 `/browse`, keywords at `/tags`, a page per deck at `/deck/<scope>/<deck>`, the
 user manual at `/manual/`, the admin manual (API and CLI) at `/reference/`, and
-the specifications at `/specs/`. `/` and `/search` answer HTML to a browser and
+the specifications at `/specs/`. New and updated decks are a feed at
+`/feed.atom` and `/feed.rss`, and per scope at `/feed/@<scope>.atom`. `/` and `/search` answer HTML to a browser and
 JSON to an API client.
 
 Authors publish with `POST /publish` (from jvc or CI) and operators with
@@ -101,7 +102,7 @@ saying how to build it.
 for t in store admin apiview webview authview token search policy identity forge \
          forgecred scope scopeview reserved audit trustpub citoken manifest publishview \
          config certs stats keywords deckcatalog constraint deckname catalog \
-         resolver featured; do
+         resolver featured outbound feedview; do
     jennifer test src/${t}_test.j
 done
 for t in policy/operator policy/derived policy/firstcome \

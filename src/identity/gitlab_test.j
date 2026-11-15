@@ -16,7 +16,8 @@ func hosted() {
         clientId: "app",
         clientSecret: "",
         scopes: "",
-        metadata: ""
+        metadata: "",
+        trace: outbound.none()
     };
 }
 
@@ -27,7 +28,8 @@ func selfHosted() {
         clientId: "app",
         clientSecret: "",
         scopes: "",
-        metadata: ""
+        metadata: "",
+        trace: outbound.none()
     };
 }
 

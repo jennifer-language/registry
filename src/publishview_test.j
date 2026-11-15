@@ -951,3 +951,61 @@ func testExactlyOneManifestIsChosen() {
     testing.assertContains($two.problem, "(deck.toml, deck.json); keep exactly one");
     testing.assertEqual($two.name, "");
 }
+
+# --- forge failures -------------------------------------------------------------
+
+func testAMissingTagIsThePublishersToFix() {
+    def r as SourceRefusal init sourceRefusal(
+        "https://github.com/acme/deck-x",
+        "1.0.0",
+        "absent",
+        "could not resolve the tag 1.0.0: the forge answered 404",
+        0,
+        false);
+    testing.assertEqual($r.status, 400);
+    testing.assertContains($r.why, "push it there first");
+    testing.assertEqual($r.retryAfter, 0);
+}
+
+func testAFailedForgeIsA503NeverA502() {
+    # Cloudflare replaces a 502 or 504 body with its own; it passes a 503 through
+    def r as SourceRefusal init sourceRefusal(
+        "https://github.com/acme/deck-x",
+        "1.0.0",
+        "forge",
+        "could not read the repository: the forge answered 500",
+        0,
+        true);
+    testing.assertEqual($r.status, 503);
+    testing.assertContains($r.why, "answered 500");
+    def net as SourceRefusal init sourceRefusal(
+        "https://x/a/b",
+        "1.0.0",
+        "net",
+        "refused",
+        0,
+        true);
+    testing.assertEqual($net.status, 503);
+    testing.assertContains($net.why, "could not reach the forge");
+    def slow as SourceRefusal init sourceRefusal("https://x/a/b", "1.0.0", "timeout", "t", 0, true);
+    testing.assertEqual($slow.status, 503);
+}
+
+func testARateLimitedForgeIsA503WithItsWait() {
+    def anon as SourceRefusal init sourceRefusal(
+        "https://github.com/deckyard/deck-forgejo.git",
+        "0.4.0",
+        "forge",
+        "could not read deck.toml at 59ffb51: the forge answered 403",
+        1800,
+        false);
+    testing.assertEqual($anon.status, 503);
+    testing.assertEqual($anon.retryAfter, 1800);
+    testing.assertContains($anon.why, "rate-limiting");
+    testing.assertContains($anon.why, "retry in 1800 s");
+    # an anonymous registry tells its operator how to raise the limit
+    testing.assertContains($anon.why, "REGISTRY_FORGE_TOKEN");
+    def withToken as SourceRefusal init sourceRefusal("https://x/a/b", "1", "forge", "m", 60, true);
+    testing.assertEqual($withToken.retryAfter, 60);
+    testing.assertFalse(strings.contains($withToken.why, "REGISTRY_FORGE_TOKEN"));
+}

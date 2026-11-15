@@ -16,6 +16,8 @@
  * This module is pure. Each forge module keeps URL parsing and permission
  * interpretation separate from its HTTP call, so those are tested without a
  * socket; the API shapes are taken from documentation, not a live instance.
+ * Every HTTP call goes through `outbound.request`, which counts it and logs a
+ * failed one under the `Config.trace` it is given.
  * @module forge
  * @example
  * import "./forge/gitea.j" as gitea;
@@ -28,6 +30,7 @@ use strings;
 use convert;
 use encoding;
 import "uri.j" as uri;
+import "./outbound.j" as outbound;
 
 /**
  * Where a forge lives and how the registry talks to it.
@@ -36,12 +39,15 @@ import "uri.j" as uri;
  * @field apiToken {string} a service token, where the deployment supplies one
  *     (specification 12.5); "" when the registry has no credential for this forge
  * @field host {string} the hostname whose URLs this instance claims ("" = the module's default)
+ * @field trace {outbound.Trace} where the calls are counted and logged (`outbound.none()`
+ *     outside a request)
  */
 export def struct Config {
     name as string,
     baseUrl as string,
     apiToken as string,
-    host as string
+    host as string,
+    trace as outbound.Trace
 };
 
 /**
@@ -89,7 +95,9 @@ export def struct Permission {
  *     for the path itself (`isFile`), GitLab asks with a `HEAD`; throws when
  *     the forge will not say
  * @field permission {func} `func(Config, url, callerToken) -> Permission`: may they push?
- *     Asked with the caller's own token, where identity and forge are one service
+ *     Asked with the caller's own token, where identity and forge are one service. A forge
+ *     that answers with a rate limit throws a `ForgeError` (so does `permissionFor`):
+ *     it says nothing about access
  * @field permissionFor {func} `func(Config, url, username) -> Permission`: may this
  *     forge user push? Asked with the registry's own token (`Config.apiToken`),
  *     where identity and forge are different services (12.5)
@@ -229,29 +237,153 @@ export func kindOf(status as int) {
 }
 
 /**
+ * What a forge read throws when the forge answered, or would not be asked:
+ * every error of kind `ABSENT` or "forge" is one of these, so its fields are
+ * safe to read once the kind matches.
+ * @field kind {string} `ABSENT` or "forge"
+ * @field message {string} what failed, for the publisher and the operator
+ * @field status {int} the HTTP status the forge answered with; 0 when it was not asked
+ * @field retryAfter {int} seconds until the forge will answer again when it
+ *     refused for a rate limit (`rateLimitWait`), else 0
+ */
+export def struct ForgeError {
+    kind as string,
+    message as string,
+    status as int,
+    retryAfter as int
+};
+
+/**
+ * The error for a forge answer that is not the one wanted. Pure.
+ * @param status {int} the HTTP status
+ * @param headers {map of string to string} the response headers, keys lowercased
+ * @param message {string} what failed
+ * @param now {int} the current time (Unix seconds)
+ * @return {ForgeError} kind `kindOf(status)`, with `retryAfter` set for a rate limit
+ */
+export func failure(
+    status as int,
+    headers as map of string to string,
+    message as string,
+    now as int) {
+    return ForgeError{
+        kind: kindOf($status),
+        message: $message,
+        status: $status,
+        retryAfter: rateLimitWait($status, $headers, $now)
+    };
+}
+
+/**
+ * The error for a forge that was not asked (no base URL, no token to ask with).
+ * @param message {string} why
+ * @return {ForgeError} kind "forge", status 0
+ */
+export func complaint(message as string) {
+    return ForgeError{kind: "forge", message: $message, status: 0, retryAfter: 0};
+}
+
+# The wait assumed for a rate limit that names no time, and the longest one
+# passed on: GitHub's primary window is an hour.
+def const DEFAULT_WAIT as int init 60;
+def const MAX_WAIT as int init 3600;
+
+/**
+ * Seconds until a forge that refused for a rate limit will answer again, or 0
+ * when the answer is not a rate limit. Pure.
+ *
+ * GitHub answers a spent primary limit with `403` or `429` and
+ * `x-ratelimit-remaining: 0` (wait until `x-ratelimit-reset`, Unix seconds),
+ * and a secondary limit with `retry-after` (seconds). A `403` with neither is
+ * a refusal, not a limit. A `429` is a limit on every forge: GitLab sends
+ * `retry-after` and `ratelimit-reset`, Gitea and Forgejo `retry-after` when
+ * they send anything. The result is between 1 and an hour.
+ * @param status {int} the HTTP status
+ * @param headers {map of string to string} the response headers, keys lowercased
+ * @param now {int} the current time (Unix seconds)
+ * @return {int} the wait in seconds, or 0
+ */
+export func rateLimitWait(status as int, headers as map of string to string, now as int) {
+    if (not ($status == 403 or $status == 429)) {
+        return 0;
+    }
+    def after as int init secondsIn($headers, "retry-after");
+    if ($after >= 0) {
+        return clampWait($after);
+    }
+    def spent as bool init headerOf($headers, "x-ratelimit-remaining") == "0" or
+        headerOf($headers, "ratelimit-remaining") == "0";
+    if ($spent or $status == 429) {
+        for (def name in ["x-ratelimit-reset", "ratelimit-reset"]) {
+            def reset as int init secondsIn($headers, $name);
+            if ($reset > 0) {
+                return clampWait($reset - $now);
+            }
+        }
+        return DEFAULT_WAIT;
+    }
+    return 0;
+}
+
+func clampWait(seconds as int) {
+    if ($seconds < 1) {
+        return 1;
+    }
+    if ($seconds > MAX_WAIT) {
+        return MAX_WAIT;
+    }
+    return $seconds;
+}
+
+func headerOf(headers as map of string to string, name as string) {
+    for (def k in $headers) {
+        if ($k == $name) {
+            return strings.trim($headers[$k]);
+        }
+    }
+    return "";
+}
+
+# secondsIn reads a header holding a non-negative integer, or -1. An HTTP-date
+# `retry-after` is not read: the forges named above send seconds.
+func secondsIn(headers as map of string to string, name as string) {
+    def v as string init headerOf($headers, $name);
+    if ($v == "" or len($v) > 12) {
+        return -1;
+    }
+    for (def ch in strings.chars($v)) {
+        if ($ch < "0" or $ch > "9") {
+            return -1;
+        }
+    }
+    return convert.toInt($v);
+}
+
+/**
  * Turn a forge's answer about one ref into presence, or refuse to guess.
  *
- * `200` is present and `404` is absent; anything else throws. The check finds a
- * ref shadowing a commit of the same name, so reading an unanswerable question
- * as "no such ref" would fail open (same rule as `unknown`, specification 7.1).
+ * `200` is present and `404` is absent; anything else throws a `ForgeError`.
+ * The check finds a ref shadowing a commit of the same name, so reading an
+ * unanswerable question as "no such ref" would fail open (same rule as
+ * `unknown`, specification 7.1).
  * @param status {int} the HTTP status the forge answered with
+ * @param headers {map of string to string} the response headers, keys lowercased
+ * @param now {int} the current time (Unix seconds)
  * @return {bool} true when the ref exists, false when it provably does not
  */
-export func refPresence(status as int) {
+export func refPresence(status as int, headers as map of string to string, now as int) {
     if ($status == 200) {
         return true;
     }
     if ($status == 404) {
         return false;
     }
-    throw Error{
-        kind: "forge",
-        message: "could not tell whether the repository has a ref of that name: " +
+    throw failure(
+        $status,
+        $headers,
+        "could not tell whether the repository has a ref of that name: " +
             "the forge answered " + convert.toString($status),
-        file: "",
-        line: 0,
-        col: 0
-    };
+        $now);
 }
 
 /**

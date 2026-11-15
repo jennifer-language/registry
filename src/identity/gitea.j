@@ -26,6 +26,7 @@ use convert;
 use encoding;
 import "http.j" as http;
 import "../identity.j" as identity;
+import "../outbound.j" as outbound;
 
 def const TIMEOUT_MS as int init 10000;
 def const MAX_BYTES as int init 65536;
@@ -173,8 +174,10 @@ export func pollFrom(doc as json.Value) {
     };
 }
 
-func post(url as string, body as string) {
-    def res as http.Response init http.requestWith(
+func post(cfg as identity.Config, url as string, body as string) {
+    def res as http.Response init outbound.request(
+        $cfg.trace,
+        "identity",
         "POST",
         $url,
         jsonHeaders(),
@@ -207,14 +210,14 @@ func flowOf(cfg as identity.Config) {
 func start(cfg as identity.Config) {
     def body as string init clientFields($cfg) + "&" +
         formField("scope", scopesFor($cfg));
-    return deviceFrom(post(endpointFor($cfg, "device"), $body));
+    return deviceFrom(post($cfg, endpointFor($cfg, "device"), $body));
 }
 
 func pollOnce(cfg as identity.Config, deviceCode as string) {
     def body as string init clientFields($cfg) + "&" +
         formField("device_code", $deviceCode) + "&" +
         formField("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
-    return pollFrom(post(endpointFor($cfg, "token"), $body));
+    return pollFrom(post($cfg, endpointFor($cfg, "token"), $body));
 }
 
 func authorize(cfg as identity.Config) {
@@ -227,14 +230,16 @@ func exchange(cfg as identity.Config, code as string, verifier as string, redire
         formField("code", $code) + "&" +
         formField("code_verifier", $verifier) + "&" +
         formField("redirect_uri", $redirectUri);
-    def doc as json.Value init post(endpointFor($cfg, "token"), $body);
+    def doc as json.Value init post($cfg, endpointFor($cfg, "token"), $body);
     return json.asString($doc, "/access_token");
 }
 
 func subjectOf(cfg as identity.Config, accessToken as string) {
     def h as map of string to string init jsonHeaders();
     $h["Authorization"] = "Bearer " + $accessToken;
-    def res as http.Response init http.requestWith(
+    def res as http.Response init outbound.request(
+        $cfg.trace,
+        "identity",
         "GET",
         endpointFor($cfg, "user"),
         $h,

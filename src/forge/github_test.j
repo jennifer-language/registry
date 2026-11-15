@@ -11,9 +11,17 @@
 
 use testing;
 use json;
+use httpd;
+use task;
 
 func cfg() {
-    return forge.Config{name: "github", baseUrl: "", apiToken: "", host: ""};
+    return forge.Config{
+        name: "github",
+        baseUrl: "",
+        apiToken: "",
+        host: "",
+        trace: outbound.none()
+    };
 }
 
 func doc(text as string) {
@@ -30,7 +38,8 @@ func testAnEnterpriseInstanceClaimsItsOwnHost() {
         name: "github",
         baseUrl: "https://gh.corp.test/api/v3",
         apiToken: "",
-        host: "gh.corp.test"
+        host: "gh.corp.test",
+        trace: outbound.none()
     };
     testing.assertTrue(handlesUrl($ent, "https://gh.corp.test/acme/deck.git"));
     testing.assertFalse(handlesUrl($ent, "https://github.com/acme/deck.git"));
@@ -85,4 +94,65 @@ func testPermissionNeverAsksWithTheRegistrysOwnToken() {
     testing.assertFalse($p.known);
     testing.assertFalse($p.push);
     testing.assertContains($p.reason, "caller credential");
+}
+
+# --- a rate-limited GitHub, on loopback -----------------------------------------
+
+# serveRateLimit answers `count` requests the way GitHub answers an anonymous
+# caller past 60 requests an hour.
+func serveRateLimit(srv as httpd.Server, count as int, reset as int) {
+    for (def i in 0..$count) {
+        def req as httpd.Request init httpd.accept($srv);
+        httpd.setHeader($req, "Content-Type", "application/json; charset=utf-8");
+        httpd.setHeader($req, "x-ratelimit-limit", "60");
+        httpd.setHeader($req, "x-ratelimit-remaining", "0");
+        httpd.setHeader($req, "x-ratelimit-reset", convert.toString($reset));
+        httpd.setHeader($req, "x-github-request-id", "C0DE:1234:ABCD");
+        httpd.respond(
+            $req,
+            403,
+            '{"message":"API rate limit exceeded for 203.0.113.7.","documentation_url":"x"}');
+    }
+    return null;
+}
+
+func testARateLimitedReadThrowsTheForgesWait() {
+    def srv as httpd.Server init httpd.listen("127.0.0.1:0");
+    defer httpd.shutdown($srv);
+    def reset as int init nowSeconds() + 1800;
+    def server as task of null init spawn {
+        return serveRateLimit($srv, 3, $reset);
+    };
+    def c as forge.Config init cfg();
+    $c.baseUrl = "http://" + httpd.address($srv);
+    def repoUrl as string init "https://github.com/deckyard/deck-forgejo";
+    # the first read of a publish: a 403 that is a rate limit, not a refusal
+    def wait as int init 0;
+    def status as int init 0;
+    try {
+        resolveTag($c, $repoUrl, "0.4.0");
+    } catch (e) {
+        testing.assertEqual($e.kind, "forge");
+        $status = $e.status;
+        $wait = $e.retryAfter;
+    }
+    testing.assertEqual($status, 403);
+    testing.assertTrue($wait > 1790 and $wait <= 1800);
+    # the repository read throws the same
+    $wait = 0;
+    try {
+        repo($c, $repoUrl);
+    } catch (e) {
+        $wait = $e.retryAfter;
+    }
+    testing.assertTrue($wait > 1790);
+    # a permission check that is rate-limited is not "unknown" (a 403 refusal)
+    $wait = 0;
+    try {
+        permission($c, $repoUrl, "caller-token");
+    } catch (e) {
+        $wait = $e.retryAfter;
+    }
+    testing.assertTrue($wait > 1790);
+    task.wait($server);
 }

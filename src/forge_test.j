@@ -63,22 +63,38 @@ func testUnknownIsNotARefusal() {
 # --- ref presence -------------------------------------------------------------
 
 func testRefPresenceReadsTheTwoAnswersItTrusts() {
-    testing.assertTrue(refPresence(200));
-    testing.assertFalse(refPresence(404));
+    testing.assertTrue(refPresence(200, {}, 0));
+    testing.assertFalse(refPresence(404, {}, 0));
 }
 
 func throwOnAServerError() {
-    refPresence(500);
+    refPresence(500, {}, 0);
 }
 
 func throwOnAnAuthFailure() {
-    refPresence(403);
+    refPresence(403, {}, 0);
 }
 
 func testRefPresenceRefusesToGuess() {
     # reading "no answer" as "no such ref" would fail open on a shadowing ref
     testing.assertThrows("throwOnAServerError", "forge");
     testing.assertThrows("throwOnAnAuthFailure", "forge");
+}
+
+func testRefPresenceCarriesARateLimitsWait() {
+    def h as map of string to string init {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "1000"
+    };
+    def wait as int init -1;
+    try {
+        refPresence(403, $h, 400);
+    } catch (e) {
+        testing.assertEqual($e.kind, "forge");
+        testing.assertEqual($e.status, 403);
+        $wait = $e.retryAfter;
+    }
+    testing.assertEqual($wait, 600);
 }
 
 # --- repository URLs ----------------------------------------------------------
@@ -211,7 +227,13 @@ func testACollaboratorPayloadIsReadByRole() {
 }
 
 func serviceCfg(token as string) {
-    return Config{name: "gitea", baseUrl: "https://git.example.com", apiToken: $token, host: ""};
+    return Config{
+        name: "gitea",
+        baseUrl: "https://git.example.com",
+        apiToken: $token,
+        host: "",
+        trace: outbound.none()
+    };
 }
 
 func testTheServiceAccountMustHoldATokenAndAskAboutAName() {
@@ -269,4 +291,59 @@ func testANotFoundReadIsTheAbsentKind() {
     testing.assertEqual(kindOf(404), ABSENT);
     testing.assertEqual(kindOf(500), "forge");
     testing.assertEqual(kindOf(403), "forge");
+}
+
+# --- rate limits ----------------------------------------------------------------
+
+func testGithubsPrimaryLimitWaitsUntilTheReset() {
+    # the 403 GitHub sends anonymous callers past 60 requests an hour
+    def h as map of string to string init {
+        "x-ratelimit-limit": "60",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": "1794768489"
+    };
+    testing.assertEqual(rateLimitWait(403, $h, 1794768489 - 1200), 1200);
+    testing.assertEqual(rateLimitWait(429, $h, 1794768489 - 1200), 1200);
+    # a reset already passed still waits a second, never zero or less
+    testing.assertEqual(rateLimitWait(403, $h, 1794768489 + 5), 1);
+}
+
+func testRetryAfterWinsAndIsSecondsOnly() {
+    # GitHub's secondary limit, GitLab's and Gitea's 429
+    testing.assertEqual(rateLimitWait(403, {"retry-after": "90"}, 0), 90);
+    testing.assertEqual(rateLimitWait(429, {"retry-after": "5", "ratelimit-reset": "999"}, 0), 5);
+    # an HTTP-date is not read; a 429 then falls back to the default wait
+    testing.assertEqual(
+        rateLimitWait(429, {"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"}, 0),
+        60);
+    # GitLab's reset time when it sends no retry-after
+    testing.assertEqual(rateLimitWait(429, {"ratelimit-reset": "130"}, 100), 30);
+    # never longer than an hour
+    testing.assertEqual(rateLimitWait(429, {"retry-after": "86400"}, 0), 3600);
+}
+
+func testAForbiddenAnswerIsNotALimitByItself() {
+    # a private repository or a refused token is a 403 without the headers
+    testing.assertEqual(rateLimitWait(403, {}, 0), 0);
+    testing.assertEqual(rateLimitWait(403, {"x-ratelimit-remaining": "12"}, 0), 0);
+    testing.assertEqual(rateLimitWait(404, {"retry-after": "60"}, 0), 0);
+    testing.assertEqual(rateLimitWait(500, {"x-ratelimit-remaining": "0"}, 0), 0);
+}
+
+func testAFailureKeepsItsKindStatusAndWait() {
+    def limited as ForgeError init failure(
+        403,
+        {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "160"},
+        "could not read deck.toml",
+        100);
+    testing.assertEqual($limited.kind, "forge");
+    testing.assertEqual($limited.status, 403);
+    testing.assertEqual($limited.retryAfter, 60);
+    testing.assertEqual($limited.message, "could not read deck.toml");
+    def missing as ForgeError init failure(404, {}, "not found", 0);
+    testing.assertEqual($missing.kind, ABSENT);
+    testing.assertEqual($missing.retryAfter, 0);
+    def unasked as ForgeError init complaint("no baseUrl");
+    testing.assertEqual($unasked.status, 0);
+    testing.assertEqual($unasked.kind, "forge");
 }
