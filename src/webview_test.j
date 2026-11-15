@@ -595,7 +595,12 @@ func testEveryPageHeadAdvertisesTheFeed() {
                 'title="Jennifer registry: new and updated decks" href="/feed.atom">');
         testing.assertContains($head, 'type="application/rss+xml"');
     }
-    testing.assertContains(home(emptyDb(), NOW).body, '<a href="/feed.atom">Atom</a>');
+    # The header carries a feed icon on every page; the home page no longer
+    # repeats the feed links as a sentence.
+    for (def body in [home(emptyDb(), NOW).body, notFound("gone").body]) {
+        testing.assertContains($body, '<a class="feed" href="/feed.atom"');
+    }
+    testing.assertFalse(strings.contains(home(emptyDb(), NOW).body, "as a feed:"));
 }
 
 func testAScopePageAdvertisesItsOwnFeed() {

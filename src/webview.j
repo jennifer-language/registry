@@ -176,6 +176,10 @@ nav a:hover, .muted a:hover { color: var(--accent); }
   outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
+.feed { display: inline-flex; align-items: center; }
+.feed svg { width: 16px; height: 16px; fill: none; stroke: currentColor;
+  stroke-width: 2.2; stroke-linecap: round; }
+.feed svg circle { fill: currentColor; stroke: none; }
 .theme svg { width: 14px; height: 14px; fill: none; stroke: currentColor;
   stroke-width: 1.7; stroke-linecap: round; }
 /* The icon and word describe what a click *gives you*, so only one shows at a
@@ -419,6 +423,10 @@ func layoutFeeds(title as string, body as string, extra as string) {
 <a href="/reference/">Admin manual</a>
 <a href="/specs/">Specs</a>
 <a href="/.well-known/jennifer-registry">API</a>
+<a class="feed" href="/feed.atom" title="Feed of new and updated decks (Atom)"
+  aria-label="Feed of new and updated decks (Atom)"><svg viewBox="0 0 24 24"
+  aria-hidden="true"><circle cx="5.5" cy="18.5" r="2"/><path d="M4 11a9 9 0 0 1 9 9"/>
+<path d="M4 4a16 16 0 0 1 16 16"/></svg></a>
 <button type="button" class="theme"
   aria-label="Switch between light and dark">
 <span class="to-light"><svg viewBox="0 0 24 24" aria-hidden="true">
@@ -538,9 +546,7 @@ export func homeFrom(total as int, picks as json.Value) {
         '<nav class="ways" aria-label="Find decks">' +
         wayCard("/browse", BROWSE_ICON, "Browse", "All " + $count + ", by name") +
         wayCard("/tags", TAG_ICON, "Tags", "Decks grouped by what they are for") +
-        '</nav>' + featuredSection(featured.fromJson($picks)) +
-        '<p class="muted">New and updated decks as a feed: ' +
-        '<a href="/feed.atom">Atom</a> or <a href="/feed.rss">RSS</a>.</p>';
+        '</nav>' + featuredSection(featured.fromJson($picks));
     return Page{status: 200, body: layout("Jennifer registry", $body)};
 }
 
