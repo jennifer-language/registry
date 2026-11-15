@@ -1353,6 +1353,17 @@ func apiPublish(ctx as web.Context) {
     try {
         $src = sourceFrom($repository, $tag);
     } catch (err) {
+        # A network failure reaching the forge is a net.NetError (jennifer
+        # M28.65), a struct the `err as Error` parameter below would reject
+        # with a type error, so it is answered here: the same 503.
+        if ($err.kind == "net") {
+            refusePublish(
+                $ctx,
+                503,
+                "could not reach the forge for " + $repository + " at " +
+                    $tag + ": " + $err.message);
+            return;
+        }
         sourceFailure($ctx, $err, $repository, $tag);
         return;
     }
