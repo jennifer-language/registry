@@ -271,28 +271,60 @@ func settle(client as acme.Client, tls as config.Tls, authzUrl as string) {
     fs.mkdirAll($tls.challengeDir);
     fs.writeString(challengePath($tls, $ch.token), $answer);
     acme.accept($client, $ch.url);
-    def settled as acme.Authorization init acme.pollAuthorization(
-        $client,
-        $authzUrl,
-        POLL_INTERVAL_MS,
-        POLL_TRIES);
+    # Interpreters from 0.27.0 on throw an AcmeError (status 0, the failed
+    # challenge's problem in `detail`) for an authorization that settles other
+    # than `valid`, or stays pending; 0.26.0 returns it as `invalid`. Both become
+    # the same hint. An AcmeError carrying an HTTP status is the CA refusing a
+    # request, and anything else is the transport's; those pass on unchanged.
+    def status as string init "";
+    def detail as string init "";
     try {
-        fs.remove(challengePath($tls, $ch.token));
+        def settled as acme.Authorization init acme.pollAuthorization(
+            $client,
+            $authzUrl,
+            POLL_INTERVAL_MS,
+            POLL_TRIES);
+        $status = $settled.status;
+    } catch (err) {
+        if (not ($err.kind == "acme") or not ($err.status == 0)) {
+            removeChallenge($tls, $ch.token);
+            throw $err;
+        }
+        $status = "not validated";
+        $detail = $err.detail;
+    }
+    removeChallenge($tls, $ch.token);
+    if (not ($status == "valid")) {
+        throw unverified($authz.domain, $status, $detail);
+    }
+    return null;
+}
+
+# removeChallenge deletes a challenge response once the CA has decided.
+func removeChallenge(tls as config.Tls, token as string) {
+    try {
+        fs.remove(challengePath($tls, $token));
     } catch (err) { # lint-disable: L103
         # the response has served its purpose; a leftover file is harmless
     }
-    if (not ($settled.status == "valid")) {
-        throw Error{
-            kind: "certs",
-            message: "the CA could not verify " + $settled.domain + " (" +
-                $settled.status + "); check that port 80 reaches this registry " +
-                "and that the domain resolves to it",
-            file: "",
-            line: 0,
-            col: 0
-        };
+}
+
+# unverified is the error for a domain the CA could not verify over HTTP-01,
+# with the hint an operator needs: the authorization's status as far as it is
+# known, and the CA's reason from the failed challenge when it gave one.
+func unverified(domain as string, status as string, detail as string) {
+    def why as string init $status;
+    if (not ($detail == "")) {
+        $why = $why + ": " + $detail;
     }
-    return null;
+    return Error{
+        kind: "certs",
+        message: "the CA could not verify " + $domain + " (" + $why + "); check that " +
+            "port 80 reaches this registry and that the domain resolves to it",
+        file: "",
+        line: 0,
+        col: 0
+    };
 }
 
 /**

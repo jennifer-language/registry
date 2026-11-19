@@ -6,11 +6,14 @@
 #
 #     jennifer test src/certs_test.j
 #
-# The ACME conversation needs a CA and is not tested here; renewal timing and
-# path building are.
+# Renewal timing and path building, and how a domain the CA cannot verify is
+# reported, against an in-process fake CA on loopback (plain http is allowed
+# there). The rest of the ACME conversation needs a real CA and is not tested.
 
 use testing;
 use fs;
+use httpd;
+use task;
 
 def const NOW as int init 1700000000;
 def const DAY as int init 86400;
@@ -154,4 +157,92 @@ func testSaveLeavesNoStagingFilesAndReplacesABundle() {
     }
     testing.assertEqual(fs.stat(pathsFor($cfg, "example.test")[1]).mode, 0o600);
     fs.removeAll($dir);
+}
+
+# --- verification -------------------------------------------------------------
+
+# fakeCa answers until it is shut down: a directory, nonces, an accepted
+# challenge, and an authorization that is `pending` when first read and `invalid`
+# (with the failed challenge's reason) from then on.
+func fakeCa(srv as httpd.Server) {
+    def base as string init "http://" + httpd.address($srv);
+    def authzReads as int init 0;
+    while (true) {
+        def r as httpd.Request;
+        try {
+            $r = httpd.accept($srv);
+        } catch (err) { # lint-disable: L103
+            return null;
+        }
+        httpd.setHeader($r, "Replay-Nonce", "nonce" + convert.toString($authzReads));
+        def p as string init httpd.path($r);
+        if ($p == "/dir") {
+            httpd.respond(
+                $r,
+                200,
+                '{"newNonce":"' + $base + '/nonce","newAccount":"' + $base +
+                    '/acct","newOrder":"' + $base + '/order"}');
+        } elseif ($p == "/authz/1") {
+            def state as string init "invalid";
+            if ($authzReads == 0) {
+                $state = "pending";
+            }
+            $authzReads = $authzReads + 1;
+            httpd.respond(
+                $r,
+                200,
+                '{"identifier":{"type":"dns","value":"reg.example"},"status":"' + $state +
+                    '","challenges":[{"type":"http-01","url":"' + $base +
+                    '/chall/1","token":"tok_123-abc","status":"' + $state +
+                    '","error":{"type":"urn:ietf:params:acme:error:connection",' +
+                    '"detail":"connection refused"}}]}');
+        } elseif ($p == "/chall/1") {
+            httpd.respond(
+                $r,
+                200,
+                '{"type":"http-01","url":"' + $base +
+                    '/chall/1","token":"tok_123-abc","status":"processing"}');
+        } else {
+            httpd.respond($r, 200, "");
+        }
+    }
+    return null;
+}
+
+func testAnUnverifiedDomainCarriesTheReachabilityHint() {
+    # 0.26.0 returns the authorization as `invalid`, later interpreters throw an
+    # AcmeError; both must reach the operator as the same "certs" hint.
+    def dir as string init fs.makeTempDir("", "jvc-certs");
+    def cfg as config.Tls init tls();
+    $cfg.challengeDir = $dir + "/challenge";
+    def srv as httpd.Server init httpd.listen("127.0.0.1:0");
+    def server as task of null init spawn {
+        return fakeCa($srv);
+    };
+    def base as string init "http://" + httpd.address($srv);
+    def client as acme.Client init acme.connect($base + "/dir", crypto.keypair("p256").private);
+    $client.kid = $base + "/acct/1";
+    def kind as string init "";
+    def message as string init "";
+    try {
+        settle($client, $cfg, $base + "/authz/1");
+    } catch (err) {
+        $kind = $err.kind;
+        $message = $err.message;
+    }
+    httpd.shutdown($srv);
+    task.wait($server);
+    testing.assertEqual($kind, "certs");
+    testing.assertContains($message, "reg.example");
+    testing.assertContains($message, "port 80");
+    # the challenge response is gone once the CA has decided
+    testing.assertEqual(len(fs.list($cfg.challengeDir)), 0);
+    fs.removeAll($dir);
+}
+
+func testTheHintNamesTheCasReasonWhenThereIsOne() {
+    def e as Error init unverified("reg.example", "invalid", "connection refused");
+    testing.assertEqual($e.kind, "certs");
+    testing.assertContains($e.message, "(invalid: connection refused)");
+    testing.assertContains(unverified("reg.example", "invalid", "").message, "(invalid)");
 }
