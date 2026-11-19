@@ -29,6 +29,7 @@ use json;
 use strings;
 use convert;
 use encoding;
+use regex;
 import "uri.j" as uri;
 import "./outbound.j" as outbound;
 
@@ -579,8 +580,9 @@ export func pathOf(url as string) {
  * Adapters build API calls from the configured base URL and `pathOf(url)` only,
  * while the whole URL is recorded and handed to clients. Anything the adapters
  * do not read would let the two disagree, so userinfo, query, fragment and
- * misleading path segments (`..`, an encoded `/`) are refused before any request.
- * The host is judged by `Forge.handles`.
+ * misleading path segments (`..`, an encoded `/`) are refused before any request,
+ * and so is an authority `uri.parse` rejects (a port that is not 0-65535, an
+ * unclosed `[`). The host is judged by `Forge.handles`.
  * @param url {string} the repository URL from the request
  * @return {string} the complaint, or ""
  */
@@ -588,6 +590,9 @@ export func repositoryProblem(url as string) {
     def raw as string init strings.trim($url);
     if ($raw == "") {
         return "missing `repository`";
+    }
+    if (malformedAuthority($raw)) {
+        return MALFORMED_AUTHORITY;
     }
     def u as uri.Uri init uri.parse($raw);
     if (not ($u.scheme == "https" or $u.scheme == "http")) {
@@ -621,10 +626,17 @@ export func repositoryProblem(url as string) {
  * @return {string} the complaint, or "" when the URL is acceptable
  */
 export func originProblem(url as string, baseUrl as string) {
+    if (malformedAuthority(strings.trim($url))) {
+        return MALFORMED_AUTHORITY;
+    }
     def u as uri.Uri init uri.parse(strings.trim($url));
     def scheme as string init "https";
     def port as string init "";
     if (not (strings.trim($baseUrl) == "")) {
+        if (malformedAuthority(strings.trim($baseUrl))) {
+            return "the forge's configured base URL has a malformed host or port, so " +
+                "no repository URL can be checked against it";
+        }
         def b as uri.Uri init uri.parse(strings.trim($baseUrl));
         $scheme = strings.lower($b.scheme);
         $port = $b.port;
@@ -636,6 +648,51 @@ export func originProblem(url as string, baseUrl as string) {
         return "the repository URL names a port the forge is not configured on";
     }
     return "";
+}
+
+def const MALFORMED_AUTHORITY as string init "the repository URL has a malformed host or port";
+
+# malformedAuthority reports whether a URL's host and port cannot be read
+# unambiguously: `uri.parse` throws kind "uri" (a port that is not 0-65535, an
+# unclosed `[`, text after an IP literal's `]`), or, on interpreters whose
+# `uri.parse` is lenient, the parts it returns do not spell the authority as
+# written. A URL without `//` has no authority and is judged elsewhere.
+func malformedAuthority(raw as string) {
+    def u as uri.Uri;
+    try {
+        $u = uri.parse($raw);
+    } catch (err) {
+        if ($err.kind == "uri") {
+            return true;
+        }
+        throw $err;
+    }
+    def start as int init strings.indexOf($raw, "://");
+    if ($start < 0) {
+        return false;
+    }
+    def auth as string init strings.substring($raw, $start + 3, len($raw));
+    for (def stop in ["/", "?", "#"]) {
+        def at as int init strings.indexOf($auth, $stop);
+        if ($at >= 0) {
+            $auth = strings.substring($auth, 0, $at);
+        }
+    }
+    def userEnd as int init strings.lastIndexOf($auth, "@");
+    if ($userEnd >= 0) {
+        $auth = strings.substring($auth, $userEnd + 1, len($auth));
+    }
+    def spelled as string init $u.host;
+    if (not ($u.port == "")) {
+        if (not regex.matches('^[0-9]{1,5}$', $u.port) or convert.toInt($u.port) > 65535) {
+            return true;
+        }
+        $spelled = $spelled + ":" + $u.port;
+    }
+    if (strings.startsWith($u.host, "[") and not strings.endsWith($u.host, "]")) {
+        return true;
+    }
+    return not (strings.lower($auth) == strings.lower($spelled));
 }
 
 /**

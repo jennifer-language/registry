@@ -119,6 +119,25 @@ func testWhatTheAdaptersIgnoreIsRefused() {
     testing.assertContains(repositoryProblem("https://github.com/acme/deck#main"), "fragment");
 }
 
+func testAMalformedAuthorityIsARefusalNotAnError() {
+    # uri.parse throws kind "uri" for these; a publish must answer 400, not 500
+    for (def bad in [
+        "https://git.example.com:99999/x/y.git",
+        "https://git.example.com:80a/x/y.git",
+        "https://[::1]junk/x.git",
+        "https://[::1/x/y.git"
+    ]) {
+        testing.assertContains(repositoryProblem($bad), "malformed");
+        testing.assertContains(originProblem($bad, ""), "malformed");
+    }
+}
+
+func testAMalformedForgeBaseUrlIsAComplaint() {
+    testing.assertContains(
+        originProblem("https://git.example.com/o/r", "https://git.example.com:99999"),
+        "base URL");
+}
+
 func testAPathCannotMeanSomethingElse() {
     testing.assertContains(repositoryProblem("https://github.com/acme/../evil/deck"), "segment");
     testing.assertContains(repositoryProblem("https://github.com/acme//deck"), "segment");
