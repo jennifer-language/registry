@@ -22,6 +22,7 @@ use convert;
 use lists;
 import "flatdb.j" as flatdb;
 import "args.j" as args;
+import "uri.j" as uri;
 import "./store.j" as store;
 import "./deckname.j" as deckname;
 import "./scope.j" as scope;
@@ -35,6 +36,7 @@ import "./keywords.j" as keywords;
 import "./token.j" as token;
 import "./constraint.j" as constraint;
 import "./enginerange.j" as enginerange;
+import "./forge.j" as forge;
 
 # The identity providers a scope may be bound to: the modules under
 # src/identity/, as `config.IDENTITIES` names them (not exported, so repeated here).
@@ -394,8 +396,11 @@ def const URL_SCHEMES as list of string init ["https://", "http://", "ssh://", "
 
 # urlProblem is why a version's URL cannot be stored, or "". Looser than the
 # publish endpoint's `forge.repositoryProblem`, which knows the forge: an
-# operator may record a mirror or a local path. Whitespace, quotes and angle
-# brackets are refused because the URL is printed into pages and shell snippets.
+# operator may record a mirror or a local path (ssh, git and file URLs, a tar.gz
+# anywhere, no owner/repository path). Whitespace, quotes and angle brackets are
+# refused because the URL is printed into pages and shell snippets. The host and
+# port are judged as the publish endpoint judges them (`forge.malformedAuthority`),
+# and every scheme but file:// needs a host.
 func urlProblem(url as string) {
     def known as bool init false;
     for (def scheme in URL_SCHEMES) {
@@ -410,6 +415,12 @@ func urlProblem(url as string) {
         if ($ch <= " " or $ch == "\u007f" or strings.contains("\"'<>`\\", $ch)) {
             return "the URL has a space, quote, or control character in it: " + $url;
         }
+    }
+    if (forge.malformedAuthority($url)) {
+        return "the URL has a malformed host or port: " + $url;
+    }
+    if (not strings.startsWith($url, "file://") and uri.parse($url).host == "") {
+        return "the URL names no host: " + $url;
     }
     return "";
 }

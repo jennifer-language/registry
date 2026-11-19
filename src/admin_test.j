@@ -1041,6 +1041,30 @@ func testAddRefusesAnUnfetchableUrl() {
     testing.assertTrue(dispatch(registered(), gitAdd("@acme/ansi", "1.0.0", "file:///srv/a")).ok);
 }
 
+# The host and port are judged as the publish endpoint judges them; the schemes
+# and paths a mirror or local copy needs stay accepted.
+func testAddRefusesAMalformedHostOrPort() {
+    def bad as list of string init ["https://host:99999/a/b", "https://host:x/a", "http://[::1/a"];
+    for (def url in $bad) {
+        def r as AdminResult init dispatch(registered(), gitAdd("@acme/ansi", "1.0.0", $url));
+        testing.assertFalse($r.ok);
+        testing.assertContains($r.message, "malformed host or port");
+        testing.assertFalse(store.hasVersion($r.db, "@acme/ansi", "1.0.0"));
+    }
+    for (def url in ["https:///a/b", "https://:443/a/b", "ssh://git@:22/a", "git:///a"]) {
+        def r as AdminResult init dispatch(registered(), gitAdd("@acme/ansi", "1.0.0", $url));
+        testing.assertFalse($r.ok);
+        testing.assertContains($r.message, "names no host");
+    }
+    def good as list of string init ["https://host:8443/a/b", "ssh://git@host:22/a.git"];
+    $good[] = "git://host/a";
+    $good[] = "http://[::1]:3000/mirror";
+    $good[] = "file:///srv/a";
+    for (def url in $good) {
+        testing.assertTrue(dispatch(registered(), gitAdd("@acme/ansi", "1.0.0", $url)).ok);
+    }
+}
+
 func testAddRefusesAnInvalidEngineConstraint() {
     def argv as list of string init gitAdd("@acme/ansi", "1.0.0", "https://x/a");
     $argv[] = "--engines";

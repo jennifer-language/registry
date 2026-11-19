@@ -652,12 +652,16 @@ export func originProblem(url as string, baseUrl as string) {
 
 def const MALFORMED_AUTHORITY as string init "the repository URL has a malformed host or port";
 
-# malformedAuthority reports whether a URL's host and port cannot be read
-# unambiguously: `uri.parse` throws kind "uri" (a port that is not 0-65535, an
-# unclosed `[`, text after an IP literal's `]`), or, on interpreters whose
-# `uri.parse` is lenient, the parts it returns do not spell the authority as
-# written. A URL without `//` has no authority and is judged elsewhere.
-func malformedAuthority(raw as string) {
+/**
+ * Whether a URL's host and port cannot be read unambiguously: `uri.parse` throws
+ * kind "uri" (a port that is not 0-65535, an unclosed `[`, text after an IP
+ * literal's `]`), or, on interpreters whose `uri.parse` is lenient, the parts it
+ * returns do not spell the authority as written. A URL without `//` has no
+ * authority and is judged elsewhere. Pure; `deckadmin add` shares it.
+ * @param raw {string} the URL, already trimmed
+ * @return {bool} true when the authority is malformed
+ */
+export func malformedAuthority(raw as string) {
     def u as uri.Uri;
     try {
         $u = uri.parse($raw);
