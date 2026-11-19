@@ -540,6 +540,11 @@ export func problem(cfg as Config) {
         return "tls.enabled is set but tls.agreeTos is false; the CA's terms " +
             "must be accepted deliberately, not by default";
     }
+    # The account key signs every request to the CA, and the acme module refuses
+    # a plain-http CA that is not on this machine.
+    if (strings.trim($cfg.tls.directory) == "" or not secureBase($cfg.tls.directory)) {
+        return "tls.directory must be an https URL (http is allowed for a loopback host only)";
+    }
     return "";
 }
 

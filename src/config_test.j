@@ -429,6 +429,29 @@ func testAPlainHttpBaseUrlIsRefusedUnlessLoopback() {
     }
 }
 
+func testTheAcmeDirectoryMustBeHttpsUnlessLoopback() {
+    def env as map of string to string init {
+        "REGISTRY_TLS": "1",
+        "REGISTRY_TLS_DOMAINS": "a.test",
+        "REGISTRY_TLS_EMAIL": "ops@a.test",
+        "REGISTRY_ACME_AGREE_TOS": "1"
+    };
+    def c as Config init applyEnv(defaults(), $env);
+    testing.assertEqual(problem($c), "");
+    for (def bad in ["http://ca.corp.test/directory", "ftp://ca.test/dir", " "]) {
+        $c.tls.directory = $bad;
+        testing.assertContains(problem($c), "tls.directory must be an https URL");
+    }
+    for (def ok in [LE_STAGING, "http://127.0.0.1:14000/dir", "http://localhost/dir"]) {
+        $c.tls.directory = $ok;
+        testing.assertEqual(problem($c), "");
+    }
+    # irrelevant while TLS is off
+    $c.tls.directory = "http://ca.corp.test/directory";
+    $c.tls.enabled = false;
+    testing.assertEqual(problem($c), "");
+}
+
 func testTheRenewalWindowIsBounded() {
     def env as map of string to string init {
         "REGISTRY_TLS": "1",

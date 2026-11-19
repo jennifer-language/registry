@@ -117,7 +117,7 @@ failure; a failed first issuance leaves the registry on plain HTTP with an
 | `REGISTRY_TLS_DOMAINS` | unset | `serve` | the certificate's names, comma or space separated |
 | `REGISTRY_TLS_EMAIL` | unset | `serve` | the account contact the CA requires |
 | `REGISTRY_ACME_AGREE_TOS` | `0` | `serve` | accept the CA's terms |
-| `REGISTRY_ACME_DIRECTORY` | Let's Encrypt production | `serve` | the ACME directory URL |
+| `REGISTRY_ACME_DIRECTORY` | Let's Encrypt production | `serve` | the ACME directory URL: `https://`, or `http://` to a loopback CA |
 | `REGISTRY_TLS_CERTDIR` | `data/tls` | `serve` | where the certificate is stored |
 | `REGISTRY_ACME_CHALLENGEDIR` | `data/acme-challenge` | `serve` | where challenge responses are written |
 | `REGISTRY_TLS_RENEW_BEFORE_DAYS` | `30` | `serve` | how early to renew |
