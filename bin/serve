@@ -2011,10 +2011,12 @@ if ($authOn) {
 }
 
 /**
- * The `webapi` guard as a middleware. A middleware receives only the request, and
- * there are no closures, so this shim supplies `$api`.
+ * The `webapi` guard. `webapi.install` makes it every API route's handler: it
+ * checks the route's spec, then runs the route's own handler (a throw becomes a
+ * 500 envelope). A handler receives only the request, and there are no
+ * closures, so this shim supplies `$api`.
  * @param ctx {web.Context} the request context
- * @return {bool} true when the request may run its handler
+ * @return {bool} what the guard returns for the request
  */
 func apiGuard(ctx as web.Context) {
     return webapi.guard($api, $ctx);
@@ -2032,8 +2034,9 @@ func forwardedFor(ctx as web.Context) {
 }
 
 /**
- * The access log, as a `before` middleware. Registered ahead of the `webapi`
- * guard so a rejected request is still recorded.
+ * The access log, as a `before` middleware. Every `before` middleware runs ahead
+ * of the `webapi` guard, which is the route handler, so a request the guard
+ * rejects is still recorded.
  *
  * It also gives the request its id (`requestIdOf`), sent back as
  * `X-Request-Id` and carried by every event the request writes (`sinkOf`).
