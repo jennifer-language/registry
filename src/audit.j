@@ -28,6 +28,7 @@ use maps;
 use strings;
 use convert;
 use encoding;
+use regex;
 import "log.j" as log;
 
 # The levels, in the order log.j ranks them. Constants, so a typo is a lookup
@@ -272,6 +273,9 @@ func cleaned(ev as Event) {
 # Unicode line and paragraph separators, which some terminals break a line on.
 def const BIDI as string init "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u2028\u2029";
 
+# UNPRINTABLE matches any character `printable` escapes: C0, DEL, C1 and BIDI.
+def const UNPRINTABLE as string init '[\x00-\x1f\x7f-\x9f\x{202a}-\x{202e}\x{2066}-\x{2069}\x{2028}\x{2029}]';
+
 /**
  * Text with its control characters escaped as `\xNN` per UTF-8 byte, and
  * anything else unchanged. Pure.
@@ -279,6 +283,11 @@ def const BIDI as string init "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\
  * @return {string} the text, safe to print on a terminal
  */
 export func printable(s as string) {
+    # Almost every field has nothing to escape: one regex pass (in Go) says
+    # so, and the text goes back unchanged without a walk per character.
+    if (not regex.matches(UNPRINTABLE, $s)) {
+        return $s;
+    }
     def parts as list of string init [];
     def changed as bool init false;
     for (def ch in strings.chars($s)) {

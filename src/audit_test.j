@@ -236,6 +236,18 @@ func testC1ControlsAndLineSeparatorsAreEscapedToo() {
     testing.assertEqual(printable("a bé"), "a bé");
 }
 
+func testTheFastCheckAgreesWithTheEscapeRule() {
+    # printable returns early when UNPRINTABLE does not match: the pattern must
+    # match exactly the characters the loop escapes.
+    for (def cp in 0..0x2200) {
+        def ch as string init convert.fromCodepoint($cp);
+        def escapes as bool init $ch < " " or ($ch >= "\u007f" and $ch <= "\u009f") or
+            strings.contains(BIDI, $ch);
+        testing.assertEqual(regex.matches(UNPRINTABLE, $ch), $escapes);
+    }
+    testing.assertEqual(printable("/v1/deck/@acme/tool"), "/v1/deck/@acme/tool");
+}
+
 func testAHandlerFailureIsAnErrorWithWhereItHappened() {
     def err as Error init Error{
         kind: "runtime",
