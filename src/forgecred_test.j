@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for forgecred.j. Run with:
 #
@@ -11,7 +11,7 @@ use strings;
 
 # keyOf is a signing key from text, as `bin/serve` makes one from its config.
 func keyOf(text as string) {
-    return convert.bytesFromString("utf-8", $text);
+    return encoding.encode("utf-8", $text);
 }
 
 func testASealedCredentialComesBack() {
@@ -57,9 +57,9 @@ func unsealUnderAnotherKey() {
 
 func unsealAlteredText() {
     def sealed as string init seal(keyOf("the right key"), "secret");
-    def flipped as string init "A" + strings.substring($sealed, 1, len($sealed));
+    def flipped as string init "A" + $sealed[1..len($sealed)];
     if ($flipped == $sealed) {
-        $flipped = "B" + strings.substring($sealed, 1, len($sealed));
+        $flipped = "B" + $sealed[1..len($sealed)];
     }
     unseal(keyOf("the right key"), $flipped);
 }

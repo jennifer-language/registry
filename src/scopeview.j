@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The scope surface over HTTP, as pure data: claiming one, listing them, and
@@ -143,7 +143,7 @@ export func owners(
     now as string) {
     def folded as string init deckname.fold(strings.trim($name));
     if (strings.startsWith($folded, "@")) {
-        $folded = strings.substring($folded, 1, len($folded));
+        $folded = $folded[1..len($folded)];
     }
     if ($folded == "" or strings.trim($subject) == "") {
         return refuse($db, 400, "missing `scope` or `subject`");

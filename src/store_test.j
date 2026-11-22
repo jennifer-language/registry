@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for store.j. Run with:
 #
@@ -598,7 +598,7 @@ func testUppercaseHexIsObjectIdLikeToo() {
 func testASha256ObjectIdIsObjectIdLike() {
     # a SHA-256 repository has 64-character ids
     def id as string init SAMPLE_COMMIT + SAMPLE_COMMIT;
-    testing.assertTrue(isObjectIdLike(strings.substring($id, 0, 64)));
+    testing.assertTrue(isObjectIdLike($id[..64]));
 }
 
 func testShortHexIsNotObjectIdLike() {

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 # pragma-jennifer-capability: net
 
 /**
@@ -35,7 +35,7 @@ def const MAX_BYTES as int init 65536;
 def const DEFAULT_SCOPES as string init "read:user";
 
 func formField(name as string, value as string) {
-    def raw as bytes init convert.bytesFromString("utf-8", $value);
+    def raw as bytes init encoding.encode("utf-8", $value);
     return $name + "=" + encoding.toText("uri-form", $raw);
 }
 

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * Deck-name grammar and decomposition. The registry (`../app-registry`) holds
@@ -212,7 +212,7 @@ export func scopeOf(name as string) {
         return "";
     }
     def slash as int init strings.indexOf($folded, "/");
-    return strings.substring($folded, 1, $slash);
+    return $folded[1..$slash];
 }
 
 /**
@@ -227,7 +227,7 @@ export func deckOf(name as string) {
         return $folded;
     }
     def slash as int init strings.indexOf($folded, "/");
-    return strings.substring($folded, $slash + 1, len($folded));
+    return $folded[$slash + 1..len($folded)];
 }
 
 # trimAscii drops the ASCII spaces and tabs around s, and nothing else.

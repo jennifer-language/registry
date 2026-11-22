@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for apiview.j. Run with:
 #
@@ -437,8 +437,8 @@ func testAnEmptySearchListsEverything() {
 }
 
 func testAnOverlongSearchIsRefused() {
-    testing.assertEqual(search(search.index(seeded()), strings.repeat("a", 201)).status, 400);
-    testing.assertEqual(search(search.index(seeded()), strings.repeat("a", 200)).status, 200);
+    testing.assertEqual(search(search.index(seeded()), strings.replicate("a", 201)).status, 400);
+    testing.assertEqual(search(search.index(seeded()), strings.replicate("a", 200)).status, 200);
 }
 
 func testListDecksFromTheIndexMatchesTheStoreListing() {
@@ -462,6 +462,6 @@ func testSearchInMatchesSearch() {
         json.encode(searchIn($all, $low, "").body),
         json.encode(search($all, "").body));
     testing.assertEqual(
-        searchIn($all, $low, strings.repeat("x", search.MAX_QUERY + 1)).status,
+        searchIn($all, $low, strings.replicate("x", search.MAX_QUERY + 1)).status,
         400);
 }

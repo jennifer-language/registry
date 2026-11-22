@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for token.j. Run with:
 #
 #     jennifer test src/token_test.j
 
 use testing;
-use convert;
 use strings;
 
 # jwt.verify checks `exp` against the real clock, so tokens that must verify
@@ -21,11 +20,11 @@ func nowish() {
 }
 
 func key() {
-    return convert.bytesFromString("utf-8", "a signing secret nobody else has");
+    return encoding.encode("utf-8", "a signing secret nobody else has");
 }
 
 func otherKey() {
-    return convert.bytesFromString("utf-8", "a different signing secret entirely");
+    return encoding.encode("utf-8", "a different signing secret entirely");
 }
 
 # --- minting and verifying --------------------------------------------------
@@ -58,7 +57,7 @@ func throwsOnForeignKey() {
 
 func throwsOnTamperedToken() {
     def token as string init mint(key(), ISSUER, ACCOUNT, "alice", {}, 0, 3600, nowish());
-    verify(key(), ISSUER, strings.substring($token, 0, len($token) - 2) + "xy");
+    verify(key(), ISSUER, $token[..len($token) - 2] + "xy");
 }
 
 func throwsOnGarbage() {

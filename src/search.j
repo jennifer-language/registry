@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * Deck search over the registry store: a case-insensitive substring scan of
@@ -210,7 +210,7 @@ export func selectIn(lowered as json.Value, query as string) {
     def total as int init json.length($lowered, "");
     def q as string init strings.lower(strings.trim($query));
     if ($q == "") {
-        return lists.range(0, $total);
+        return 0..$total;
     }
     def byName as list of int init [];
     def byDescription as list of int init [];
@@ -269,7 +269,7 @@ export func scopeMap(index as json.Value) {
         if (not strings.startsWith($name, "@") or $slash < 0) {
             continue;
         }
-        def scope as string init strings.substring($name, 1, $slash);
+        def scope as string init $name[1..$slash];
         if (not maps.has($groups, $scope)) {
             def none as list of int init [];
             $groups[$scope] = $none;
@@ -331,7 +331,7 @@ export func select(index as json.Value, query as string) {
     # The scan the server replaces with `selectIn` over a shared `lowered`.
     def total as int init json.length($index, "");
     if (strings.trim($query) == "") {
-        return lists.range(0, $total);
+        return 0..$total;
     }
     def byName as list of int init [];
     def byDescription as list of int init [];

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The registry's own credential: minting and verifying the short-lived bearer
@@ -27,7 +27,6 @@ use time;
 use hash;
 use crypto;
 use encoding;
-use convert;
 import "jwt.j" as jwt;
 
 # The signing algorithm. `verify` is told the algorithm it expects, which stops
@@ -156,7 +155,7 @@ export func newRefresh() {
  * @return {string} its fingerprint
  */
 export func fingerprint(token as string) {
-    def raw as bytes init convert.bytesFromString("utf-8", $token);
+    def raw as bytes init encoding.encode("utf-8", $token);
     return encoding.toText("hex", hash.compute("sha256", $raw));
 }
 

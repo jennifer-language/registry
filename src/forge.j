@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The forge interface (specification 12.3): repository contents and push
@@ -527,18 +527,18 @@ export func hostOf(url as string) {
     if ($scheme < 0) {
         return "";
     }
-    $rest = strings.substring($rest, $scheme + 3, len($rest));
+    $rest = $rest[$scheme + 3..len($rest)];
     def slash as int init strings.indexOf($rest, "/");
     if ($slash >= 0) {
-        $rest = strings.substring($rest, 0, $slash);
+        $rest = $rest[..$slash];
     }
     def at as int init strings.indexOf($rest, "@");
     if ($at >= 0) {
-        $rest = strings.substring($rest, $at + 1, len($rest));
+        $rest = $rest[$at + 1..len($rest)];
     }
     def colon as int init strings.indexOf($rest, ":");
     if ($colon >= 0) {
-        $rest = strings.substring($rest, 0, $colon);
+        $rest = $rest[..$colon];
     }
     return strings.lower($rest);
 }
@@ -558,18 +558,18 @@ export func pathOf(url as string) {
     if ($scheme < 0) {
         return "";
     }
-    $rest = strings.substring($rest, $scheme + 3, len($rest));
+    $rest = $rest[$scheme + 3..len($rest)];
     def slash as int init strings.indexOf($rest, "/");
     if ($slash < 0) {
         return "";
     }
-    $rest = strings.substring($rest, $slash + 1, len($rest));
+    $rest = $rest[$slash + 1..len($rest)];
     # The slash first: `o/r.git/` must read as `o/r`, not as `o/r.git`.
     if (strings.endsWith($rest, "/")) {
-        $rest = strings.substring($rest, 0, len($rest) - 1);
+        $rest = $rest[..len($rest) - 1];
     }
     if (strings.endsWith($rest, ".git")) {
-        $rest = strings.substring($rest, 0, len($rest) - 4);
+        $rest = $rest[..len($rest) - 4];
     }
     return $rest;
 }
@@ -675,16 +675,16 @@ export func malformedAuthority(raw as string) {
     if ($start < 0) {
         return false;
     }
-    def auth as string init strings.substring($raw, $start + 3, len($raw));
+    def auth as string init $raw[$start + 3..len($raw)];
     for (def stop in ["/", "?", "#"]) {
         def at as int init strings.indexOf($auth, $stop);
         if ($at >= 0) {
-            $auth = strings.substring($auth, 0, $at);
+            $auth = $auth[..$at];
         }
     }
     def userEnd as int init strings.lastIndexOf($auth, "@");
     if ($userEnd >= 0) {
-        $auth = strings.substring($auth, $userEnd + 1, len($auth));
+        $auth = $auth[$userEnd + 1..len($auth)];
     }
     def spelled as string init $u.host;
     if (not ($u.port == "")) {
@@ -744,7 +744,7 @@ export func isFile(doc as json.Value, kind as string) {
  * @return {string} the encoded segment
  */
 export func encodeSegment(s as string) {
-    return encoding.toText("uri-percent", convert.bytesFromString("utf-8", $s));
+    return encoding.toText("uri-percent", encoding.encode("utf-8", $s));
 }
 
 /**

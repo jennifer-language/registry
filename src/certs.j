@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * TLS certificates from Let's Encrypt, stored under the data directory.
@@ -27,6 +27,7 @@ use fs;
 use strings;
 use convert;
 use crypto;
+use encoding;
 import "acme.j" as acme;
 import "./config.j" as config;
 
@@ -248,11 +249,11 @@ export func save(tls as config.Tls, domain as string, cert as string, key as str
 func accountKey(tls as config.Tls) {
     def path as string init accountKeyPath($tls);
     if (fs.exists($path)) {
-        return convert.bytesFromString("utf-8", fs.readString($path));
+        return encoding.encode("utf-8", fs.readString($path));
     }
     fs.mkdirAll($tls.certDir);
     def key as bytes init crypto.keypair("p256").private;
-    fs.writeString($path, convert.stringFromBytes("utf-8", $key));
+    fs.writeString($path, encoding.decode("utf-8", $key));
     fs.chmod($path, 0o600);
     return $key;
 }
@@ -356,7 +357,7 @@ export func obtain(tls as config.Tls, now as int) {
         POLL_INTERVAL_MS,
         POLL_TRIES);
     def chain as string init acme.downloadCertificate($client, $finished);
-    def keyPem as string init convert.stringFromBytes("utf-8", $certKey);
+    def keyPem as string init encoding.decode("utf-8", $certKey);
     save($tls, $tls.domains[0], $chain, $keyPem, $now);
     return Bundle{cert: $chain, key: $keyPem, issuedAt: $now};
 }

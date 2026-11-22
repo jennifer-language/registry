@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * `POST /publish`, as pure data (specification 7).
@@ -155,7 +155,7 @@ export func checkSource(src as Source) {
  * @return {string} the message for a 400
  */
 export func missingManifest(tag as string, commit as string) {
-    return "no deck manifest found at " + $tag + " (commit " + strings.substring($commit, 0, 12) +
+    return "no deck manifest found at " + $tag + " (commit " + $commit[..12] +
         "); looked for " + strings.join(manifest.FILENAMES, ", ");
 }
 
@@ -373,7 +373,7 @@ export func deckNameOf(manifestName as string, manifestText as string) {
 export func versionProblem(src as Source, m as manifest.Manifest) {
     def tagged as string init $src.tag;
     if (strings.startsWith($tagged, "v")) {
-        $tagged = strings.substring($tagged, 1, len($tagged));
+        $tagged = $tagged[1..len($tagged)];
     }
     if (not ($tagged == $m.version)) {
         return "the tag " + $src.tag + " disagrees with the version in " + $src.manifestName +
@@ -860,7 +860,7 @@ export func newBinding(
     def key as string init deckname.fold(strings.trim($target));
     def scopeName as string init "";
     if (store.isScopeKey($key)) {
-        $scopeName = strings.substring($key, 1, len($key));
+        $scopeName = $key[1..len($key)];
         if (not deckname.isScopeIdent($scopeName)) {
             return bindingError("not a scope: " + $target);
         }

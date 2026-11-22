@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The `[engines]` range of a deck and whether an interpreter version admits
@@ -134,7 +134,7 @@ export func parse(range as string) {
     if (not strings.startsWith($range, ">=")) {
         return refused("an engine range starts with a \">=\" floor");
     }
-    def parts as list of string init strings.split(strings.substring($range, 2, len($range)), " ");
+    def parts as list of string init strings.split($range[2..len($range)], " ");
     if (len($parts) > 2) {
         return refused("an engine range is a floor and at most one upper bound, " +
             "separated by one space");
@@ -151,7 +151,7 @@ export func parse(range as string) {
         return refused("the upper bound \"" + $bound + "\" is not \"<A.B.C\" " +
             "(an exclusive bound)");
     }
-    $bound = strings.substring($bound, 1, len($bound));
+    $bound = $bound[1..len($bound)];
     def upper as Core init readCore($bound);
     if (not $upper.ok) {
         return refused("the upper bound \"" + $bound + "\" is not a plain X.Y.Z version");
@@ -200,11 +200,11 @@ func coreOf(version as string) {
     def base as string init $version;
     def dash as int init strings.indexOf($base, "-");
     if ($dash >= 0) {
-        $base = strings.substring($base, 0, $dash);
+        $base = $base[..$dash];
     }
     def plus as int init strings.indexOf($base, "+");
     if ($plus >= 0) {
-        $base = strings.substring($base, 0, $plus);
+        $base = $base[..$plus];
     }
     return readCore($base);
 }

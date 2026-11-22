@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 # pragma-jennifer-capability: net
 
 /**
@@ -367,7 +367,7 @@ func byCode(cfg as Config, code as string, verifier as string, redirectUri as st
 func isLoopbackRedirect(uri as string) {
     for (def prefix in ["http://127.0.0.1:", "http://[::1]:"]) {
         if (strings.startsWith($uri, $prefix)) {
-            return isPort(portOf(strings.substring($uri, len($prefix), len($uri))));
+            return isPort(portOf($uri[len($prefix)..len($uri)]));
         }
     }
     return false;
@@ -379,7 +379,7 @@ func portOf(rest as string) {
     if ($slash < 0) {
         return $rest;
     }
-    return strings.substring($rest, 0, $slash);
+    return $rest[..$slash];
 }
 
 # isPort accepts one to five decimal digits.
@@ -645,9 +645,9 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int, 
  */
 export func authenticate(cfg as Config, header as string) {
     # The scheme is case-insensitive (RFC 7235 2.1); the token is not.
-    if (len($header) < 8 or not (strings.lower(strings.substring($header, 0, 7)) == "bearer ")) {
+    if (len($header) < 8 or not (strings.lower($header[..7]) == "bearer ")) {
         throw Error{kind: "auth", message: "missing bearer token", file: "", line: 0, col: 0};
     }
-    def bearer as string init strings.substring($header, 7, len($header));
+    def bearer as string init $header[7..len($header)];
     return token.verify($cfg.signingKey, $cfg.providerConfig.name, $bearer);
 }

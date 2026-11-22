@@ -1,7 +1,7 @@
 #!/usr/bin/env -S jennifer serve
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # serve: the deck registry's HTTP API and website. A thin `webapi` app; each
 # handler reads the store and delegates status and body to the view modules
@@ -243,7 +243,7 @@ def auth as authview.Config init authview.Config{
         metadata: "",
         trace: outbound.none()
     },
-    signingKey: convert.bytesFromString("utf-8", $cfg.tokenKey),
+    signingKey: encoding.encode("utf-8", $cfg.tokenKey),
     tokenTtl: TOKEN_TTL,
     refreshTtl: REFRESH_TTL,
     orgMaxAge: $cfg.orgMaxAgeHours * 3600
@@ -455,14 +455,8 @@ func flushCounts() {
     defer store.unlock($held);
     def out as flatdb.DB init store.open($dbPath);
     for (def key in $pending) {
-        def name as string init strings.substring(
-            $key,
-            0,
-            len($key) - len(stats.hourKey($now)) - 1);
-        def hour as string init strings.substring(
-            $key,
-            len($key) - len(stats.hourKey($now)),
-            len($key));
+        def name as string init $key[..len($key) - len(stats.hourKey($now)) - 1];
+        def hour as string init $key[len($key) - len(stats.hourKey($now))..len($key)];
         $out = store.putStats(
             $out,
             $name,
@@ -533,7 +527,7 @@ func siteDeck(ctx as web.Context) {
     # One URL per deck: a differently cased spelling is redirected to the folded
     # one rather than rendered as a second page.
     def folded as string init deckname.fold($name);
-    def canonical as string init "/deck/" + strings.substring($folded, 1, len($folded));
+    def canonical as string init "/deck/" + $folded[1..len($folded)];
     if (not (web.path($ctx) == $canonical)) {
         web.redirect($ctx, 301, $canonical);
         return;
@@ -969,7 +963,7 @@ func answerAuth(ctx as web.Context, stage as string, out as authview.AuthReply) 
 
 # requestText is the request body decoded as UTF-8 (`web.body` returns bytes).
 func requestText(ctx as web.Context) {
-    return convert.stringFromBytes("utf-8", web.body($ctx));
+    return encoding.decode("utf-8", web.body($ctx));
 }
 
 # throttled answers `429` with `Retry-After` and returns true when `key` has
@@ -2283,7 +2277,7 @@ if (config.isStaging($cfg.tls.directory)) {
 # certificate name, with the TLS port when it is not 443.
 func httpsOrigin() {
     def colon as int init strings.lastIndexOf($cfg.tls.addr, ":");
-    def port as string init strings.substring($cfg.tls.addr, $colon + 1, len($cfg.tls.addr));
+    def port as string init $cfg.tls.addr[$colon + 1..len($cfg.tls.addr)];
     def origin as string init "https://" + $cfg.tls.domains[0];
     if (not ($port == "443" or $port == "")) {
         $origin = $origin + ":" + $port;
@@ -2344,7 +2338,7 @@ io.printf(
 
 def tlsServer as httpd.Server init httpd.listenTLSWith(
     $cfg.tls.addr,
-    convert.bytesFromString("utf-8", $bundle.cert),
-    convert.bytesFromString("utf-8", $bundle.key),
+    encoding.encode("utf-8", $bundle.cert),
+    encoding.encode("utf-8", $bundle.key),
     $limits);
 web.serveOn($app, $tlsServer);

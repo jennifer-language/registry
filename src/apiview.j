@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The registry's JSON responses as pure data. Each function maps a registry
@@ -487,11 +487,11 @@ export func versionOfPath(path as string) {
     if (not strings.startsWith($path, "/v")) {
         return 0;
     }
-    def rest as string init strings.substring($path, 2, len($path));
+    def rest as string init $path[2..len($path)];
     def slash as int init strings.indexOf($rest, "/");
     def digits as string init $rest;
     if ($slash >= 0) {
-        $digits = strings.substring($rest, 0, $slash);
+        $digits = $rest[..$slash];
     }
     if ($digits == "") {
         return 0;
@@ -557,7 +557,7 @@ export func isConditional(method as string, path as string) {
     }
     def p as string init $path;
     if (strings.startsWith($p, "/v1/")) {
-        $p = strings.substring($p, 3, len($p));
+        $p = $p[3..len($p)];
     }
     for (def exact in ["/", "/browse", "/tags", "/search", "/decks", "/scopes", "/resolve-graph"]) {
         if ($p == $exact) {

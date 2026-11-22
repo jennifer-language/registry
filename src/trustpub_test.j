@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for trustpub.j. Run with:
 #
@@ -295,12 +295,12 @@ func segment(raw as bytes) {
 # signedBy builds an RS256 token carrying `kid`, the way a CI issuer signs one.
 # `jwt.sign` takes no header, and the key set picks its key by `kid`.
 func signedBy(privatePem as bytes, claims as string) {
-    def head as string init segment(convert.bytesFromString(
+    def head as string init segment(encoding.encode(
         "utf-8",
         '{"alg":"RS256","kid":"ci-1","typ":"JWT"}'));
-    def body as string init segment(convert.bytesFromString("utf-8", $claims));
+    def body as string init segment(encoding.encode("utf-8", $claims));
     def input as string init $head + "." + $body;
-    def signed as bytes init convert.bytesFromString("utf-8", $input);
+    def signed as bytes init encoding.encode("utf-8", $input);
     def sig as bytes init crypto.sign("rsa-sha256", $signed, $privatePem);
     return $input + "." + segment($sig);
 }

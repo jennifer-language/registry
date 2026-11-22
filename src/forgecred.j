@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * A caller's forge credential, sealed for storage.
@@ -25,7 +25,6 @@
 
 use crypto;
 use binary;
-use convert;
 use encoding;
 
 # Names this key's purpose. Changing it makes every stored credential unreadable.
@@ -36,13 +35,13 @@ def const TAG_LEN as int init 16;
 
 # sealingKey derives the AES-256 key for this purpose from the signing key.
 func sealingKey(signingKey as bytes) {
-    def salt as bytes init convert.bytesFromString("utf-8", "");
-    return crypto.hkdf(
-        "sha256",
+    def salt as bytes init encoding.encode("utf-8", "");
+    return crypto.deriveKey(
+        "hkdf-sha256",
         $signingKey,
         $salt,
-        convert.bytesFromString("utf-8", KEY_LABEL),
-        32);
+        32,
+        crypto.KdfParams{info: encoding.encode("utf-8", KEY_LABEL)});
 }
 
 /**
@@ -58,7 +57,7 @@ export func seal(signingKey as bytes, credential as string) {
     def noAad as bytes;
     def box as bytes init crypto.encrypt(
         "aes-gcm",
-        convert.bytesFromString("utf-8", $credential),
+        encoding.encode("utf-8", $credential),
         sealingKey($signingKey),
         $nonce,
         $noAad);
@@ -85,5 +84,5 @@ export func unseal(signingKey as bytes, sealed as string) {
         sealingKey($signingKey),
         $raw[0..NONCE_LEN],
         $noAad);
-    return convert.stringFromBytes("utf-8", $plain);
+    return encoding.decode("utf-8", $plain);
 }

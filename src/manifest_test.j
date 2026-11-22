@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for manifest.j. Run with:
 #
@@ -263,17 +263,17 @@ func testADeckCannotRequireItself() {
 }
 
 func testLongTextFieldsAreRefused() {
-    def long as string init strings.repeat("x", MAX_DESCRIPTION + 1);
+    def long as string init strings.replicate("x", MAX_DESCRIPTION + 1);
     def d as Manifest init parse(withBody('description = "' + $long + '"
 '));
     testing.assertFalse($d.ok);
     testing.assertContains($d.error, "description");
-    def l as Manifest init parse(withBody('license = "' + strings.repeat("A", MAX_LICENSE + 1) +
+    def l as Manifest init parse(withBody('license = "' + strings.replicate("A", MAX_LICENSE + 1) +
         '"
 '));
     testing.assertFalse($l.ok);
     testing.assertContains($l.error, "license");
-    testing.assertTrue(parse(withBody('description = "' + strings.repeat("x", MAX_DESCRIPTION) +
+    testing.assertTrue(parse(withBody('description = "' + strings.replicate("x", MAX_DESCRIPTION) +
         '"
 ')).ok);
 }

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for identity.j, the shared interface. Run with:
 #
@@ -61,7 +61,7 @@ func testASubjectIsOpaqueButBounded() {
     for (def ok in ["1234567", "07", "4f1c2a9e-7b1d-4c55-9a7e-2f0d8c3b6a11", "auth0|abc"]) {
         testing.assertTrue(isSubject($ok));
     }
-    def long as string init strings.repeat("a", 256);
+    def long as string init strings.replicate("a", 256);
     for (def bad in ["", "a b", "x\ty", "é", $long]) {
         testing.assertFalse(isSubject($bad));
     }

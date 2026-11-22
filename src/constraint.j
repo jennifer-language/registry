@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * Version-constraint matching for deck dependencies. A manifest pins
@@ -74,11 +74,11 @@ func parseCore(s as string) {
     def base as string init $s;
     def dash as int init strings.indexOf($base, "-");
     if ($dash >= 0) {
-        $base = strings.substring($base, 0, $dash);
+        $base = $base[..$dash];
     }
     def plus as int init strings.indexOf($base, "+");
     if ($plus >= 0) {
-        $base = strings.substring($base, 0, $plus);
+        $base = $base[..$plus];
     }
     def idx as int init 0;
     for (def part in strings.split($base, ".")) {
@@ -160,14 +160,14 @@ func fitsDigits(v as string) {
     def body as string init $v;
     def plus as int init strings.indexOf($body, "+");
     if ($plus >= 0) {
-        $body = strings.substring($body, 0, $plus);
+        $body = $body[..$plus];
     }
     # One list, appended to in place: it was reassigned per branch before,
     # which copied it on every call.
     def dash as int init strings.indexOf($body, "-");
     def core as string init $body;
     if ($dash >= 0) {
-        $core = strings.substring($body, 0, $dash);
+        $core = $body[..$dash];
     }
     def ids as list of string init strings.split($core, ".");
     if ($dash >= 0) {
@@ -208,8 +208,8 @@ func padded(s as string) {
     if ($s == "") {
         return false;
     }
-    def first as string init strings.substring($s, 0, 1);
-    def last as string init strings.substring($s, len($s) - 1, len($s));
+    def first as string init $s[..1];
+    def last as string init $s[len($s) - 1..len($s)];
     return $first == " " or $first == "\t" or $last == " " or $last == "\t";
 }
 
@@ -309,7 +309,7 @@ export func parseRange(constraint as string) {
         }
         def core as Core init parseCore(rest($c, 1));
         $out.valid = true;
-        $out.op = strings.substring($c, 0, 1);
+        $out.op = $c[..1];
         $out.lower = coreLower($core);
         $out.upper = tildeUpper($core);
         if ($out.op == "^") {
@@ -523,7 +523,7 @@ func sameCore(a as semver.Version, b as semver.Version) {
 
 # rest returns s with its first n characters dropped.
 func rest(s as string, n as int) {
-    return strings.substring($s, $n, len($s));
+    return $s[$n..len($s)];
 }
 
 /**

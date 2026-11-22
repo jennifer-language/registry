@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The operational log of both binaries.
@@ -292,9 +292,9 @@ export func printable(s as string) {
     def changed as bool init false;
     for (def ch in strings.chars($s)) {
         if ($ch < " " or ($ch >= "\u007f" and $ch <= "\u009f") or strings.contains(BIDI, $ch)) {
-            def hex as string init encoding.toText("hex", convert.bytesFromString("utf-8", $ch));
+            def hex as string init encoding.toText("hex", encoding.encode("utf-8", $ch));
             for (def at in 0..convert.toInt(len($hex) / 2)) {
-                $parts[] = "\\x" + strings.substring($hex, $at * 2, $at * 2 + 2);
+                $parts[] = "\\x" + $hex[$at * 2..$at * 2 + 2];
             }
             $changed = true;
         } else {
@@ -442,7 +442,7 @@ export def const MAX_ERROR_TEXT as int init 300;
 export func handlerFailed(err as Error) {
     def text as string init $err.message;
     if (len($text) > MAX_ERROR_TEXT) {
-        $text = strings.substring($text, 0, MAX_ERROR_TEXT) + "...";
+        $text = $text[..MAX_ERROR_TEXT] + "...";
     }
     def f as map of string to string init {
         "kind": $err.kind,

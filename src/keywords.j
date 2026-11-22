@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * Deck keywords: the grammar, the cap, and the terms this registry refuses.
@@ -27,7 +27,6 @@
 use strings;
 use lists;
 use encoding;
-use convert;
 
 /**
  * How many keywords a deck may use. Later ones, in the publisher's order, are
@@ -73,7 +72,7 @@ export func blocked() {
 func decodeAll(encoded as list of string) {
     def out as list of string init [];
     for (def one in $encoded) {
-        $out[] = convert.stringFromBytes("utf-8", encoding.fromText("base64", $one));
+        $out[] = encoding.decode("utf-8", encoding.fromText("base64", $one));
     }
     return $out;
 }
@@ -173,7 +172,7 @@ export func blockedSubstrings() {
  * @return {string} its base64 form, ready to paste into a group above
  */
 export func encode(word as string) {
-    return encoding.toText("base64", convert.bytesFromString("utf-8", $word));
+    return encoding.toText("base64", encoding.encode("utf-8", $word));
 }
 
 /**
@@ -190,7 +189,7 @@ export func isWellFormed(word as string) {
     def previousWasHyphen as bool init false;
     def i as int init 0;
     while ($i < len($word)) {
-        def ch as string init strings.substring($word, $i, $i + 1);
+        def ch as string init $word[$i..$i + 1];
         def isHyphen as bool init $ch == "-";
         if (not ($isHyphen or isAlnum($ch))) {
             return false;
@@ -241,7 +240,7 @@ export func fold(word as string) {
     # Only ASCII is lowered: `strings.lower` maps the Kelvin sign (U+212A) to `k`
     # and the dotted capital I to `i`, folding into another valid name. Left as
     # written, it fails the grammar.
-    if (not encoding.isAscii(convert.bytesFromString("utf-8", $trimmed))) {
+    if (not encoding.isAscii(encoding.encode("utf-8", $trimmed))) {
         return $trimmed;
     }
     return strings.lower($trimmed);

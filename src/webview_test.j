@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for webview.j. Run with:
 #
@@ -193,7 +193,7 @@ func testDeckPageShowsVersionsNewestFirst() {
 
 func testDeckPageShowsTheGitPinAbbreviated() {
     def page as Page init deck(seeded(), "@acme/routeros", NOW);
-    testing.assertContains($page.body, strings.substring(COMMIT, 0, 12));
+    testing.assertContains($page.body, COMMIT[..12]);
 }
 
 func testDeckPageShowsTheChecksumPinForATarball() {
@@ -710,7 +710,7 @@ func testAListingShowsTheNewestLiveVersionAsLatest() {
 func manyDecks(n as int) {
     def db as flatdb.DB init emptyDb();
     for (def i in 0..$n) {
-        def name as string init "@acme/d" + strings.repeat("0", 3 - len(convert.toString($i))) +
+        def name as string init "@acme/d" + strings.replicate("0", 3 - len(convert.toString($i))) +
             convert.toString($i);
         $db = store.putVersion($db, $name, "router helper", gitVer("1.0.0"));
     }
@@ -763,7 +763,7 @@ func testThePageParameterIsForgiving() {
 
 func testThePolicyAdmitsOnlyTheThemeScript() {
     def policy as string init contentSecurityPolicy();
-    def digest as bytes init hash.compute("sha256", convert.bytesFromString("utf-8", THEME_SCRIPT));
+    def digest as bytes init hash.compute("sha256", encoding.encode("utf-8", THEME_SCRIPT));
     testing.assertContains(
         $policy,
         "script-src 'sha256-" + encoding.toText("base64", $digest) + "'");

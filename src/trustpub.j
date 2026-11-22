@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * Trusted publishing: a CI job publishes with no stored credential
@@ -238,7 +238,7 @@ export func workflowPath(claim as string) {
     if ($at < 0) {
         return $claim;
     }
-    return strings.substring($claim, 0, $at);
+    return $claim[..$at];
 }
 
 /**
@@ -356,7 +356,7 @@ export func refMatches(pattern as string, ref as string) {
     if (not strings.endsWith($pattern, "*")) {
         return $pattern == $ref;
     }
-    def prefix as string init strings.substring($pattern, 0, len($pattern) - 1);
+    def prefix as string init $pattern[..len($pattern) - 1];
     # A bare "*" is any ref; otherwise the ref must extend the prefix.
     return strings.startsWith($ref, $prefix);
 }
@@ -461,7 +461,7 @@ def const MAX_BYTES as int init 262144;
 export func discoveryUrl(issuer as string) {
     def base as string init strings.trim($issuer);
     while (strings.endsWith($base, "/")) {
-        $base = strings.substring($base, 0, len($base) - 1);
+        $base = $base[..len($base) - 1];
     }
     return $base + DISCOVERY_PATH;
 }

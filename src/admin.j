@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The operator verbs behind `bin/deckadmin`, which only binds them to
@@ -210,8 +210,8 @@ func parseRequires(spec as string) {
         if ($sp < 0) {
             $out[deckname.fold($p)] = "*";
         } else {
-            def name as string init strings.trim(strings.substring($p, 0, $sp));
-            $out[deckname.fold($name)] = strings.trim(strings.substring($p, $sp + 1, len($p)));
+            def name as string init strings.trim($p[..$sp]);
+            $out[deckname.fold($name)] = strings.trim($p[$sp + 1..len($p)]);
         }
     }
     return $out;
@@ -601,7 +601,7 @@ func scopeHint(db as flatdb.DB, name as string) {
     }
     def bare as string init $name;
     if (strings.startsWith($bare, "@")) {
-        $bare = strings.substring($bare, 1, len($bare));
+        $bare = $bare[1..len($bare)];
     }
     if (not store.hasNamespace($db, $bare)) {
         return "";
@@ -625,7 +625,7 @@ export func cmdRegisterNamespace(db as flatdb.DB, r as args.Result, now as strin
     def scope as string init deckname.fold(args.asString($r, "scope"));
     # accept either "@jennifer" or "jennifer"
     if (strings.startsWith($scope, "@")) {
-        $scope = strings.substring($scope, 1, len($scope));
+        $scope = $scope[1..len($scope)];
     }
     # The scope grammar permits hyphens; the deck grammar does not.
     if (not deckname.isScopeIdent($scope)) {
@@ -803,7 +803,7 @@ export func cmdReserveDefaults(db as flatdb.DB, r as args.Result, now as string)
 export func cmdMintToken(db as flatdb.DB, r as args.Result, now as string) {
     def scopeName as string init deckname.fold(args.asString($r, "scope"));
     if (strings.startsWith($scopeName, "@")) {
-        $scopeName = strings.substring($scopeName, 1, len($scopeName));
+        $scopeName = $scopeName[1..len($scopeName)];
     }
     if (not deckname.isScopeIdent($scopeName)) {
         return failResult($db, "not a valid scope name: " + $scopeName);
@@ -1060,7 +1060,7 @@ export func cmdPublishers(db as flatdb.DB, r as args.Result, now as string) {
 export func cmdAddOwner(db as flatdb.DB, r as args.Result, now as string) {
     def scopeName as string init deckname.fold(args.asString($r, "scope"));
     if (strings.startsWith($scopeName, "@")) {
-        $scopeName = strings.substring($scopeName, 1, len($scopeName));
+        $scopeName = $scopeName[1..len($scopeName)];
     }
     if (not store.hasNamespace($db, $scopeName)) {
         return failResult($db, "namespace @" + $scopeName + " is not registered");
@@ -1106,7 +1106,7 @@ export func cmdAddOwner(db as flatdb.DB, r as args.Result, now as string) {
 export func cmdRemoveOwner(db as flatdb.DB, r as args.Result, now as string) {
     def scopeName as string init deckname.fold(args.asString($r, "scope"));
     if (strings.startsWith($scopeName, "@")) {
-        $scopeName = strings.substring($scopeName, 1, len($scopeName));
+        $scopeName = $scopeName[1..len($scopeName)];
     }
     if (not store.hasNamespace($db, $scopeName)) {
         return failResult($db, "namespace @" + $scopeName + " is not registered");
@@ -1149,7 +1149,7 @@ export func cmdRemoveOwner(db as flatdb.DB, r as args.Result, now as string) {
 export func cmdRemoveNamespace(db as flatdb.DB, r as args.Result, now as string) {
     def scopeName as string init deckname.fold(strings.trim(args.asString($r, "scope")));
     if (strings.startsWith($scopeName, "@")) {
-        $scopeName = strings.substring($scopeName, 1, len($scopeName));
+        $scopeName = $scopeName[1..len($scopeName)];
     }
     if (not store.hasNamespace($db, $scopeName)) {
         return failResult($db, "namespace @" + $scopeName + " is not registered");

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The website's HTML responses as pure data. Each function maps a registry plus
@@ -58,7 +58,7 @@ export def struct Page {
  * @return {string} the header value
  */
 export func contentSecurityPolicy() {
-    def digest as bytes init hash.compute("sha256", convert.bytesFromString("utf-8", THEME_SCRIPT));
+    def digest as bytes init hash.compute("sha256", encoding.encode("utf-8", THEME_SCRIPT));
     return "default-src 'none'; script-src 'sha256-" + encoding.toText("base64", $digest) +
         "'; style-src 'unsafe-inline'; img-src 'self' https: data:; " +
         "form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -808,12 +808,12 @@ func pinCell(v as store.DeckVersion) {
         if ($v.commit == "") {
             return '<span class="muted">no commit recorded</span>';
         }
-        return '<code>' + esc(strings.substring($v.commit, 0, 12)) + '</code>';
+        return '<code>' + esc($v.commit[..12]) + '</code>';
     }
     if ($v.checksum == "") {
         return '<span class="muted">no checksum recorded</span>';
     }
-    return '<code>' + esc(strings.substring($v.checksum, 0, 19)) + '...</code>';
+    return '<code>' + esc($v.checksum[..19]) + '...</code>';
 }
 
 # mapCell renders a name -> constraint table as inline code, or a dash.
@@ -1024,7 +1024,7 @@ export func repoLink(url as string) {
         return "";
     }
     if (strings.endsWith($out, ".git")) {
-        $out = strings.substring($out, 0, len($out) - 4);
+        $out = $out[..len($out) - 4];
     }
     return $out;
 }
@@ -1037,7 +1037,7 @@ export func repoLink(url as string) {
 export func repoLabel(url as string) {
     for (def scheme in ["https://", "http://"]) {
         if (strings.startsWith($url, $scheme)) {
-            return strings.substring($url, len($scheme), len($url));
+            return $url[len($scheme)..len($url)];
         }
     }
     return $url;
@@ -1174,7 +1174,7 @@ export func scopeIn(
     size as int) {
     def folded as string init deckname.fold(strings.trim($name));
     if (strings.startsWith($folded, "@")) {
-        $folded = strings.substring($folded, 1, len($folded));
+        $folded = $folded[1..len($folded)];
     }
     def decks as list of int init search.positionsIn($groups, $folded);
     def count as int init len($decks);

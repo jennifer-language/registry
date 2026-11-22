@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * Reading a deck's manifest: `deck.toml`, `deck.yaml`, `deck.yml` or
@@ -196,7 +196,7 @@ func tableProblem(
     pointer as string,
     decks as bool,
     self as string) {
-    def label as string init "[" + strings.substring($pointer, 1, len($pointer)) + "]";
+    def label as string init "[" + $pointer[1..len($pointer)] + "]";
     if (not json.has($doc, $pointer)) {
         return "";
     }
@@ -260,12 +260,12 @@ func listProblem(file as string, doc as json.Value, pointer as string) {
         return "";
     }
     if (not (json.typeOf($doc, $pointer) == "list")) {
-        return strings.substring($pointer, 1, len($pointer)) + " in " + $file +
+        return $pointer[1..len($pointer)] + " in " + $file +
             " must be a list";
     }
     for (def i in 0..json.length($doc, $pointer)) {
         if (not (json.typeOf($doc, $pointer + "/" + convert.toString($i)) == "string")) {
-            return strings.substring($pointer, 1, len($pointer)) + " in " + $file +
+            return $pointer[1..len($pointer)] + " in " + $file +
                 " must hold only strings";
         }
     }

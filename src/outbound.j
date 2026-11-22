@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 # pragma-jennifer-capability: net
 
 /**
@@ -178,17 +178,17 @@ export func pathOf(url as string) {
     def rest as string init $url;
     def scheme as int init strings.indexOf($rest, "://");
     if ($scheme >= 0) {
-        $rest = strings.substring($rest, $scheme + 3, len($rest));
+        $rest = $rest[$scheme + 3..len($rest)];
         def slash as int init strings.indexOf($rest, "/");
         if ($slash < 0) {
             return "/";
         }
-        $rest = strings.substring($rest, $slash, len($rest));
+        $rest = $rest[$slash..len($rest)];
     }
     for (def cut in ["?", "#"]) {
         def at as int init strings.indexOf($rest, $cut);
         if ($at >= 0) {
-            $rest = strings.substring($rest, 0, $at);
+            $rest = $rest[..$at];
         }
     }
     return $rest;
@@ -311,5 +311,5 @@ func cut(s as string, max as int) {
     if (len($s) <= $max) {
         return $s;
     }
-    return strings.substring($s, 0, $max) + "...";
+    return $s[..$max] + "...";
 }

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for outbound.j. Run with:
 #
@@ -68,7 +68,7 @@ func testARateLimitedCallKeepsWhatGithubSaid() {
 }
 
 func testAForgeMessageIsCutAndOnlyTheMessageIsRead() {
-    def long as string init strings.repeat("x", 500);
+    def long as string init strings.replicate("x", 500);
     testing.assertEqual(len(messageOf('{"message":"' + $long + '"}')), 203);
     testing.assertEqual(messageOf('{"error":"bad_verification_code"}'), "bad_verification_code");
     # anything else in the body is never read

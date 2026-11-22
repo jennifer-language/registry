@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The feed of new and updated decks, as pure data: `GET /feed.atom` (Atom 1.0),
@@ -221,10 +221,7 @@ export func collect(db as flatdb.DB) {
     # callback, so nothing is copied per comparison.
     def out as json.Value init json.list();
     for (def key in lists.sort($keys)) {
-        def at as int init convert.toInt(strings.substring(
-            $key,
-            strings.lastIndexOf($key, " ") + 1,
-            len($key)));
+        def at as int init convert.toInt($key[strings.lastIndexOf($key, " ") + 1..len($key)]);
         $out = json.append($out, "", itemJson($found[$at]));
     }
     return $out;
@@ -345,8 +342,8 @@ export func params(rawQuery as string) {
         def key as string init $pair;
         def value as string init "";
         if ($eq >= 0) {
-            $key = strings.substring($pair, 0, $eq);
-            $value = strings.substring($pair, $eq + 1, len($pair));
+            $key = $pair[..$eq];
+            $value = $pair[$eq + 1..len($pair)];
         }
         if (not ($key == "limit" or $key == "days")) {
             continue;
@@ -430,11 +427,11 @@ export func scopeFile(file as string) {
     if ($dot < 2) {
         return $out;
     }
-    def format as string init strings.substring($file, $dot + 1, len($file));
+    def format as string init $file[$dot + 1..len($file)];
     if (not ($format == ATOM or $format == RSS)) {
         return $out;
     }
-    def scope as string init deckname.fold(strings.substring($file, 1, $dot));
+    def scope as string init deckname.fold($file[1..$dot]);
     if (not deckname.isScopeIdent($scope)) {
         return $out;
     }
@@ -547,7 +544,7 @@ func scopeKnown(db as flatdb.DB, scope as string) {
 func trimSlash(s as string) {
     def out as string init strings.trim($s);
     while (strings.endsWith($out, "/")) {
-        $out = strings.substring($out, 0, len($out) - 1);
+        $out = $out[..len($out) - 1];
     }
     return $out;
 }
@@ -562,8 +559,8 @@ func etagOf(r as FeedReply) {
     }
     def digest as bytes init hash.compute(
         "sha256",
-        convert.bytesFromString("utf-8", strings.join($parts, "\n")));
-    return strings.substring(encoding.toText("hex", $digest), 0, 32);
+        encoding.encode("utf-8", strings.join($parts, "\n")));
+    return encoding.toText("hex", $digest)[..32];
 }
 
 # ---- conditional requests ----
@@ -707,12 +704,12 @@ func hostOf(base as string) {
     def host as string init $base;
     def scheme as int init strings.indexOf($host, "://");
     if ($scheme >= 0) {
-        $host = strings.substring($host, $scheme + 3, len($host));
+        $host = $host[$scheme + 3..len($host)];
     }
     for (def stop in ["/", ":"]) {
         def at as int init strings.indexOf($host, $stop);
         if ($at >= 0) {
-            $host = strings.substring($host, 0, $at);
+            $host = $host[..$at];
         }
     }
     return strings.lower($host);

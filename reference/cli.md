@@ -917,8 +917,8 @@ variables are `REGISTRY_DATA_DIR` (default `/app/data`) and `REGISTRY_RUN_UID` /
 
 Before changing the base:
 
-- **The image is pinned to the 0.26.0 release.** Every `.j` file here declares
-  `pragma-jennifer-version: >=0.26.0`, so no older release runs it. Move the
+- **The image is pinned to the 0.27.0 release.** Every `.j` file here declares
+  `pragma-jennifer-version: >=0.27.0`, so no older release runs it. Move the
   pin only once the tests pass and the server starts on the newer version.
 - **`dev` is a moving tag.** A base taken from it needs `--pull`, or a stale
   local copy is used without warning: `docker run` does not re-check a tag it

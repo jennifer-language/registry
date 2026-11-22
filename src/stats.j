@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * Per-deck lookup counts, as pure functions over a JSON record.
@@ -35,7 +35,6 @@
 use json;
 use time;
 use convert;
-use strings;
 
 /**
  * How many buckets of each resolution are kept; older ones are pruned on the
@@ -112,7 +111,7 @@ export func dayOfHour(hour as string) {
     if (len($hour) < 13) {
         return "";
     }
-    return strings.substring($hour, 0, 10);
+    return $hour[..10];
 }
 
 /**
@@ -124,7 +123,7 @@ export func monthOfHour(hour as string) {
     if (len($hour) < 13) {
         return "";
     }
-    return strings.substring($hour, 0, 7);
+    return $hour[..7];
 }
 
 # ensureShape gives a record its three bucket objects and its total, since

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for config.j. Run with:
 #
@@ -169,7 +169,7 @@ func testAUsableConfigurationHasNoProblem() {
     testing.assertEqual(problem(defaults()), "");
     # the sample's key is a placeholder, too short to serve with
     def c as Config init applyToml(defaults(), sample());
-    $c.tokenKey = strings.repeat("k", 32);
+    $c.tokenKey = strings.replicate("k", 32);
     testing.assertEqual(problem($c), "");
 }
 
@@ -411,7 +411,7 @@ func testAShortTokenKeyIsRefusedAtBoot() {
     def c as Config init loginsOn("github", "github");
     $c.tokenKey = "secret";
     testing.assertContains(problem($c), "at least 32");
-    $c.tokenKey = strings.repeat("k", 32);
+    $c.tokenKey = strings.replicate("k", 32);
     testing.assertEqual(problem($c), "");
 }
 

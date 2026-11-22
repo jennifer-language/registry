@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for forge.j, the shared interface. Run with:
 #
@@ -408,6 +408,6 @@ func testWhatTheForgeSaidIsPrintableAndNeverTheToken() {
     testing.assertEqual(saidBy($body, ""), "line one line two [31m");
     # a forge echoing the token it was sent: nothing is passed on
     testing.assertEqual(saidBy('{"message":"bad token ghp_secret123"}', "ghp_secret123"), "");
-    testing.assertEqual(len(saidBy('{"message":"' + strings.repeat("y", 400) + '"}', "")), 203);
+    testing.assertEqual(len(saidBy('{"message":"' + strings.replicate("y", 400) + '"}', "")), 203);
     testing.assertEqual(saidBy("<html>", ""), "");
 }

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for audit.j. Run with:
 #
@@ -266,7 +266,7 @@ func testAHandlerFailureIsAnErrorWithWhereItHappened() {
 func testAHandlerFailureMessageIsCut() {
     def err as Error init Error{
         kind: "runtime",
-        message: strings.repeat("x", 1000),
+        message: strings.replicate("x", 1000),
         file: "a.j",
         line: 1,
         col: 1
@@ -293,7 +293,7 @@ func testARequestIdIsCloudflaresRayWhenItLooksLikeOne() {
     # anything else is not trusted as an id
     testing.assertEqual(requestIdOf("a b", "gen"), "gen");
     testing.assertEqual(requestIdOf("x\ny", "gen"), "gen");
-    testing.assertEqual(requestIdOf(strings.repeat("a", 65), "gen"), "gen");
+    testing.assertEqual(requestIdOf(strings.replicate("a", 65), "gen"), "gen");
 }
 
 func testEveryLineARequestWritesCarriesItsId() {

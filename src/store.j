@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The deck-registry store over a `flatdb` JSON document. A registry holds many
@@ -137,7 +137,7 @@ export func isChecksum(s as string) {
     if (not strings.startsWith($s, CHECKSUM_PREFIX)) {
         return false;
     }
-    def digest as string init strings.substring($s, len(CHECKSUM_PREFIX), len($s));
+    def digest as string init $s[len(CHECKSUM_PREFIX)..len($s)];
     return isLowerHex($digest, SHA256_LEN);
 }
 
@@ -491,7 +491,7 @@ func withoutBuild(version as string) {
     if ($plus < 0) {
         return $version;
     }
-    return strings.substring($version, 0, $plus);
+    return $version[..$plus];
 }
 
 /**
@@ -1460,7 +1460,7 @@ export func isScopeKey(key as string) {
  */
 export func bindingScopeOf(key as string) {
     if (isScopeKey($key)) {
-        return deckname.fold(strings.substring($key, 1, len($key)));
+        return deckname.fold($key[1..len($key)]);
     }
     return deckname.scopeOf($key);
 }

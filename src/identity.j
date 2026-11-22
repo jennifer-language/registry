@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The identity-provider interface (specification 12.2): the caller's stable
@@ -267,7 +267,7 @@ export func endpoint(baseUrl as string, fallback as string, path as string) {
         $base = $fallback;
     }
     if (strings.endsWith($base, "/")) {
-        $base = strings.substring($base, 0, len($base) - 1);
+        $base = $base[..len($base) - 1];
     }
     return $base + $path;
 }

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 
 /**
  * The deployment's configuration, from a TOML file and the environment.
@@ -205,7 +205,7 @@ export func defaults() {
 func trimSlash(url as string) {
     def out as string init strings.trim($url);
     while (strings.endsWith($out, "/")) {
-        $out = strings.substring($out, 0, len($out) - 1);
+        $out = $out[..len($out) - 1];
     }
     return $out;
 }
@@ -456,7 +456,7 @@ export func legacyNameOf(name as string) {
     if (not strings.startsWith($name, PREFIX)) {
         return "";
     }
-    return LEGACY_PREFIX + strings.substring($name, len(PREFIX), len($name));
+    return LEGACY_PREFIX + $name[len(PREFIX)..len($name)];
 }
 
 # The provider, forge and policy names `bin/serve` can wire. An unknown name is
@@ -608,21 +608,21 @@ func secureBase(url as string) {
 # hostOf is the host of a lowercased URL: between `//` and the first `/`, with
 # a port removed (a bracketed IPv6 host keeps its brackets).
 func hostOf(url as string) {
-    def rest as string init strings.substring($url, strings.indexOf($url, "//") + 2, len($url));
+    def rest as string init $url[strings.indexOf($url, "//") + 2..len($url)];
     def slash as int init strings.indexOf($rest, "/");
     if ($slash >= 0) {
-        $rest = strings.substring($rest, 0, $slash);
+        $rest = $rest[..$slash];
     }
     if (strings.startsWith($rest, "[")) {
         def close as int init strings.indexOf($rest, "]");
         if ($close >= 0) {
-            return strings.substring($rest, 0, $close + 1);
+            return $rest[..$close + 1];
         }
         return $rest;
     }
     def colon as int init strings.indexOf($rest, ":");
     if ($colon >= 0) {
-        return strings.substring($rest, 0, $colon);
+        return $rest[..$colon];
     }
     return $rest;
 }
@@ -646,7 +646,7 @@ func sameService(cfg as Config) {
 func rootOf(url as string) {
     def out as string init strings.lower(strings.trim($url));
     while (strings.endsWith($out, "/")) {
-        $out = strings.substring($out, 0, len($out) - 1);
+        $out = $out[..len($out) - 1];
     }
     return $out;
 }

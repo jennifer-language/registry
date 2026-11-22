@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.26.0
+# pragma-jennifer-version: >=0.27.0
 #
 # White-box tests for authview.j. Run with:
 #
@@ -11,6 +11,7 @@
 use testing;
 use json;
 use convert;
+use encoding;
 import "./identity/github.j" as githubIdentity;
 import "./outbound.j" as outbound;
 
@@ -46,7 +47,7 @@ func config() {
     return Config{
         provider: githubIdentity.provider(),
         providerConfig: providerCfg("Iv1.0123456789abcdef"),
-        signingKey: convert.bytesFromString("utf-8", "a signing secret nobody else has"),
+        signingKey: encoding.encode("utf-8", "a signing secret nobody else has"),
         tokenTtl: TOKEN_TTL,
         refreshTtl: REFRESH_TTL,
         orgMaxAge: ORG_MAX_AGE
