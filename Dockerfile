@@ -29,12 +29,13 @@ RUN ["jennifer", "run", "/opt/grimoire/grimoire", "build", "--config", "grimoire
 # library ships `webapi` / `args` / `html` / `http`, so nothing needs adding.
 #
 # Pinned to a release. Every .j file here declares
-# `pragma-jennifer-version: >=0.26.0` (the name-first argument order and the
-# algorithm-first crypto API), so 0.26.0 is the first release that runs this.
+# `pragma-jennifer-version: >=0.27.0` (`encoding.encode` / `encoding.decode`,
+# `strings.replicate`, `crypto.deriveKey`), so 0.27.0 is the first release
+# that runs this.
 # Raise the pin only after the suite passes and `jennifer serve bin/serve`
 # boots on the new version.
 ########################################################################
-FROM ghcr.io/jennifer-language/jennifer:0.26.0 AS runtime
+FROM ghcr.io/jennifer-language/jennifer:0.27.0 AS runtime
 
 # Who the server runs as. The defaults are the base image's unprivileged user,
 # which suits a named volume: Docker initialises it from the image, so the
