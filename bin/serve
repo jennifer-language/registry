@@ -399,18 +399,15 @@ def const COUNTER_TTL_SECONDS as int init 10800;
 # countLookup records one metadata lookup against a deck.
 #
 # Keyed by deck and hour, so a flush attributes a lookup to the hour it happened.
-# `kv.incr` does not create a missing key, hence add-then-retry: `add` fails if
-# another worker created the key first, and the retry increments it.
+# `kv.incr` would create a missing key without expiry, so `add` creates it at 0
+# with the TTL first; it does nothing when the key exists.
 func countLookup(name as string) {
     if (strings.trim($name) == "") {
         return null;
     }
     def key as string init hitKey(deckname.fold($name), stats.hourKey(nowSeconds()));
-    if (kv.incr($hits, $key, 1) == -1) {
-        if (not kv.add($hits, $key, "1", COUNTER_TTL_SECONDS)) {
-            kv.incr($hits, $key, 1);
-        }
-    }
+    kv.add($hits, $key, "0", COUNTER_TTL_SECONDS);
+    kv.incr($hits, $key, 1);
     return null;
 }
 

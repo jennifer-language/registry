@@ -93,17 +93,15 @@ func counterKey(requestId as string) {
     return "outbound " + $requestId;
 }
 
-# count adds one call; `kv.incr` does not create a key, hence add-then-retry.
+# count adds one call. `kv.incr` would create a missing key without expiry, so
+# `add` creates it at 0 with the TTL first; it does nothing when the key exists.
 func count(t as Trace) {
     if (not $t.on) {
         return;
     }
     def key as string init counterKey($t.requestId);
-    if (kv.incr($t.counter, $key, 1) == -1) {
-        if (not kv.add($t.counter, $key, "1", COUNTER_TTL_SECONDS)) {
-            kv.incr($t.counter, $key, 1);
-        }
-    }
+    kv.add($t.counter, $key, "0", COUNTER_TTL_SECONDS);
+    kv.incr($t.counter, $key, 1);
 }
 
 /**
