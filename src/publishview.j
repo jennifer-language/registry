@@ -497,7 +497,8 @@ func publishEvent(m as manifest.Manifest, src as Source, how as string, movedFro
  * The scope checks every publish makes, whoever is calling.
  *
  * An unknown scope is a refusal naming the missing registration, and a scope
- * held by an operator with no owner is refused too. The version-exists check
+ * held by an operator with no owner is refused too, and so is a deck that moved
+ * to another name (`deckadmin move`). The version-exists check
  * comes after these in every caller, so "already published" never hides a real
  * problem.
  * @param db {flatdb.DB} the store to read
@@ -517,6 +518,12 @@ export func checkDeck(db as flatdb.DB, m as manifest.Manifest) {
     if (store.getNamespace($db, $scopeName).subject == "") {
         return "@" + $scopeName +
             " is held by an operator and has no owner to publish under it";
+    }
+    # A moved deck's record is public on its page, so naming the new deck tells
+    # a caller nothing it could not read there.
+    def moved as string init store.movedTo($db, $m.name);
+    if (not ($moved == "")) {
+        return $m.name + " moved to " + $moved + "; publish under that name";
     }
     return "";
 }

@@ -465,3 +465,43 @@ func testSearchInMatchesSearch() {
         searchIn($all, $low, strings.replicate("x", search.MAX_QUERY + 1)).status,
         400);
 }
+
+# --- a moved deck ---------------------------------------------------------------
+
+func movedStore() {
+    def db as flatdb.DB init store.putVersion(
+        seeded(),
+        "@acme/slack",
+        "chat",
+        version("0.1.0", "u9"));
+    $db = store.putVersion($db, "@acme/chat", "chat", version("0.2.0", "u8"));
+    return store.setMovedTo($db, "@acme/slack", "@acme/chat");
+}
+
+func testTheDeckRecordCarriesMovedTo() {
+    def reply as Reply init getDeck(movedStore(), "@acme/slack");
+    testing.assertEqual($reply.status, 200);
+    testing.assertEqual(json.asString($reply.body, "/movedTo"), "@acme/chat");
+    # the versions are still there: a lockfile pinning one fetches it
+    testing.assertTrue(json.has($reply.body, "/versions/0.1.0"));
+    # a deck that has not moved has no field at all
+    testing.assertFalse(json.has(getDeck(movedStore(), "ansi").body, "/movedTo"));
+    testing.assertFalse(json.has(getDeck(movedStore(), "@acme/chat").body, "/movedTo"));
+}
+
+func testResolveCarriesMovedToButNoAlias() {
+    def db as flatdb.DB init movedStore();
+    def hit as Reply init resolve($db, "@acme/slack", "*");
+    testing.assertEqual($hit.status, 200);
+    testing.assertEqual(json.asString($hit.body, "/movedTo"), "@acme/chat");
+    # the old name resolves to its own version, never the new deck's
+    testing.assertEqual(json.asString($hit.body, "/version"), "0.1.0");
+    testing.assertEqual(json.asString($hit.body, "/url"), "u9");
+    def miss as Reply init resolve(
+        store.setYanked($db, "@acme/slack", "0.1.0", true),
+        "@acme/slack",
+        "*");
+    testing.assertEqual($miss.status, 404);
+    testing.assertEqual(json.asString($miss.body, "/movedTo"), "@acme/chat");
+    testing.assertFalse(json.has(resolve($db, "ansi", "*").body, "/movedTo"));
+}

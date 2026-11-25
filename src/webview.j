@@ -873,8 +873,9 @@ func versionRows(db as flatdb.DB, name as string) {
 
 /**
  * A deck's page: its description, how to depend on it, and every published
- * version with its pin, dependencies, engines, and capabilities. An unknown
- * deck is a 404 page.
+ * version with its pin, dependencies, engines, and capabilities. A moved deck
+ * names the deck it moved to instead of offering a snippet. An unknown deck is
+ * a 404 page.
  * @param db {flatdb.DB} the registry to read
  * @param name {string} the deck name
  * @param now {int} the current time (Unix seconds), for the count windows
@@ -894,8 +895,14 @@ export func deck(db as flatdb.DB, name as string, now as int) {
     if (not ($description == "")) {
         $body = $body + '<p class="lede">' + esc($description) + '</p>';
     }
-    $body = $body + tagRow($db, $name) + yankNotice($all, $live);
-    if (len($live) > 0) {
+    def moved as string init store.movedTo($db, $name);
+    if ($moved == "") {
+        $body = $body + tagRow($db, $name) + yankNotice($all, $live);
+    } else {
+        $body = $body + tagRow($db, $name) + movedNotice($moved);
+    }
+    # A moved deck offers no snippet: jvc refuses the name it would add.
+    if (len($live) > 0 and $moved == "") {
         $body = $body + '<h2>Depend on it</h2><pre><code>[decks]
 "' + $safe + '" = "^' + esc($live[0]) + '"</code></pre>';
     }
@@ -951,6 +958,22 @@ func yankNotice(all as list of string, live as list of string) {
         esc($all[0]) + '</code>, has been <strong>yanked</strong>. The ' +
         'newest installable version is <code>' + esc($live[0]) +
         '</code>, which is what the snippet below pins.</p>';
+}
+
+# movedNotice says where a moved deck went, in place of the yank notice: its
+# versions are yanked by the same procedure, and the move is what a reader has
+# to act on.
+func movedNotice(target as string) {
+    def safe as string init esc($target);
+    def link as string init '<code>' + $safe + '</code>';
+    def url as string init deckUrl($target);
+    if (not ($url == "")) {
+        $link = '<a href="' + esc($url) + '"><code>' + $safe + '</code></a>';
+    }
+    return '<p class="notice">This deck <strong>moved</strong> to ' + $link +
+        '. Change the <code>[decks]</code> entry and the imports (<code>' + $safe +
+        '/</code>). jvc refuses to add, install or update this name; a lockfile ' +
+        'that pins one of its versions still installs, with a warning.</p>';
 }
 
 # tagRow renders a deck's own tags, linking each to the decks that share it.

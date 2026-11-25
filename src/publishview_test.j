@@ -1065,3 +1065,20 @@ func testARefusedRegistryCredentialIsTheRegistrysProblem() {
     # any other failure passes on what the forge said
     testing.assertContains($anon.why, "(the forge said: The 'deckyard' organization");
 }
+
+# --- a moved deck -----------------------------------------------------------------
+
+func testAMovedDeckIsNotPublished() {
+    def first as PublishReply init byToken(owned(), alice(), source(), NOW);
+    def db as flatdb.DB init store.setMovedTo($first.db, "@acme/routeros", "@acme/net");
+    def next as Source init source();
+    $next.tag = "v0.2.0";
+    $next.manifestText = strings.replace(manifestText(), '"0.1.0"', '"0.2.0"');
+    def out as PublishReply init byToken($db, alice(), $next, NOW);
+    testing.assertEqual($out.status, 403);
+    testing.assertFalse($out.changed);
+    testing.assertContains(
+        json.asString($out.body, "/error"),
+        "@acme/routeros moved to @acme/net; publish under that name");
+    testing.assertFalse(store.hasVersion($out.db, "@acme/routeros", "0.2.0"));
+}

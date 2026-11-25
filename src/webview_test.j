@@ -869,3 +869,26 @@ func testASearchKeepsTheChosenPageSize() {
     def plain as string init results($index, "router", 1, DEFAULT_PAGE_SIZE).body;
     testing.assertFalse(strings.contains($plain, 'name="size"'));
 }
+
+# --- a moved deck ---------------------------------------------------------------
+
+func movedDb() {
+    def db as flatdb.DB init store.putVersion(seeded(), "@acme/chat", "chat", gitVer("1.0.0"));
+    return store.setMovedTo($db, "@acme/routeros", "@acme/chat");
+}
+
+func testAMovedDeckPageNamesTheNewDeckAndOffersNoSnippet() {
+    def page as Page init deck(movedDb(), "@acme/routeros", NOW);
+    testing.assertEqual($page.status, 200);
+    testing.assertContains($page.body, "<strong>moved</strong> to");
+    testing.assertContains($page.body, '<a href="/deck/acme/chat"><code>@acme/chat</code></a>');
+    testing.assertContains($page.body, "<code>@acme/chat/</code>");
+    testing.assertContains($page.body, "still installs, with a warning");
+    testing.assertFalse(strings.contains($page.body, "Depend on it"));
+    # the versions stay listed
+    testing.assertContains($page.body, "0.2.0");
+    # the deck it moved to is an ordinary page
+    def target as Page init deck(movedDb(), "@acme/chat", NOW);
+    testing.assertFalse(strings.contains($target.body, "<strong>moved</strong>"));
+    testing.assertContains($target.body, "Depend on it");
+}

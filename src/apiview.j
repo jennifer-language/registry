@@ -303,8 +303,8 @@ export func searchIn(index as json.Value, lowered as json.Value, query as string
 }
 
 /**
- * A single deck's full record (name, description, versions), 404 when the deck
- * is unknown, 400 when no name is given.
+ * A single deck's full record (name, description, versions, and `movedTo` when
+ * it moved), 404 when the deck is unknown, 400 when no name is given.
  * @param db {flatdb.DB} the registry to read
  * @param name {string} the deck name
  * @return {Reply} the deck record at 200, or a 404 or 400 error reply
@@ -344,8 +344,9 @@ export func getVersion(db as flatdb.DB, name as string, version as string) {
  * `{ found, name, version, kind, url, ref, commit, checksum, description }`,
  * where `ref` / `commit` pin a `git` version and `checksum` pins a `tar.gz`
  * one (the pair the kind does not use is empty); when nothing matches it is a
- * 404 with `{ found: false, name, error }`. A missing name or a constraint
- * outside the grammar is a 400 with `{ error }`.
+ * 404 with `{ found: false, name, error }`. A deck that moved
+ * (`store.setMovedTo`) adds `movedTo` to either body. A missing name or a
+ * constraint outside the grammar is a 400 with `{ error }`.
  * @param db {flatdb.DB} the registry to read
  * @param name {string} the deck name
  * @param constraintExpr {string} the version constraint ("" is treated as "*")
@@ -364,12 +365,13 @@ export func resolve(db as flatdb.DB, name as string, constraintExpr as string) {
         return errorReply(400, "not a valid version constraint: " + $expr);
     }
     def r as store.Resolution init store.resolve($db, $name, $expr);
+    def moved as string init store.movedTo($db, $name);
     if (not $r.found) {
         def miss as json.Value init json.map();
         $miss = json.set($miss, "/found", false);
         $miss = json.set($miss, "/name", $name);
         $miss = json.set($miss, "/error", "no version of " + $name + " satisfies " + $expr);
-        return Reply{status: 404, body: $miss};
+        return Reply{status: 404, body: withMovedTo($miss, $moved)};
     }
     def body as json.Value init json.map();
     $body = json.set($body, "/found", true);
@@ -381,7 +383,16 @@ export func resolve(db as flatdb.DB, name as string, constraintExpr as string) {
     $body = json.set($body, "/commit", $r.commit);
     $body = json.set($body, "/checksum", $r.checksum);
     $body = json.set($body, "/description", $r.description);
-    return Reply{status: 200, body: $body};
+    return Reply{status: 200, body: withMovedTo($body, $moved)};
+}
+
+# withMovedTo adds a moved deck's `movedTo` to a resolve body; a deck that has
+# not moved gets no field, so the body is what it was before the record existed.
+func withMovedTo(body as json.Value, moved as string) {
+    if ($moved == "") {
+        return $body;
+    }
+    return json.set($body, "/movedTo", $moved);
 }
 
 /**
