@@ -403,8 +403,8 @@ and `deckadmin` never sees a request, so only the shared file shows both.
 | ------- | ---- |
 | `add <deck> <version> <url> [description] [flags]` | publish a version (an upsert; see below) |
 | `update ...` | an alias of `add` |
-| `remove <deck> [version]` | remove one version, or a whole deck (a scope: `remove-namespace`) |
-| `list [deck]` | list decks, or one deck's versions |
+| `remove <deck> [version]` | remove one version, or a whole deck (a scope: `remove-namespace`); a deck others moved to is kept |
+| `list [deck]` | list decks with their move records, or one deck's versions with the yanked ones marked |
 | `register-namespace <scope> [flags]` | grant a scope to a principal, or reserve it |
 | `remove-namespace <scope>` | unregister a scope no deck exists under |
 | `add-owner <scope> <subject>` | let another principal write under a scope |
@@ -420,6 +420,8 @@ and `deckadmin` never sees a request, so only the shared file shows both.
 | `revoke-token <fingerprint>` | revoke one CI token |
 | `yank <deck> <version>` | withdraw a version from new resolutions |
 | `unyank <deck> <version>` | restore a withdrawn version |
+| `move <deck> <target>` | record that a deck moved to another name (no alias) |
+| `unmove <deck>` | clear a deck's move record |
 | `revoke <subject>` | invalidate an identity's refresh tokens and drop its kept provider token |
 
 #### Organisation scopes
@@ -588,6 +590,42 @@ already pins it keeps installing; for that reason deletion is not offered.
 Reversible with `unyank`.
 
 Also available over HTTP as `POST /yank` and `POST /unyank` for the scope owner.
+
+#### `move` and `unmove`
+
+`move <deck> <target>` records that a deck moved to another name: the deck's
+`movedTo` field, served by `GET /deck` and `GET /resolve` and shown on the deck
+page. jvc then refuses to add, install or update the old name, with a message
+naming the new one and its import path; an install from a lockfile still
+fetches the pinned version and warns. It is not an alias: the old name keeps
+its own versions and never resolves to the new deck's.
+
+| Refused when | Why |
+| ------------ | --- |
+| the deck does not exist | there is nothing to record on |
+| the target is not a scoped deck name | a move names a published deck |
+| the target is the deck itself | |
+| the target moved on itself, or another deck moved to the deck | a record never chains; re-point the older record first |
+| the target is not published | the record would point at nothing; publish it first |
+
+Running it again with another target re-points the record. Both directions log
+at `warn` (`deck moved`, `deck move cleared`). While the record stands, `add`
+and `POST /publish` refuse the old name, and `remove` of the whole target deck
+is refused.
+
+The move does not yank. Older jvc releases ignore `movedTo` and keep choosing a
+live version, so yank every version of the old name as well; `move` prints a
+`deckadmin yank` line for each version still live. For `@jennifer/slack` moving
+to `@deckyard/slack`, once `@deckyard/slack` is published:
+
+```sh
+deckadmin move @jennifer/slack @deckyard/slack
+deckadmin yank @jennifer/slack 0.1.0
+deckadmin yank @jennifer/slack 0.2.0
+deckadmin list @jennifer/slack     # every version marked (yanked)
+```
+
+`unmove <deck>` clears the record; the versions stay yanked until `unyank`.
 
 #### `register-namespace`
 

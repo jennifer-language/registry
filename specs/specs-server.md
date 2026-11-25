@@ -624,8 +624,8 @@ Response `200`:
 ```
 
 The deck record itself carries `name`, `description`, `versions`, and optionally
-`readme` (the `README.md` read at the newest published commit, Markdown source)
-and `successor` (5.1.1).
+`readme` (the `README.md` read at the newest published commit, Markdown source),
+`successor` (5.1.1) and `movedTo` (5.1.2).
 
 - The `versions` object is keyed by version string.
 - An unknown deck is `404` with `{"error": "..."}`.
@@ -663,6 +663,32 @@ Setting `successor` **MUST NOT** stop `@old/foo` resolving, and **MUST NOT**
 prevent further publishing under it. Both decks are ordinary decks; the field
 only records the relationship.
 
+#### 5.1.2 `movedTo`, a deck that moved
+
+A deck record **MAY** carry `movedTo`, the name of the deck that replaced it,
+when the old name is retired rather than continued:
+
+```json
+{ "name": "@jennifer/slack", "movedTo": "@deckyard/slack", "versions": { "...": "..." } }
+```
+
+Unlike `successor`, it is an operator record (`deckadmin move`), and clients act
+on it: a client **MUST** refuse a fresh resolution that reaches the old name,
+directly or as a dependency, with a message naming the new deck, and **MUST**
+still install a version an existing lockfile pins (client specification 7).
+
+| Rule | |
+| ---- | --- |
+| Shape | a folded, scoped deck name; absent on a deck that has not moved |
+| Target | **MUST** be a published deck, not the deck itself, and not a deck that moved; a deck others moved to **MUST NOT** move on, so records never chain |
+| Resolution | **MUST NOT** follow it, for the reasons in 5.1.1: the old name resolves within its own versions or not at all |
+| Versions | stay recorded and fetchable; the operator yanks them (section 9), so a client that predates the field stops choosing them |
+| Publishing | a publish under the old name **MUST** be refused (`403`) while the record stands |
+| Other answers | `GET /resolve` (5.3) carries the field on a found and a not-found answer |
+
+The field is additive: a client that does not know it ignores it, as 4.1
+requires of any unknown field.
+
 ### 5.2 `GET /decks`
 
 ```json
@@ -699,7 +725,8 @@ The response **MUST** carry the pin for its `kind`, so a client can fetch from
 this endpoint alone.
 
 Nothing satisfying is `404` with `{"found": false, "name": ..., "error": ...}`.
-A missing `name` is `400`.
+A missing `name` is `400`. For a moved deck (5.1.2) either answer adds
+`movedTo`.
 
 ### 5.4 `GET /resolve-graph?roots=<json>` (optional)
 
@@ -1822,6 +1849,9 @@ accepting the publish.
 - **Deletion SHOULD NOT be offered.** If it must exist for legal reasons, treat
   it as an operator action, not a user-facing one, and expect it to break
   downstream builds.
+- **A moved deck is yanked, not deleted.** Retiring a name for another (5.1.2)
+  records `movedTo` and yanks every version: a lockfile that pins one still
+  installs, and every client, old or new, stops choosing it.
 
 ## 10. The website
 

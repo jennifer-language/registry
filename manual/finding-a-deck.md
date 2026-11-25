@@ -94,4 +94,10 @@ the licence and source of the newest release that is not yanked, the resolution
 counts, and the README as of the last release that carried one. A banner says
 so when the newest version, or every version, is yanked.
 
+**A deck that moved** to another name shows a banner naming the new deck in
+place of the snippet: change the `[decks]` entry and the imports to the new
+name. jvc refuses to add, install or update the old one; a lockfile that pins
+one of its versions still installs, with a warning. The old name is not an
+alias, so its versions are never the new deck's.
+
 The deck page also links the same record as JSON, which [jvc](https://jvc.jennifer-lang.dev/) reads.

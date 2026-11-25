@@ -447,7 +447,21 @@ Rules a resolution **MUST** satisfy:
 - a dependency cycle terminates rather than recursing;
 - a prerelease version never satisfies a caret or tilde range;
 - a yanked version **MUST NOT** be chosen during fresh resolution, but
-  **MUST** still install when an existing lockfile pins it.
+  **MUST** still install when an existing lockfile pins it;
+- a deck whose record carries `movedTo` ([specs-server.md](specs-server.md)
+  5.1.2) **MUST NOT** be resolved, as a requirement or as a dependency: the
+  client refuses with a message naming the new deck, and **MUST NOT** substitute
+  it. A version an existing lockfile pins still installs, as a yanked one does,
+  and the client **SHOULD** warn naming the new deck.
+
+jvc's refusal reads:
+
+```text
+@jennifer/slack moved to @deckyard/slack; change the [decks] entry and the imports (`@deckyard/slack/`)
+```
+
+For a dependency it names the decks that still require the old name instead.
+`jvc add` refuses the name too, and `jvc query` shows the record.
 
 A client **SHOULD** record the resolved set in a lockfile, including each deck's
 `commit` (or `checksum`), so a later install reproduces the same code without
@@ -522,6 +536,8 @@ A client is conformant when:
 - [ ] names are folded to lowercase before requesting and before building `vendor/`
 - [ ] only `src/` is vendored, and `src/<deck>.j` is verified present
 - [ ] yanked versions are skipped when resolving, but install from a lockfile
+- [ ] a moved deck (`movedTo`) is refused when resolving, naming the new deck,
+      never substituted, and still installs from a lockfile
 - [ ] `engines` is enforced across the whole resolved graph
 - [ ] the auth endpoints come from the discovery document, not from hard-coded paths
 - [ ] an absent `auth` object is reported as "this registry accepts no logins"

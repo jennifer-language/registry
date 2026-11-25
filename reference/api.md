@@ -221,6 +221,25 @@ The one endpoint a client requires. Everything else is optional.
 An unknown deck is `404`; a missing `name` is `400`. The record is served as
 stored, so a deck published with a README also carries it as `readme`.
 
+### A moved deck
+
+A deck the operator recorded as moved (`deckadmin move`) carries `movedTo`, the
+deck that replaced it:
+
+```json
+{ "name": "@jennifer/slack", "movedTo": "@deckyard/slack", "versions": { ... } }
+```
+
+| | |
+| - | - |
+| Present | only on a moved deck; a deck that has not moved has no field |
+| Value | a folded, scoped deck name that is published here and has not moved itself (records never chain) |
+| Versions | the old name's own, unchanged: no alias, the old name never resolves to the new deck's versions |
+| jvc | `add`, `install` and `update` refuse the old name, naming the new one; an install from a lockfile still fetches the pinned version and warns |
+| Older clients | ignore the field; the move procedure yanks every old version, so they stop choosing them |
+
+The field is additive, so the API version is unchanged.
+
 ### The version record
 
 | Field | Meaning |
@@ -275,7 +294,9 @@ Turns a name and a constraint into one version and its pin. An empty
 ```
 
 Nothing satisfying is `404` with `{"found": false, "name": ..., "error": ...}`;
-a missing `name` or a constraint outside the grammar is `400`.
+a missing `name` or a constraint outside the grammar is `400`. A moved deck adds
+`movedTo` to either answer; the version, when one is found, is the old name's
+own.
 
 ## GET /resolve-graph
 
@@ -464,7 +485,7 @@ A). Success is `201`:
 | ------ | ---- |
 | `400` | the body is not JSON; a repository URL or tag this registry will not read from, or a tag shaped like an object id; a tag that does not resolve to a commit, or a ref shadowing the commit; a manifest that fails to parse or validate; a manifest version that disagrees with the tag; a missing entry module |
 | `401` | no credential, an invalid or expired one, an unknown or revoked CI token, or an identity token that does not verify |
-| `403` | the scope is not registered or not the caller's; the token or binding does not cover this deck; the forge does not confirm push access |
+| `403` | the scope is not registered or not the caller's; the deck moved to another name (`movedTo`); the token or binding does not cover this deck; the forge does not confirm push access |
 | `409` | that version, build metadata aside, is already published |
 | `501` | a bearer token without the login surface, or an identity token without trusted publishing |
 | `503` | the forge could not be read or reached, is rate-limiting the registry (with `Retry-After`, the forge's wait), or refused the registry's own credential (`REGISTRY_FORGE_TOKEN` expired, revoked, or forbidden by an organisation's policy: the registry's to fix, not the repository's) |

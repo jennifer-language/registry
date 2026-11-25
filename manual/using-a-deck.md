@@ -68,3 +68,24 @@ A yanked version is one the author has withdrawn: a broken release, or one
 published by mistake. It stops satisfying constraints for new resolutions,
 so a fresh install skips it, but it remains fetchable so an existing lockfile
 still installs. Yanking is reversible; deletion is not offered.
+
+## Moved decks
+
+A deck can move to another name, as the decks that left the interpreter moved
+from `@jennifer` to `@deckyard`. The registry then records the new name, and
+jvc refuses the old one:
+
+```text
+@jennifer/slack moved to @deckyard/slack; change the [decks] entry and the imports (`@deckyard/slack/`)
+```
+
+| Command | On a moved deck |
+| ------- | --------------- |
+| `jvc add` | refused, with the message above |
+| `jvc install` without a lockfile, or with a stale one | refused; for a dependency, the message names the decks that still require it |
+| `jvc install` from a lockfile | installs the pinned version and warns, naming the new deck |
+| `jvc update` | refused |
+| `jvc query` | shows the record |
+
+The old name is not an alias: it never resolves to the new deck's versions, so
+the `[decks]` entry and every `import "@jennifer/slack/";` change together.
