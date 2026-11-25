@@ -93,8 +93,15 @@ func testAKeyTheFileOmitsKeepsItsDefault() {
 }
 
 func testAMalformedFileThrows() {
-    # refuse to start rather than run on a configuration that failed to load
-    testing.assertThrows("parsesBrokenToml", "runtime");
+    # refuse to start rather than run on a configuration that failed to load;
+    # kind "toml" from Jennifer 0.28.0 on, "runtime" before
+    def kind as string init "";
+    try {
+        parsesBrokenToml();
+    } catch (e) {
+        $kind = $e.kind;
+    }
+    testing.assertTrue($kind == "toml" or $kind == "runtime");
 }
 
 func parsesBrokenToml() {

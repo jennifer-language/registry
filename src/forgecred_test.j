@@ -66,7 +66,24 @@ func unsealAlteredText() {
 
 func testAWrongKeyOrATamperedRecordIsRefused() {
     # must fail rather than hand the forge some other string as a credential
-    testing.assertThrows("unsealUnderAnotherKey", "runtime");
-    testing.assertThrows("unsealAlteredText", "runtime");
-    testing.assertThrows("unsealTooShort", "runtime");
+    # kind "crypto" from Jennifer 0.28.0 on, "runtime" before
+    for (def kind in [unsealKind(0), unsealKind(1), unsealKind(2)]) {
+        testing.assertTrue($kind == "crypto" or $kind == "runtime");
+    }
+}
+
+# unsealKind is the error kind of one of the refused unseals ("" if none threw).
+func unsealKind(which as int) {
+    try {
+        if ($which == 0) {
+            unsealUnderAnotherKey();
+        } elseif ($which == 1) {
+            unsealAlteredText();
+        } else {
+            unsealTooShort();
+        }
+    } catch (e) {
+        return $e.kind;
+    }
+    return "";
 }
