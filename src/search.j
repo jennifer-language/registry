@@ -60,7 +60,8 @@ export def struct Hit {
     description as string,
     latest as string,
     versions as int,
-    live as bool
+    live as bool,
+    movedTo as string
 };
 
 # entryFor summarises one deck as an index entry: the Hit fields plus the
@@ -69,7 +70,7 @@ export def struct Hit {
 # `latest` is the newest live version, the one a reader would install. A deck
 # with every version yanked reports its newest with `live` false, so it reads
 # as withdrawn rather than unpublished. Keywords come from the newest version
-# whatever its state.
+# whatever its state. `movedTo` is set only on a moved deck.
 func entryFor(db as flatdb.DB, name as string) {
     # Sort once and filter the live versions from it; a second sort per deck
     # doubled the cost of every listing.
@@ -96,13 +97,18 @@ func entryFor(db as flatdb.DB, name as string) {
     $out = json.set($out, "/latest", $latest);
     $out = json.set($out, "/versions", len($all));
     $out = json.set($out, "/live", len($live) > 0);
+    def moved as string init store.movedTo($db, $name);
+    if (not ($moved == "")) {
+        $out = json.set($out, "/movedTo", $moved);
+    }
     return json.set($out, "/keywords", json.list($tags));
 }
 
 /**
  * Summarise every deck, ordered by deck name, then scope (`listingOrder`). Each
  * entry has `name`, `description`, `latest`, `versions`, `live` and
- * `keywords`, the shape `GET /search` answers with. Expensive: a server builds
+ * `keywords`, plus `movedTo` on a moved deck: the shape `GET /search` answers
+ * with. Expensive: a server builds
  * it once per version of the store.
  * @param db {flatdb.DB} the registry to read
  * @return {json.Value} a list of deck entries, alphabetical by deck name
@@ -380,12 +386,17 @@ export func hits(index as json.Value, positions as list of int, from as int, cou
     }
     while ($i < len($positions) and $i < $from + $count) {
         def entry as json.Value init json.get($index, at($positions[$i]));
+        def moved as string init "";
+        if (json.has($entry, "/movedTo")) {
+            $moved = json.asString(json.get($entry, "/movedTo"));
+        }
         $out[] = Hit{
             name: json.asString(json.get($entry, "/name")),
             description: json.asString(json.get($entry, "/description")),
             latest: json.asString(json.get($entry, "/latest")),
             versions: json.asInt(json.get($entry, "/versions")),
-            live: json.asBool(json.get($entry, "/live"))
+            live: json.asBool(json.get($entry, "/live")),
+            movedTo: $moved
         };
         $i = $i + 1;
     }

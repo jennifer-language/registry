@@ -345,6 +345,7 @@ a.way:focus-visible, a.pick:focus-visible {
 tr.is-yanked td { color: var(--muted); }
 tr.is-yanked td:first-child { text-decoration: line-through; }
 .pill.yanked { color: var(--warn-fg); border-color: var(--warn-line); }
+.pill.moved { color: var(--accent); border-color: var(--accent); }
 .ok { color: var(--muted); font-size: 0.8rem; }
 /* Tags. One pill style, two contexts: inline on a deck page, and sized by use
    in the cloud. The count rides inside the pill so a tag and its weight cannot
@@ -493,7 +494,16 @@ func hitItem(hit as search.Hit) {
         $out = $out + "s";
     }
     $out = $out + '</span></div>';
-    if (not $hit.live) {
+    # A moved deck's versions are yanked by the same procedure; the move says
+    # why, and where to go.
+    if (not ($hit.movedTo == "")) {
+        def target as string init esc($hit.movedTo);
+        def link as string init deckUrl($hit.movedTo);
+        if (not ($link == "")) {
+            $target = '<a href="' + esc($link) + '">' + $target + '</a>';
+        }
+        $out = $out + ' <span class="pill moved">moved to ' + $target + '</span>';
+    } elseif (not $hit.live) {
         $out = $out + ' <span class="pill yanked">all versions yanked</span>';
     }
     if (not ($hit.description == "")) {

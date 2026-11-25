@@ -145,6 +145,18 @@ func testHitCarriesLatestAndCount() {
     testing.assertEqual($hits[0].description, "MikroTik router client");
 }
 
+func testAMovedDeckCarriesItsTarget() {
+    def db as flatdb.DB init store.putVersion(seeded(), "@deckyard/routeros", "", ver("0.3.0"));
+    $db = store.setMovedTo($db, "@acme/routeros", "@deckyard/routeros");
+    def hits as list of Hit init find($db, "routeros");
+    testing.assertEqual($hits[0].name, "@acme/routeros");
+    testing.assertEqual($hits[0].movedTo, "@deckyard/routeros");
+    testing.assertEqual($hits[1].movedTo, "");
+    # absent, not empty, on a deck that did not move
+    def all as json.Value init index($db);
+    testing.assertFalse(json.has($all, "/0/movedTo"));
+}
+
 func testNoMatchIsEmpty() {
     testing.assertEqual(len(find(seeded(), "nothing-matches-this")), 0);
 }

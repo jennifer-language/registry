@@ -793,6 +793,8 @@ Response `200`:
 - `live` says whether any version is installable. `keywords` are the newest
   version's. Both are additive to the first form of this response, so a client
   **MUST** tolerate their absence.
+- `movedTo` is present only on a moved deck (5.1.2) and names the deck it moved
+  to. Additive like `live`.
 - A registry **MAY** refuse an over-long `q` with `400`.
 - Matching **SHOULD** be case-insensitive, and **SHOULD** rank name matches
   above description-only matches. The exact algorithm is not specified: a client

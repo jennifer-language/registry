@@ -362,7 +362,8 @@ characters is `400`.
 
 `latest` is the highest live (not yanked) version by SemVer precedence; when
 every version is yanked it is the highest of those and `live` is false. `""`
-for a deck with none. `keywords` are the newest version's. No match is `200`
+for a deck with none. `keywords` are the newest version's. A moved deck also
+carries `movedTo`, the deck it moved to; other decks have no such field. No match is `200`
 with an empty `results`, never a `404`: the query was well-formed, nothing
 matched it.
 

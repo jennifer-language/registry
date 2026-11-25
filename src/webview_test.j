@@ -702,6 +702,18 @@ func testAListingMarksADeckWithNothingInstallable() {
         "all versions yanked");
 }
 
+func testAListingMarksAMovedDeckInsteadOfYanked() {
+    def db as flatdb.DB init yankedDb();
+    $db = store.setYanked($db, "@acme/routeros", "0.1.0", true);
+    $db = store.setMovedTo($db, "@acme/routeros", "@acme/routeros2");
+    def body as string init browse(search.index($db), 1, DEFAULT_PAGE_SIZE).body;
+    testing.assertContains(
+        $body,
+        '<span class="pill moved">moved to ' +
+            '<a href="/deck/acme/routeros2">@acme/routeros2</a></span>');
+    testing.assertFalse(strings.contains($body, "all versions yanked"));
+}
+
 func testAListingShowsTheNewestLiveVersionAsLatest() {
     testing.assertContains(browse(search.index(yankedDb()), 1, DEFAULT_PAGE_SIZE).body, "0.1.0");
 }
