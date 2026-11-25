@@ -184,6 +184,24 @@ func onUnyank(r as args.Result) {
 }
 
 /**
+ * The `move` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onMove(r as args.Result) {
+    return admin.cmdMove($db, $r, $now);
+}
+
+/**
+ * The `unmove` handler.
+ * @param r {args.Result} the parsed command line
+ * @return {admin.AdminResult} the outcome
+ */
+func onUnmove(r as args.Result) {
+    return admin.cmdUnmove($db, $r, $now);
+}
+
+/**
  * The `trust` handler.
  * @param r {args.Result} the parsed command line
  * @return {admin.AdminResult} the outcome
@@ -296,6 +314,8 @@ def result as admin.AdminResult init args.dispatch(
         "revoke-token": onRevokeToken,
         "yank": onYank,
         "unyank": onUnyank,
+        "move": onMove,
+        "unmove": onUnmove,
         "trust": onTrust,
         "untrust": onUntrust,
         "publishers": onPublishers,

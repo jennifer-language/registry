@@ -44,6 +44,8 @@ func dispatch(db as flatdb.DB, argv as list of string) {
         when "revoke-token" { return cmdRevokeToken($db, $r, NOW); }
         when "yank" { return cmdSetYanked($db, $r, NOW, true); }
         when "unyank" { return cmdSetYanked($db, $r, NOW, false); }
+        when "move" { return cmdMove($db, $r, NOW); }
+        when "unmove" { return cmdUnmove($db, $r, NOW); }
         when "trust" { return cmdTrust($db, $r, NOW); }
         when "untrust" { return cmdUntrust($db, $r, NOW); }
         when "publishers" { return cmdPublishers($db, $r, NOW); }
@@ -1341,4 +1343,180 @@ func testALoginStoredAsACoOwnerCanStillBeRemoved() {
     def r as AdminResult init dispatch($db, ["deckadmin", "remove-owner", "acme", "bob"]);
     testing.assertTrue($r.ok);
     testing.assertEqual(len(store.ownersOf($r.db, "acme")), 1);
+}
+
+# --- moving a deck ------------------------------------------------------------
+
+# withMoveSources returns a store holding @acme/slack at two versions and
+# @acme/chat, the deck it moves to, with @other registered for a third.
+func withMoveSources() {
+    def db as flatdb.DB init registered();
+    $db = dispatch($db, gitAdd("@acme/slack", "0.1.0", "https://x/s")).db;
+    $db = dispatch($db, gitAdd("@acme/slack", "0.2.0", "https://x/s")).db;
+    $db = dispatch($db, gitAdd("@acme/chat", "0.3.0", "https://x/c")).db;
+    $db = dispatch($db, ["deckadmin", "register-namespace", "other"]).db;
+    return dispatch($db, gitAdd("@other/chat", "1.0.0", "https://x/o")).db;
+}
+
+func testMoveRecordsTheTargetAndAuditsIt() {
+    def r as AdminResult init dispatch(
+        withMoveSources(),
+        ["deckadmin", "move", "@ACME/Slack", "@Acme/Chat"]);
+    testing.assertTrue($r.ok);
+    testing.assertTrue($r.changed);
+    testing.assertEqual(store.movedTo($r.db, "@acme/slack"), "@acme/chat");
+    testing.assertContains($r.message, "moved @acme/slack to @acme/chat");
+    # the versions are not yanked by the move; the message lists the commands
+    testing.assertContains($r.message, "2 version(s) still live");
+    testing.assertContains($r.message, "deckadmin yank @acme/slack 0.2.0");
+    testing.assertFalse(store.isYanked($r.db, "@acme/slack", "0.1.0"));
+    testing.assertEqual($r.event.level, audit.WARN);
+    testing.assertEqual($r.event.message, "deck moved");
+    testing.assertEqual($r.event.fields["deck"], "@acme/slack");
+    testing.assertEqual($r.event.fields["movedTo"], "@acme/chat");
+}
+
+func testMoveAfterTheYanksListsNothingToYank() {
+    def db as flatdb.DB init withMoveSources();
+    $db = dispatch($db, ["deckadmin", "yank", "@acme/slack", "0.1.0"]).db;
+    $db = dispatch($db, ["deckadmin", "yank", "@acme/slack", "0.2.0"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "move", "@acme/slack", "@acme/chat"]);
+    testing.assertTrue($r.ok);
+    testing.assertFalse(strings.contains($r.message, "still live"));
+}
+
+func testMovingAgainToTheSameTargetChangesNothing() {
+    def argv as list of string init ["deckadmin", "move", "@acme/slack", "@acme/chat"];
+    def db as flatdb.DB init dispatch(withMoveSources(), $argv).db;
+    def r as AdminResult init dispatch($db, $argv);
+    testing.assertTrue($r.ok);
+    testing.assertFalse($r.changed);
+    testing.assertContains($r.message, "already moved to @acme/chat");
+}
+
+func testMovingToAnotherTargetRepointsTheRecord() {
+    def db as flatdb.DB init dispatch(
+        withMoveSources(),
+        ["deckadmin", "move", "@acme/slack", "@acme/chat"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "move", "@acme/slack", "@other/chat"]);
+    testing.assertTrue($r.ok);
+    testing.assertEqual(store.movedTo($r.db, "@acme/slack"), "@other/chat");
+    testing.assertContains($r.message, "(it named @acme/chat)");
+    testing.assertEqual($r.event.fields["previous"], "@acme/chat");
+}
+
+func testAMoveToItselfIsRefused() {
+    def r as AdminResult init dispatch(
+        withMoveSources(),
+        ["deckadmin", "move", "@acme/slack", "@ACME/slack"]);
+    testing.assertFalse($r.ok);
+    testing.assertFalse($r.changed);
+    testing.assertContains($r.message, "cannot move @acme/slack to itself");
+    testing.assertEqual($r.event.message, "command failed");
+}
+
+func testAMoveToAMovedDeckIsRefused() {
+    def db as flatdb.DB init dispatch(
+        withMoveSources(),
+        ["deckadmin", "move", "@acme/chat", "@other/chat"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "move", "@acme/slack", "@acme/chat"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "@acme/chat itself moved to @other/chat");
+    testing.assertContains($r.message, "never chains");
+    testing.assertEqual(store.movedTo($r.db, "@acme/slack"), "");
+}
+
+func testADeckOthersMovedToCannotMoveOn() {
+    def db as flatdb.DB init dispatch(
+        withMoveSources(),
+        ["deckadmin", "move", "@acme/slack", "@acme/chat"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "move", "@acme/chat", "@other/chat"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "@acme/slack moved to @acme/chat");
+    # and the way round: a deck moved back to the one that moved to it
+    def back as AdminResult init dispatch($db, ["deckadmin", "move", "@acme/chat", "@acme/slack"]);
+    testing.assertFalse($back.ok);
+}
+
+func testAMoveNeedsAPublishedValidTarget() {
+    def db as flatdb.DB init withMoveSources();
+    def missing as AdminResult init dispatch(
+        $db,
+        ["deckadmin", "move", "@acme/slack", "@acme/gone"]);
+    testing.assertFalse($missing.ok);
+    testing.assertContains($missing.message, "no such deck: @acme/gone; publish it before");
+    def bare as AdminResult init dispatch($db, ["deckadmin", "move", "@acme/slack", "chat"]);
+    testing.assertFalse($bare.ok);
+    testing.assertContains($bare.message, "not a registry deck name: chat");
+    def bad as AdminResult init dispatch($db, ["deckadmin", "move", "@acme/slack", "@acme/a_b"]);
+    testing.assertFalse($bad.ok);
+    def ghost as AdminResult init dispatch($db, ["deckadmin", "move", "@acme/ghost", "@acme/chat"]);
+    testing.assertFalse($ghost.ok);
+    testing.assertContains($ghost.message, "no such deck: @acme/ghost");
+}
+
+func testUnmoveClearsTheRecordAndAuditsIt() {
+    def db as flatdb.DB init dispatch(
+        withMoveSources(),
+        ["deckadmin", "move", "@acme/slack", "@acme/chat"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "unmove", "@acme/slack"]);
+    testing.assertTrue($r.ok);
+    testing.assertTrue($r.changed);
+    testing.assertEqual(store.movedTo($r.db, "@acme/slack"), "");
+    testing.assertFalse(json.has(store.getDeckJson($r.db, "@acme/slack"), "/movedTo"));
+    testing.assertContains($r.message, "cleared the move of @acme/slack (it named @acme/chat)");
+    testing.assertEqual($r.event.message, "deck move cleared");
+    testing.assertEqual($r.event.fields["movedTo"], "@acme/chat");
+    def again as AdminResult init dispatch($r.db, ["deckadmin", "unmove", "@acme/slack"]);
+    testing.assertTrue($again.ok);
+    testing.assertFalse($again.changed);
+    testing.assertContains($again.message, "has no move record");
+}
+
+func testUnmoveSaysTheYanksStay() {
+    def db as flatdb.DB init withMoveSources();
+    $db = dispatch($db, ["deckadmin", "yank", "@acme/slack", "0.1.0"]).db;
+    $db = dispatch($db, ["deckadmin", "yank", "@acme/slack", "0.2.0"]).db;
+    $db = dispatch($db, ["deckadmin", "move", "@acme/slack", "@acme/chat"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "unmove", "@acme/slack"]);
+    testing.assertContains($r.message, "every version is still yanked");
+}
+
+func testAMovedDeckTakesNoNewVersion() {
+    def db as flatdb.DB init dispatch(
+        withMoveSources(),
+        ["deckadmin", "move", "@acme/slack", "@acme/chat"]).db;
+    def r as AdminResult init dispatch($db, gitAdd("@acme/slack", "0.3.0", "https://x/s"));
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "@acme/slack moved to @acme/chat; publish under that name");
+    testing.assertFalse(store.hasVersion($r.db, "@acme/slack", "0.3.0"));
+}
+
+func testAMoveTargetIsNotRemovedUnderTheRecord() {
+    def db as flatdb.DB init dispatch(
+        withMoveSources(),
+        ["deckadmin", "move", "@acme/slack", "@acme/chat"]).db;
+    def r as AdminResult init dispatch($db, ["deckadmin", "remove", "@acme/chat"]);
+    testing.assertFalse($r.ok);
+    testing.assertContains($r.message, "@acme/slack moved to @acme/chat");
+    testing.assertTrue(store.hasDeck($r.db, "@acme/chat"));
+    # one version of it may go; only the whole deck would leave the record dangling
+    testing.assertTrue(dispatch($db, ["deckadmin", "remove", "@acme/chat", "0.3.0"]).ok);
+}
+
+func testListShowsTheMoveAndTheYanks() {
+    def db as flatdb.DB init withMoveSources();
+    $db = dispatch($db, ["deckadmin", "yank", "@acme/slack", "0.1.0"]).db;
+    $db = dispatch($db, ["deckadmin", "move", "@acme/slack", "@acme/chat"]).db;
+    def all as AdminResult init dispatch($db, ["deckadmin", "list"]);
+    testing.assertContains($all.message, "@acme/slack (2 version(s)) moved to @acme/chat");
+    def one as AdminResult init dispatch($db, ["deckadmin", "list", "@acme/slack"]);
+    testing.assertContains($one.message, "versions of @acme/slack (moved to @acme/chat):");
+    testing.assertContains($one.message, "0.1.0 (yanked)");
+}
+
+func testTheHelpNamesMoveAndUnmove() {
+    def r as args.Result init parse(["deckadmin", "--help"]);
+    testing.assertContains($r.helpText, "move");
+    testing.assertContains($r.helpText, "unmove");
 }

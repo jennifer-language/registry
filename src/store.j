@@ -9,7 +9,7 @@
  * deck schema is:
  *
  *     { "decks": { "<name>": {
- *         "name": "...", "description": "...", "readme": "...",
+ *         "name": "...", "description": "...", "readme": "...", "movedTo": "...",
  *         "versions": { "<version>": {
  *             "version": "...", "kind": "git" | "tar.gz", "url": "...",
  *             "ref": "...", "commit": "...", "checksum": "...",
@@ -19,6 +19,9 @@
  *
  * Beside `decks`, created on first write: `namespaces`, `refreshTokens`,
  * `forgeTokens`, `publishers`, `ciTokens` and `stats`.
+ *
+ * `movedTo`, present only on a deck that moved (`setMovedTo`), names the deck
+ * that replaced it.
  *
  * `kind` selects the delivery. A `"git"` version is pinned by `commit`, the SHA
  * its `ref` tag pointed at when published; git verifies object hashes on fetch,
@@ -1803,6 +1806,61 @@ export func getReadme(db as flatdb.DB, name as string) {
         return "";
     }
     return recordString(flatdb.get($db, deckPtr($name)), "/readme");
+}
+
+/**
+ * Record that a deck moved to another name, or clear that record, returning a
+ * fresh DB. The record is the deck's `movedTo` field, which `GET /deck` serves
+ * as it is. It is not an alias: the old name keeps its own versions and never
+ * resolves to the new deck's. The caller validates the target.
+ * @param db {flatdb.DB} the store to edit
+ * @param name {string} the deck that moved
+ * @param target {string} the deck it moved to, folded ("" clears the record)
+ * @return {flatdb.DB} a fresh store with the record set or cleared
+ * @throws {Error} when the deck does not exist
+ */
+export func setMovedTo(db as flatdb.DB, name as string, target as string) {
+    def rec as json.Value init flatdb.get($db, deckPtr($name));
+    if ($target == "") {
+        if (json.has($rec, "/movedTo")) {
+            $rec = json.remove($rec, "/movedTo");
+        }
+    } else {
+        $rec = json.set($rec, "/movedTo", deckname.fold($target));
+    }
+    return flatdb.set($db, deckPtr($name), $rec);
+}
+
+/**
+ * The deck a deck moved to, or "" when it has not moved or does not exist.
+ * @param db {flatdb.DB} the store to read
+ * @param name {string} the deck name
+ * @return {string} the folded name of the deck it moved to, or ""
+ */
+export func movedTo(db as flatdb.DB, name as string) {
+    def ptr as string init deckPtr($name) + "/movedTo";
+    if (not flatdb.has($db, $ptr)) {
+        return "";
+    }
+    return json.asString(flatdb.get($db, $ptr), "");
+}
+
+/**
+ * Every deck whose `movedTo` record names a deck, in stored order: what would
+ * dangle if that deck were removed, or chain if it moved on.
+ * @param db {flatdb.DB} the store to read
+ * @param name {string} the deck moved to
+ * @return {list of string} the decks that moved to it
+ */
+export func movedInto(db as flatdb.DB, name as string) {
+    def folded as string init deckname.fold($name);
+    def out as list of string init [];
+    for (def deck in listDecks($db)) {
+        if (movedTo($db, $deck) == $folded) {
+            $out[] = $deck;
+        }
+    }
+    return $out;
 }
 
 /**

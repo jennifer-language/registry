@@ -641,6 +641,26 @@ export func versionYanked(deck as string, version as string, yanked as bool) {
 }
 
 /**
+ * A deck was recorded as moved to another name, or its move record was
+ * cleared. Logs at `warn` because jvc then refuses every new resolution of it.
+ * @param deck {string} the deck that moved
+ * @param target {string} the deck it moved to (when cleared, the one it had named)
+ * @param previous {string} the target a re-pointed record named before ("" otherwise)
+ * @param moved {bool} true when recorded, false when cleared
+ * @return {Event} the event
+ */
+export func deckMoved(deck as string, target as string, previous as string, moved as bool) {
+    def f as map of string to string init {"deck": $deck, "movedTo": $target};
+    if (not ($previous == "")) {
+        $f["previous"] = $previous;
+    }
+    if ($moved) {
+        return Event{level: WARN, message: "deck moved", fields: $f};
+    }
+    return Event{level: WARN, message: "deck move cleared", fields: $f};
+}
+
+/**
  * A version was published through the write API. `how` separates a person with
  * a token from a CI token and a trusted CI workload.
  * @param deck {string} the deck name

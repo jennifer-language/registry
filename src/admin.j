@@ -327,6 +327,19 @@ export func parser() {
     $uy = args.positional($uy, "version", "the version to restore");
     $p = args.command($p, "unyank", "restore a withdrawn version", $uy);
 
+    def mv as args.Parser init args.parser(
+        "move",
+        "record that a deck moved to another name; jvc then refuses the old name " +
+            "with a message naming the new one (no alias: the old name never " +
+            "resolves to the new deck). Yank the old versions too, for older jvc releases.");
+    $mv = args.positional($mv, "deck", "the deck that moved (@scope/deck)");
+    $mv = args.positional($mv, "target", "the published deck it moved to (@scope/deck)");
+    $p = args.command($p, "move", "record that a deck moved to another name", $mv);
+
+    def um as args.Parser init args.parser("unmove", "clear a deck's move record");
+    $um = args.positional($um, "deck", "the deck whose move record to clear");
+    $p = args.command($p, "unmove", "clear a deck's move record", $um);
+
     def tp as args.Parser init args.parser(
         "trust",
         "let a CI workflow publish a deck with no stored credential");
@@ -479,6 +492,15 @@ export func cmdAdd(db as flatdb.DB, r as args.Result, now as string) {
             "not a registry deck name: " + $name +
                 " (a published deck is scoped, as @scope/deck)");
     }
+    # A version under a moved name would be refused by every jvc that knows the
+    # record and chosen by every one that does not.
+    def moved as string init store.movedTo($db, $name);
+    if (not ($moved == "")) {
+        return failResult(
+            $db,
+            $name + " moved to " + $moved + "; publish under that name, or clear the " +
+                "record first ('deckadmin unmove " + $name + "')");
+    }
     if (not constraint.isUsableVersion($version)) {
         return failResult(
             $db,
@@ -577,6 +599,15 @@ export func cmdRemove(db as flatdb.DB, r as args.Result, now as string) {
     if ($version == "") {
         if (not store.hasDeck($db, $name)) {
             return failResult($db, "no such deck: " + $name + scopeHint($db, $name));
+        }
+        # The records naming it would point at nothing.
+        def movedHere as list of string init store.movedInto($db, $name);
+        if (len($movedHere) > 0) {
+            return failResult(
+                $db,
+                strings.join($movedHere, ", ") + " moved to " + $name + "; clear or " +
+                    "re-point that record first ('deckadmin unmove <deck>' or " +
+                    "'deckadmin move <deck> <target>')");
         }
         return editResult(
             store.removeDeck($db, $name),
@@ -958,6 +989,110 @@ export func cmdSetYanked(db as flatdb.DB, r as args.Result, now as string, yanke
 }
 
 /**
+ * Record that a deck moved to another name (roadmap M29.55): `GET /deck` and
+ * `GET /resolve` then carry `movedTo`, the deck page says so, and jvc refuses
+ * to add, install or update the old name with a message naming the new one.
+ *
+ * Not an alias: the old name keeps its own versions and never resolves to the
+ * new deck's. The target must be a published deck, so the record never points
+ * at nothing; it may not be the deck itself, nor a deck that moved on, nor may
+ * a deck others moved to move on, so a record is never a chain. Re-running it
+ * with another target re-points the record.
+ *
+ * The versions stay live until yanked; older jvc releases ignore the record and
+ * stop choosing them only then, so the result lists the ones still live.
+ * @param db {flatdb.DB} the current registry store
+ * @param r {args.Result} the parsed command line
+ * @param now {string} unused; kept so every command shares one handler shape
+ * @return {AdminResult} the result: the (edited) store, flags, and a message
+ */
+export func cmdMove(db as flatdb.DB, r as args.Result, now as string) {
+    def name as string init deckname.fold(args.asString($r, "deck"));
+    def target as string init deckname.fold(args.asString($r, "target"));
+    if (not store.hasDeck($db, $name)) {
+        return failResult($db, "no such deck: " + $name + scopeHint($db, $name));
+    }
+    if (not deckname.isValid($target) or not deckname.isScoped($target)) {
+        return failResult(
+            $db,
+            "not a registry deck name: " + $target + " (a deck moves to a scoped " +
+                "name, @scope/deck)");
+    }
+    if ($target == $name) {
+        return failResult($db, "cannot move " + $name + " to itself");
+    }
+    def onward as string init store.movedTo($db, $target);
+    if (not ($onward == "")) {
+        return failResult(
+            $db,
+            $target + " itself moved to " + $onward + "; move " + $name + " to " +
+                $onward + " instead (a move record never chains)");
+    }
+    def movedHere as list of string init store.movedInto($db, $name);
+    if (len($movedHere) > 0) {
+        return failResult(
+            $db,
+            strings.join($movedHere, ", ") + " moved to " + $name + "; re-point that " +
+                "record to the new name first, so no record chains");
+    }
+    if (not store.hasDeck($db, $target)) {
+        return failResult(
+            $db,
+            "no such deck: " + $target + "; publish it before recording the move, " +
+                "so the record never points at nothing");
+    }
+    def previous as string init store.movedTo($db, $name);
+    if ($previous == $target) {
+        return readResult($db, $name + " already moved to " + $target);
+    }
+    def message as string init "moved " + $name + " to " + $target;
+    if (not ($previous == "")) {
+        $message = $message + " (it named " + $previous + ")";
+    }
+    def live as list of string init store.listLiveVersions($db, $name);
+    if (len($live) > 0) {
+        $message = $message + "\n" + convert.toString(len($live)) + " version(s) still " +
+            "live, which jvc releases older than the record keep choosing; yank each:";
+        for (def v in $live) {
+            $message = $message + "\n  deckadmin yank " + $name + " " + $v;
+        }
+    }
+    return editResult(
+        store.setMovedTo($db, $name, $target),
+        $message,
+        audit.deckMoved($name, $target, $previous, true));
+}
+
+/**
+ * Clear a deck's move record, so jvc resolves the old name again. Versions
+ * yanked for the move stay yanked until `unyank`.
+ * @param db {flatdb.DB} the current registry store
+ * @param r {args.Result} the parsed command line
+ * @param now {string} unused; kept so every command shares one handler shape
+ * @return {AdminResult} the result: the (edited) store, flags, and a message
+ */
+export func cmdUnmove(db as flatdb.DB, r as args.Result, now as string) {
+    def name as string init deckname.fold(args.asString($r, "deck"));
+    if (not store.hasDeck($db, $name)) {
+        return failResult($db, "no such deck: " + $name + scopeHint($db, $name));
+    }
+    def previous as string init store.movedTo($db, $name);
+    if ($previous == "") {
+        return readResult($db, $name + " has no move record");
+    }
+    def message as string init "cleared the move of " + $name + " (it named " + $previous + ")";
+    if (len(store.listLiveVersions($db, $name)) == 0 and
+        len(store.listVersions($db, $name)) > 0) {
+        $message = $message + "; every version is still yanked, so nothing resolves " +
+            "until one is unyanked";
+    }
+    return editResult(
+        store.setMovedTo($db, $name, ""),
+        $message,
+        audit.deckMoved($name, $previous, "", false));
+}
+
+/**
  * Register a trusted publisher: the CI workflow permitted to publish a deck
  * with no stored credential (specification 8.9).
  *
@@ -1265,7 +1400,12 @@ export func cmdList(db as flatdb.DB, r as args.Result, now as string) {
         def lines as list of string init ["decks:"];
         for (def deck in $decks) {
             def count as int init len(store.listVersions($db, $deck));
-            $lines[] = "  " + $deck + " (" + io.sprintf("%d", $count) + " version(s))";
+            def line as string init "  " + $deck + " (" + io.sprintf("%d", $count) + " version(s))";
+            def moved as string init store.movedTo($db, $deck);
+            if (not ($moved == "")) {
+                $line = $line + " moved to " + $moved;
+            }
+            $lines[] = $line;
         }
         return readResult($db, strings.join($lines, "\n"));
     }
@@ -1273,8 +1413,16 @@ export func cmdList(db as flatdb.DB, r as args.Result, now as string) {
         return failResult($db, "no such deck: " + $name);
     }
     def lines as list of string init ["versions of " + $name + ":"];
+    def moved as string init store.movedTo($db, $name);
+    if (not ($moved == "")) {
+        $lines[0] = "versions of " + $name + " (moved to " + $moved + "):";
+    }
     for (def version in store.listVersions($db, $name)) {
-        $lines[] = "  " + $version;
+        def line as string init "  " + $version;
+        if (store.isYanked($db, $name, $version)) {
+            $line = $line + " (yanked)";
+        }
+        $lines[] = $line;
     }
     return readResult($db, strings.join($lines, "\n"));
 }

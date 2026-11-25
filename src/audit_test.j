@@ -358,3 +358,17 @@ func testARefusedForgeCredentialIsAWarningForTheOperator() {
     testing.assertContains($ev.fields["message"], "organization forbids");
     testing.assertEqual($ev.fields["read"], "could not resolve the tag 0.3.0");
 }
+
+func testAMoveAndItsClearingAreWarnings() {
+    def moved as Event init deckMoved("@jennifer/slack", "@deckyard/slack", "", true);
+    testing.assertEqual($moved.level, WARN);
+    testing.assertEqual($moved.message, "deck moved");
+    testing.assertEqual($moved.fields["deck"], "@jennifer/slack");
+    testing.assertEqual($moved.fields["movedTo"], "@deckyard/slack");
+    testing.assertFalse(maps.has($moved.fields, "previous"));
+    def repointed as Event init deckMoved("@a/x", "@b/x", "@c/x", true);
+    testing.assertEqual($repointed.fields["previous"], "@c/x");
+    def cleared as Event init deckMoved("@jennifer/slack", "@deckyard/slack", "", false);
+    testing.assertEqual($cleared.level, WARN);
+    testing.assertEqual($cleared.message, "deck move cleared");
+}

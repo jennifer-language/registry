@@ -837,3 +837,24 @@ func testAForgeLinkWithoutATimeReads() {
     testing.assertEqual(getForgeLink($db, "u1").forgeId, "42");
     testing.assertEqual(getForgeLink($db, "u1").linkedAt, 0);
 }
+
+# --- the move record ------------------------------------------------------------
+
+func testAMoveRecordIsSetReadAndCleared() {
+    def db as flatdb.DB init putVersion(emptyStore(), "@acme/old", "", sampleVersion("1.0.0", "u"));
+    $db = putVersion($db, "@acme/new", "", sampleVersion("1.0.0", "u"));
+    testing.assertEqual(movedTo($db, "@acme/old"), "");
+    $db = setMovedTo($db, "@ACME/Old", "@Acme/New");
+    testing.assertEqual(movedTo($db, "@acme/old"), "@acme/new");
+    testing.assertEqual(json.asString(getDeckJson($db, "@acme/old"), "/movedTo"), "@acme/new");
+    testing.assertEqual(movedInto($db, "@acme/new"), ["@acme/old"]);
+    testing.assertEqual(len(movedInto($db, "@acme/old")), 0);
+    # a later publish leaves the deck record, and so the move, alone
+    $db = putVersion($db, "@acme/old", "renamed", sampleVersion("1.1.0", "u"));
+    testing.assertEqual(movedTo($db, "@acme/old"), "@acme/new");
+    $db = setMovedTo($db, "@acme/old", "");
+    testing.assertEqual(movedTo($db, "@acme/old"), "");
+    testing.assertFalse(json.has(getDeckJson($db, "@acme/old"), "/movedTo"));
+    # an unknown deck has not moved
+    testing.assertEqual(movedTo($db, "@acme/ghost"), "");
+}
