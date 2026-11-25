@@ -21,6 +21,7 @@
 
 use strings;
 use convert;
+use math;
 use json;
 use lists;
 use maps;
@@ -656,7 +657,7 @@ func lastPage(total as int, size as int) {
     if ($total == 0) {
         return 1;
     }
-    return convert.toInt(($total + $size - 1) / $size);
+    return math.trunc(($total + $size - 1) / $size);
 }
 
 # sizeParam is the `size=` a listing link carries, with its separator; nothing
@@ -678,7 +679,7 @@ func sizeChoice(page as int, size as int, base as string) {
         if ($each == $size) {
             $out = $out + ' <strong aria-current="true">' + $label + '</strong>';
         } else {
-            def at as int init convert.toInt(($first - $first % $each) / $each) + 1;
+            def at as int init math.trunc(($first - $first % $each) / $each) + 1;
             $out = $out + ' <a href="' + $base + sizeParam($each) + 'page=' +
                 convert.toString($at) + '">' + $label + '</a>';
         }
@@ -1358,7 +1359,7 @@ func cloudStep(count as int, most as int) {
     if ($most < 2) {
         return 3;
     }
-    def step as int init 1 + convert.toInt((($count - 1) * 4) / ($most - 1));
+    def step as int init 1 + math.trunc((($count - 1) * 4) / ($most - 1));
     if ($step > 5) {
         return 5;
     }

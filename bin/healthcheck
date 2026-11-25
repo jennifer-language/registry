@@ -30,7 +30,12 @@ if (not (os.getEnv("REGISTRY_HEALTHURL") == "")) {
 
 def none as map of string to string init {};
 try {
-    def res as http.Response init http.requestWith("GET", $url, $none, "", TIMEOUT_MS, MAX_BYTES);
+    def res as http.Response init http.send(
+        "GET",
+        $url,
+        $none,
+        "",
+        http.Options{timeoutMs: TIMEOUT_MS, maxBytes: MAX_BYTES});
     if (not ($res.status == 200)) {
         io.printf("unhealthy: %s answered %d\n", $url, $res.status);
         exit 1;

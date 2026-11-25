@@ -480,13 +480,12 @@ export func discoveryUrl(issuer as string) {
  */
 export func fetchJwks(issuer as string) {
     def headers as map of string to string init {"Accept": "application/json"};
-    def disco as http.Response init http.requestWith(
+    def disco as http.Response init http.send(
         "GET",
         discoveryUrl($issuer),
         $headers,
         "",
-        TIMEOUT_MS,
-        MAX_BYTES);
+        http.Options{timeoutMs: TIMEOUT_MS, maxBytes: MAX_BYTES});
     def doc as json.Value init json.decode($disco.body);
     if (not json.has($doc, "/jwks_uri")) {
         throw Error{
@@ -497,13 +496,12 @@ export func fetchJwks(issuer as string) {
             col: 0
         };
     }
-    def keys as http.Response init http.requestWith(
+    def keys as http.Response init http.send(
         "GET",
         json.asString($doc, "/jwks_uri"),
         $headers,
         "",
-        TIMEOUT_MS,
-        MAX_BYTES);
+        http.Options{timeoutMs: TIMEOUT_MS, maxBytes: MAX_BYTES});
     return $keys.body;
 }
 

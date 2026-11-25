@@ -27,6 +27,7 @@ use io;
 use maps;
 use strings;
 use convert;
+use math;
 use encoding;
 use regex;
 import "log.j" as log;
@@ -294,7 +295,7 @@ export func printable(s as string) {
     for (def ch in strings.chars($s)) {
         if ($ch < " " or ($ch >= "\u007f" and $ch <= "\u009f") or strings.contains(BIDI, $ch)) {
             def hex as string init encoding.toText("hex", encoding.encode("utf-8", $ch));
-            for (def at in 0..convert.toInt(len($hex) / 2)) {
+            for (def at in 0..math.trunc(len($hex) / 2)) {
                 $parts[] = "\\x" + $hex[$at * 2..$at * 2 + 2];
             }
             $changed = true;

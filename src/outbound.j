@@ -105,8 +105,8 @@ func count(t as Trace) {
 }
 
 /**
- * Send one request through `http.requestWith`, counting it and logging it.
- * Returns or throws exactly what `http.requestWith` does.
+ * Send one request through `http.send` (no redirects, no retries), counting
+ * it and logging it. Returns or throws exactly what `http.send` does.
  * @param t {Trace} the request's trace
  * @param service {string} who is asked: the forge's name, or "identity"
  * @param method {string} the HTTP method
@@ -129,7 +129,12 @@ export func request(
     def started as int init time.unixMillis(time.now());
     def res as http.Response;
     try {
-        $res = http.requestWith($method, $url, $headers, $body, $timeoutMs, $maxBytes);
+        $res = http.send(
+            $method,
+            $url,
+            $headers,
+            $body,
+            http.Options{timeoutMs: $timeoutMs, maxBytes: $maxBytes});
     } catch (err) {
         count($t);
         if ($t.on) {

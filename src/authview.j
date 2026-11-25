@@ -21,6 +21,7 @@
 use json;
 use strings;
 use convert;
+use math;
 use maps;
 use lists;
 import "flatdb.j" as flatdb;
@@ -597,7 +598,7 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int, 
             $ended,
             401,
             "this login is older than " +
-                convert.toString(convert.toInt(MAX_SESSION_SECONDS / 86400)) +
+                convert.toString(math.trunc(MAX_SESSION_SECONDS / 86400)) +
                 " days; log in again");
         return AuthReply{status: $over.status, body: $over.body, db: $ended, changed: true};
     }
@@ -609,7 +610,7 @@ export func refresh(cfg as Config, db as flatdb.DB, body as string, now as int, 
             $stale,
             401,
             "the organisation memberships of this login are older than " +
-                convert.toString(convert.toInt($cfg.orgMaxAge / 3600)) +
+                convert.toString(math.trunc($cfg.orgMaxAge / 3600)) +
                 " hours; log in again to read them afresh");
         return AuthReply{status: $aged.status, body: $aged.body, db: $stale, changed: true};
     }

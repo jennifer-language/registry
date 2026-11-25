@@ -43,6 +43,7 @@ use json;
 use maps;
 use strings;
 use convert;
+use math;
 import "flatdb.j" as flatdb;
 import "./store.j" as store;
 import "./stats.j" as stats;
@@ -344,6 +345,6 @@ func ofTheDay(decks as list of Measured, now as int) {
     if (len($rotation) == 0) {
         return -1;
     }
-    def day as int init convert.toInt($start / SECONDS_PER_DAY);
+    def day as int init math.trunc($start / SECONDS_PER_DAY);
     return $rotation[($day * DAY_STEP) % len($rotation)];
 }

@@ -111,11 +111,20 @@ jobs:
 
       - name: Lint
         # Zero findings, info included: lint exits 0 on info findings, so the
-        # output is checked. bin/entrypoint.sh is shell and is not linted.
+        # findings are counted. On `tip` a deprecation (L301) is reported but
+        # does not fail: its replacement may not exist in the floor release yet,
+        # and L301 stays info until the release that removes the call.
+        # bin/entrypoint.sh is shell and is not linted.
         run: |
           out=$(jennifer lint src/*.j src/*/*.j bin/serve bin/deckadmin bin/healthcheck 2>&1) || { echo "$out"; exit 1; }
-          if [ -n "$out" ]; then
-              echo "$out"
+          [ -n "$out" ] && echo "$out"
+          findings=$(printf '%s\n' "$out" | grep -E ': (info|warning|error): ' || true)
+          if [ "${{ matrix.interpreter }}" = tip ]; then
+              deprecations=$(printf '%s\n' "$findings" | grep -c '\[L301\]$' || true)
+              [ "$deprecations" -gt 0 ] && echo "::warning::$deprecations deprecated calls (L301) need a newer floor to migrate"
+              findings=$(printf '%s\n' "$findings" | grep -v '\[L301\]$' || true)
+          fi
+          if [ -n "$findings" ]; then
               echo "::error::lint findings"
               exit 1
           fi

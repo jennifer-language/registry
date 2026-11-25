@@ -18,6 +18,7 @@
 use json;
 use strings;
 use convert;
+use math;
 use maps;
 use lists;
 import "flatdb.j" as flatdb;
@@ -236,7 +237,7 @@ export func listDecks(db as flatdb.DB, page as int) {
  */
 export func listDecksFrom(index as json.Value, page as int) {
     def total as int init json.length($index, "");
-    def pages as int init convert.toInt(($total + DECKS_PAGE_SIZE - 1) / DECKS_PAGE_SIZE);
+    def pages as int init math.trunc(($total + DECKS_PAGE_SIZE - 1) / DECKS_PAGE_SIZE);
     if ($pages < 1) {
         $pages = 1;
     }
