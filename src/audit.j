@@ -274,7 +274,8 @@ func cleaned(ev as Event) {
 def const BIDI as string init "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u2028\u2029";
 
 # UNPRINTABLE matches any character `printable` escapes: C0, DEL, C1 and BIDI.
-def const UNPRINTABLE as string init '[\x00-\x1f\x7f-\x9f\x{202a}-\x{202e}\x{2066}-\x{2069}\x{2028}\x{2029}]';
+def const UNPRINTABLE as string init '[\x00-\x1f\x7f-\x9f' +
+    '\x{202a}-\x{202e}\x{2066}-\x{2069}\x{2028}\x{2029}]';
 
 /**
  * Text with its control characters escaped as `\xNN` per UTF-8 byte, and

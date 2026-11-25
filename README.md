@@ -98,17 +98,14 @@ saying how to build it.
 
 ## Tests and lint
 
+CI (`.github/workflows/test.yml`) runs these on the release named in
+`[engines]` and on a build of jennifer's `main`, then starts `bin/serve` and
+probes `/health`. A second job builds the Docker image and checks the container
+turns healthy and serves `/reference/`, `/manual/` and `/specs/`.
+
 ```sh
-for t in store admin apiview webview authview token search policy identity forge \
-         forgecred scope scopeview reserved audit trustpub citoken manifest publishview \
-         config certs stats keywords deckcatalog constraint deckname catalog \
-         resolver featured outbound feedview; do
-    jennifer test src/${t}_test.j
-done
-for t in policy/operator policy/derived policy/firstcome \
-         identity/github identity/gitea identity/gitlab identity/oidc \
-         forge/github forge/gitea forge/gitlab; do
-    jennifer test src/${t}_test.j
+for t in src/*_test.j src/*/*_test.j; do
+    jennifer test "$t"
 done
 
 jennifer fmt -l src/*.j src/*/*.j bin/serve bin/deckadmin bin/healthcheck  # lists nothing

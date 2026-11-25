@@ -1,0 +1,190 @@
+# SPDX-License-Identifier: LGPL-3.0-only
+# SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
+#
+# Gate: every test file, fmt, lint (zero findings, info included), a server
+# start and the dash rule, against two interpreters.
+#
+# - `release`: the release tarball named by JENNIFER_RELEASE, the floor in
+#   `[engines]`. A release build enforces floors, so this job proves the
+#   registry runs on the oldest interpreter it claims.
+# - `tip`: built from the jennifer repository's main. A `-dev` build skips
+#   version floors, but it shows a language change breaking the registry
+#   before the next release does.
+
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test, fmt, lint (${{ matrix.interpreter }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        interpreter: [release, tip]
+    env:
+      # Bump together with `[engines]`.
+      JENNIFER_RELEASE: 0.27.0
+    steps:
+      - name: Checkout the registry
+        uses: actions/checkout@v7
+
+      - name: Install the release interpreter
+        if: matrix.interpreter == 'release'
+        run: |
+          set -eu
+          stage="jennifer-${JENNIFER_RELEASE}-linux-amd64"
+          base="https://github.com/jennifer-language/jennifer/releases/download/${JENNIFER_RELEASE}"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$base/$stage.tar.gz"
+          curl -fsSLO "$base/$stage.tar.gz.sha256"
+          sha256sum -c "$stage.tar.gz.sha256"
+          tar xzf "$stage.tar.gz"
+          install -m755 "$stage/jennifer" "$RUNNER_TEMP/jennifer"
+          # The bundled modules (http.j, ...) sit in the tarball, not at the
+          # FHS location a package installs to.
+          echo "JENNIFER_SYSMODDIR=$RUNNER_TEMP/$stage/share/jennifer/modules" >> "$GITHUB_ENV"
+
+      - name: Checkout the interpreter
+        if: matrix.interpreter == 'tip'
+        uses: actions/checkout@v7
+        with:
+          repository: jennifer-language/jennifer
+          # Named, not looked up: Forgejo does not answer the default-branch
+          # query checkout makes without a ref.
+          ref: main
+          path: .interpreter
+          # The version is stamped from `git describe`, which needs the tags.
+          fetch-depth: 0
+
+      - name: Set up Go
+        if: matrix.interpreter == 'tip'
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: .interpreter/go.mod
+          cache-dependency-path: .interpreter/go.sum
+
+      - name: Build the interpreter
+        if: matrix.interpreter == 'tip'
+        working-directory: .interpreter
+        run: |
+          go build -o "$RUNNER_TEMP/jennifer" ./cmd/jennifer
+          echo "JENNIFER_SYSMODDIR=$GITHUB_WORKSPACE/.interpreter/modules" >> "$GITHUB_ENV"
+
+      - name: Put the interpreter on PATH
+        # bin/ scripts start with `#!/usr/bin/env -S jennifer ...`.
+        run: |
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/jennifer" --version
+
+      - name: Run every test file
+        run: |
+          set -eu
+          # Globbed rather than listed, so a new module cannot be added
+          # without its tests running here.
+          for t in src/*_test.j src/*/*_test.j; do
+              echo "== $t"
+              jennifer test "$t"
+          done
+
+      - name: Format
+        run: |
+          out=$(jennifer fmt -l src/*.j src/*/*.j bin/serve bin/deckadmin bin/healthcheck)
+          if [ -n "$out" ]; then
+              echo "$out"
+              echo "::error::not formatted (run jennifer fmt -w)"
+              exit 1
+          fi
+
+      - name: Lint
+        # Zero findings, info included: lint exits 0 on info findings, so the
+        # output is checked. bin/entrypoint.sh is shell and is not linted.
+        run: |
+          out=$(jennifer lint src/*.j src/*/*.j bin/serve bin/deckadmin bin/healthcheck 2>&1) || { echo "$out"; exit 1; }
+          if [ -n "$out" ]; then
+              echo "$out"
+              echo "::error::lint findings"
+              exit 1
+          fi
+
+      - name: Start the server
+        # The tests exercise modules directly; this runs the program the
+        # image runs and asks it for /health, as the container's probe does.
+        run: |
+          set -eu
+          dir=$(mktemp -d)
+          REGISTRY_ADDR=127.0.0.1:18080 REGISTRY_DB="$dir/registry.db" \
+              REGISTRY_TOKEN_KEY=$(openssl rand -hex 32) \
+              jennifer serve bin/serve > "$dir/serve.log" 2>&1 &
+          pid=$!
+          ok=0
+          for i in $(seq 1 30); do
+              if REGISTRY_HEALTHURL=http://127.0.0.1:18080/health jennifer run bin/healthcheck; then
+                  ok=1
+                  break
+              fi
+              sleep 1
+          done
+          kill "$pid" || true
+          cat "$dir/serve.log"
+          [ "$ok" = 1 ] || { echo "::error::server did not become healthy"; exit 1; }
+          jennifer run bin/deckadmin --help > /dev/null
+
+      - name: Check for em-dashes and en-dashes
+        if: matrix.interpreter == 'release'
+        run: |
+          if grep -rInP '\xe2\x80\x93|\xe2\x80\x94' \
+                  --exclude-dir=.git --exclude-dir=.interpreter \
+                  --exclude=JENNIFER.md . ; then
+              echo "::error::em-dash or en-dash found (repo convention forbids both)"
+              exit 1
+          fi
+
+  docker:
+    # The image the deployment runs: both base images (grimoire for the books,
+    # jennifer at the release the Dockerfile names), the lint step inside the
+    # build, then a container that has to turn healthy and serve the books.
+    # Plain `docker build`, not build-push-action with the gha cache, which
+    # Forgejo's runner does not provide.
+    name: docker image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the registry
+        uses: actions/checkout@v7
+
+      - name: Build the image
+        run: docker build -t registry:test .
+
+      - name: Run the image
+        run: |
+          set -eu
+          cid=$(docker run -d -p 127.0.0.1:18080:8080 \
+              -e REGISTRY_TOKEN_KEY="$(openssl rand -hex 32)" registry:test)
+          ok=0
+          for i in $(seq 1 60); do
+              status=$(docker inspect -f '{{.State.Health.Status}}' "$cid")
+              [ "$status" = healthy ] && { ok=1; break; }
+              [ "$(docker inspect -f '{{.State.Running}}' "$cid")" = true ] || break
+              sleep 1
+          done
+          docker logs "$cid"
+          [ "$ok" = 1 ] || { docker rm -f "$cid"; echo "::error::container did not become healthy"; exit 1; }
+          # The three books built in the docs stage.
+          for p in /reference/ /manual/ /specs/; do
+              curl -fsS -o /dev/null "http://127.0.0.1:18080$p" || { docker rm -f "$cid"; echo "::error::$p not served"; exit 1; }
+          done
+          docker exec "$cid" jennifer run bin/deckadmin list
+          docker rm -f "$cid"
