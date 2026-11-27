@@ -104,8 +104,9 @@ export func infrastructure() {
 
 /**
  * The project's own names, so the registry, the client, and the language cannot
- * be impersonated by whoever registers first. `deckyard` is the community deck
- * organisation: not part of the project, but a name its decks are trusted by.
+ * be impersonated by whoever registers first. `deckyard` and `skiffyard` are
+ * the community deck organisations: not part of the project, but names their
+ * decks are trusted by.
  * @return {list of string} the reserved names
  */
 export func project() {
@@ -118,7 +119,8 @@ export func project() {
         "deckregistry",
         "jennifer-lang",
         "jennifer-language",
-        "deckyard"
+        "deckyard",
+        "skiffyard"
     ];
 }
 
