@@ -906,6 +906,7 @@ export func deck(db as flatdb.DB, name as string, now as int) {
     if (not ($description == "")) {
         $body = $body + '<p class="lede">' + esc($description) + '</p>';
     }
+    $body = $body + formerlyNote(store.movedFrom($db, $name));
     def moved as string init store.movedTo($db, $name);
     if ($moved == "") {
         $body = $body + tagRow($db, $name) + yankNotice($all, $live);
@@ -985,6 +986,24 @@ func movedNotice(target as string) {
         '. Change the <code>[decks]</code> entry and the imports (<code>' + $safe +
         '/</code>). jvc refuses to add, install or update this name; a lockfile ' +
         'that pins one of its versions still installs, with a warning.</p>';
+}
+
+# formerlyNote names the decks that moved to this one, each linked to its own
+# page (which keeps its versions and says where it went); "" when none did.
+func formerlyNote(from as list of string) {
+    if (len($from) == 0) {
+        return "";
+    }
+    def links as list of string init [];
+    for (def old in $from) {
+        def link as string init '<code>' + esc($old) + '</code>';
+        def url as string init deckUrl($old);
+        if (not ($url == "")) {
+            $link = '<a href="' + esc($url) + '">' + $link + '</a>';
+        }
+        $links[] = $link;
+    }
+    return '<p class="muted">Formerly ' + strings.join($links, ", ") + '.</p>';
 }
 
 # tagRow renders a deck's own tags, linking each to the decks that share it.

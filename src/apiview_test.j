@@ -489,6 +489,29 @@ func testTheDeckRecordCarriesMovedTo() {
     testing.assertFalse(json.has(getDeck(movedStore(), "@acme/chat").body, "/movedTo"));
 }
 
+func testTheTargetRecordCarriesMovedFrom() {
+    def db as flatdb.DB init store.putVersion(
+        movedStore(),
+        "@acme/chat-old",
+        "chat",
+        version("0.0.1", "u7"));
+    $db = store.setMovedTo($db, "@acme/chat-old", "@acme/chat");
+    def reply as Reply init getDeck($db, "@acme/chat");
+    testing.assertEqual($reply.status, 200);
+    # every earlier name, sorted, as a list
+    testing.assertEqual(json.typeOf($reply.body, "/movedFrom"), "list");
+    testing.assertEqual(json.asString($reply.body, "/movedFrom/0"), "@acme/chat-old");
+    testing.assertEqual(json.asString($reply.body, "/movedFrom/1"), "@acme/slack");
+    # the old names and an unmoved deck carry none
+    testing.assertFalse(json.has(getDeck($db, "@acme/slack").body, "/movedFrom"));
+    testing.assertFalse(json.has(getDeck($db, "ansi").body, "/movedFrom"));
+    # derived, not stored: clearing a record drops the name
+    def cleared as flatdb.DB init store.setMovedTo($db, "@acme/chat-old", "");
+    def one as Reply init getDeck($cleared, "@acme/chat");
+    testing.assertEqual(json.asString($one.body, "/movedFrom/0"), "@acme/slack");
+    testing.assertFalse(json.has($one.body, "/movedFrom/1"));
+}
+
 func testResolveCarriesMovedToButNoAlias() {
     def db as flatdb.DB init movedStore();
     def hit as Reply init resolve($db, "@acme/slack", "*");

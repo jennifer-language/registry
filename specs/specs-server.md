@@ -625,7 +625,7 @@ Response `200`:
 
 The deck record itself carries `name`, `description`, `versions`, and optionally
 `readme` (the `README.md` read at the newest published commit, Markdown source),
-`successor` (5.1.1) and `movedTo` (5.1.2).
+`successor` (5.1.1), `movedTo` (5.1.2) and `movedFrom` (5.1.3).
 
 - The `versions` object is keyed by version string.
 - An unknown deck is `404` with `{"error": "..."}`.
@@ -688,6 +688,32 @@ still install a version an existing lockfile pins (client specification 7).
 
 The field is additive: a client that does not know it ignores it, as 4.1
 requires of any unknown field.
+
+A deck that moves again (a promotion after an earlier move) first has every
+record that names it re-pointed to the new target (`deckadmin move` on the
+older name with the new target replaces its record), then moves itself. Every
+old name then names the current deck directly, however many moves there were,
+and a client never follows more than one step. Clearing a record
+(`deckadmin unmove`) makes the old name resolve again; versions yanked for the
+move stay yanked until they are unyanked.
+
+#### 5.1.3 `movedFrom`, where a deck came from
+
+A deck record **MAY** carry `movedFrom`, the names whose `movedTo` names this
+deck, sorted:
+
+```json
+{ "name": "@deckyard/slack", "movedFrom": ["@jennifer/slack"], "versions": { "...": "..." } }
+```
+
+| Rule | |
+| ---- | --- |
+| Shape | a list of folded, scoped deck names; absent when no record names the deck |
+| Source | derived from the `movedTo` records when the record is served, never stored, so it follows a re-pointed or cleared record at once |
+| Clients | informational: a client **MAY** show it and **MUST NOT** resolve, install or substitute any of its names |
+| Other answers | only `GET /deck`; the deck page names the earlier decks too ("Formerly ...") |
+
+Additive like `movedTo`.
 
 ### 5.2 `GET /decks`
 

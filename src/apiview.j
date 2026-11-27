@@ -304,8 +304,9 @@ export func searchIn(index as json.Value, lowered as json.Value, query as string
 }
 
 /**
- * A single deck's full record (name, description, versions, and `movedTo` when
- * it moved), 404 when the deck is unknown, 400 when no name is given.
+ * A single deck's full record (name, description, versions, `movedTo` when it
+ * moved, and `movedFrom`, the sorted names that moved to it, when any did),
+ * 404 when the deck is unknown, 400 when no name is given.
  * @param db {flatdb.DB} the registry to read
  * @param name {string} the deck name
  * @return {Reply} the deck record at 200, or a 404 or 400 error reply
@@ -317,7 +318,16 @@ export func getDeck(db as flatdb.DB, name as string) {
     if (not store.hasDeck($db, $name)) {
         return errorReply(404, "no such deck: " + $name);
     }
-    return Reply{status: 200, body: store.getDeckJson($db, $name)};
+    def body as json.Value init store.getDeckJson($db, $name);
+    def from as list of string init store.movedFrom($db, $name);
+    if (len($from) > 0) {
+        def names as json.Value init json.list();
+        for (def n in $from) {
+            $names = json.append($names, "", $n);
+        }
+        $body = json.set($body, "/movedFrom", $names);
+    }
+    return Reply{status: 200, body: $body};
 }
 
 /**

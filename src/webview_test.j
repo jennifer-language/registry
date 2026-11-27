@@ -904,3 +904,14 @@ func testAMovedDeckPageNamesTheNewDeckAndOffersNoSnippet() {
     testing.assertFalse(strings.contains($target.body, "<strong>moved</strong>"));
     testing.assertContains($target.body, "Depend on it");
 }
+
+func testTheDeckMovedToNamesWhereItCameFrom() {
+    def page as Page init deck(movedDb(), "@acme/chat", NOW);
+    testing.assertContains(
+        $page.body,
+        '<p class="muted">Formerly <a href="/deck/acme/routeros">' +
+            '<code>@acme/routeros</code></a>.</p>');
+    # the old page and an unmoved one say nothing of the kind
+    testing.assertFalse(strings.contains(deck(movedDb(), "@acme/routeros", NOW).body, "Formerly"));
+    testing.assertFalse(strings.contains(deck(seeded(), "@acme/routeros", NOW).body, "Formerly"));
+}

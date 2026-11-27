@@ -39,6 +39,7 @@
 
 use json;
 use strings;
+use lists;
 use convert;
 use fs;
 import "flatdb.j" as flatdb;
@@ -1861,6 +1862,18 @@ export func movedInto(db as flatdb.DB, name as string) {
         }
     }
     return $out;
+}
+
+/**
+ * The names a deck was moved from, sorted: every deck whose `movedTo` record
+ * names it. Derived on read from the move records, so it needs no storage of
+ * its own and stays right when a record is re-pointed or cleared.
+ * @param db {flatdb.DB} the store to read
+ * @param name {string} the deck
+ * @return {list of string} the earlier names, empty when none moved here
+ */
+export func movedFrom(db as flatdb.DB, name as string) {
+    return lists.sort(movedInto($db, $name));
 }
 
 /**
