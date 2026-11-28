@@ -789,10 +789,13 @@ the chosen version **MUST** satisfy all of them simultaneously, and **MUST** be
 the highest published version that does. Exactly one version of each deck appears
 in the result. A dependency cycle **MUST** terminate rather than recurse.
 
-### 5.5 `GET /search?q=<query>` (optional)
+### 5.5 `GET /search?q=<query>[&all=1]` (optional)
 
-Decks whose name or description matches `q`, best first. An **empty query
-returns every deck**, so this is also the machine-readable deck listing.
+Active decks whose name or description matches `q`, best first. A deck is
+**active** when it has not moved (5.1.2) and at least one of its versions is
+not yanked. `all=1` includes the inactive decks; any other value, or none,
+lists only the active ones. An **empty query with `all=1` returns every deck**,
+so this is also the machine-readable deck listing.
 
 Response `200`:
 

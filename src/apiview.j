@@ -272,7 +272,7 @@ export func listDecksFrom(index as json.Value, page as int) {
  * @return {Reply} a 200 reply with `{ query, count, results }`, or a 400
  */
 export func search(index as json.Value, query as string) {
-    return searchIn($index, search.lowered($index), $query);
+    return searchIn($index, search.lowered($index), $query, false);
 }
 
 /**
@@ -281,9 +281,11 @@ export func search(index as json.Value, query as string) {
  * @param index {json.Value} the registry's deck index, from `search.index`
  * @param lowered {json.Value} from `search.lowered` over that index
  * @param query {string} the search query ("" for everything)
+ * @param all {bool} every matching deck; false only the active ones
+ *     (`search.isActive`)
  * @return {Reply} a 200 reply with `{ query, count, results }`, or a 400
  */
-export func searchIn(index as json.Value, lowered as json.Value, query as string) {
+export func searchIn(index as json.Value, lowered as json.Value, query as string, all as bool) {
     if (len($query) > search.MAX_QUERY) {
         return errorReply(
             400,
@@ -291,9 +293,12 @@ export func searchIn(index as json.Value, lowered as json.Value, query as string
                 " characters");
     }
     def found as list of int init search.selectIn($lowered, $query);
-    # everything, in index order: the index itself is the answer, uncopied
+    if (not $all) {
+        $found = search.active($index, $found);
+    }
+    # every deck, in index order: the index itself is the answer, uncopied
     def results as json.Value init $index;
-    if (not (strings.trim($query) == "")) {
+    if (not ($all and strings.trim($query) == "")) {
         $results = search.entries($index, $found);
     }
     def body as json.Value init json.map();

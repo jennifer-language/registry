@@ -356,6 +356,36 @@ export func select(index as json.Value, query as string) {
 }
 
 /**
+ * Whether the entry at `i` is active: not moved, and with a version that is not
+ * yanked. A search lists only active decks unless asked for all of them.
+ * @param index {json.Value} an index from `index`
+ * @param i {int} the entry's position
+ * @return {bool} true for an active deck
+ */
+export func isActive(index as json.Value, i as int) {
+    if (json.has($index, at($i) + "/movedTo")) {
+        return false;
+    }
+    return json.asBool($index, at($i) + "/live");
+}
+
+/**
+ * The active entries of a selection (`isActive`), in selection order.
+ * @param index {json.Value} an index from `index`
+ * @param positions {list of int} a selection from it
+ * @return {list of int} the positions of the active decks
+ */
+export func active(index as json.Value, positions as list of int) {
+    def out as list of int init [];
+    for (def i in $positions) {
+        if (isActive($index, $i)) {
+            $out[] = $i;
+        }
+    }
+    return $out;
+}
+
+/**
  * The selected entries as one JSON list, in selection order.
  * @param index {json.Value} an index from `index`
  * @param positions {list of int} a selection from it

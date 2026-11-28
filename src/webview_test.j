@@ -176,8 +176,11 @@ func testNoMatchesStillAnswers200() {
 
 func testAnEmptyQueryListsEverything() {
     def page as Page init results(search.index(seeded()), "", 1, DEFAULT_PAGE_SIZE);
-    testing.assertContains($page.body, "All decks");
+    testing.assertContains($page.body, "Active decks");
     testing.assertContains($page.body, "@acme/routeros");
+    def all as json.Value init search.index(seeded());
+    def every as Page init resultsIn($all, search.lowered($all), "", 1, DEFAULT_PAGE_SIZE, true);
+    testing.assertContains($every.body, "All decks");
 }
 
 # --- a deck page ------------------------------------------------------------
@@ -639,6 +642,38 @@ func testCountsAppearOnceSomethingHasBeenCounted() {
     testing.assertContains($page.body, "Not downloads");
 }
 
+# --- the all-decks toggle ----------------------------------------------------
+
+func testSearchHidesAMovedDeckAndLinksToIt() {
+    def db as flatdb.DB init store.putVersion(seeded(), "@deckyard/routeros", "", gitVer("0.3.0"));
+    $db = store.setMovedTo($db, "@acme/routeros", "@deckyard/routeros");
+    def all as json.Value init search.index($db);
+    def page as Page init results($all, "routeros", 1, DEFAULT_PAGE_SIZE);
+    testing.assertContains($page.body, "1 result for");
+    testing.assertFalse(strings.contains($page.body, 'href="/deck/acme/routeros"'));
+    testing.assertContains(
+        $page.body,
+        'href="/search?q=routeros&amp;all=1">1 yanked or moved deck</a>');
+    testing.assertFalse(strings.contains($page.body, " checked"));
+    def every as Page init resultsIn(
+        $all,
+        search.lowered($all),
+        "routeros",
+        1,
+        DEFAULT_PAGE_SIZE,
+        true);
+    testing.assertContains($every.body, "2 results for");
+    testing.assertContains($every.body, 'href="/deck/acme/routeros"');
+    testing.assertContains($every.body, 'name="all" value="1" checked');
+    testing.assertFalse(strings.contains($every.body, "not shown"));
+}
+
+func testTheAllParameterIsOnlyOne() {
+    testing.assertTrue(allDecks("1"));
+    testing.assertFalse(allDecks(""));
+    testing.assertFalse(allDecks("true"));
+}
+
 # --- yanking ------------------------------------------------------------------
 
 # yankedDb publishes two versions and yanks the newer one.
@@ -800,7 +835,13 @@ func testThePagesBuiltFromSharedMapsMatchTheIndexOnes() {
         404);
     def viaMap as Page init scopeIn($db, $all, search.scopeMap($all), "acme", 1, DEFAULT_PAGE_SIZE);
     testing.assertEqual($viaMap.body, scope($db, $all, "acme", 1, DEFAULT_PAGE_SIZE).body);
-    def found as Page init resultsIn($all, search.lowered($all), "ONE", 1, DEFAULT_PAGE_SIZE);
+    def found as Page init resultsIn(
+        $all,
+        search.lowered($all),
+        "ONE",
+        1,
+        DEFAULT_PAGE_SIZE,
+        false);
     testing.assertEqual($found.body, results($all, "ONE", 1, DEFAULT_PAGE_SIZE).body);
     testing.assertContains($found.body, "@acme/one");
     testing.assertFalse(strings.contains($found.body, "@acme/two"));

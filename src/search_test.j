@@ -157,6 +157,23 @@ func testAMovedDeckCarriesItsTarget() {
     testing.assertFalse(json.has($all, "/0/movedTo"));
 }
 
+# A moved deck and one with every version yanked are inactive; a deck with
+# one version yanked of two is not.
+func testActiveSkipsMovedAndFullyYankedDecks() {
+    def db as flatdb.DB init store.putVersion(seeded(), "@deckyard/routeros", "", ver("0.3.0"));
+    $db = store.setMovedTo($db, "@acme/routeros", "@deckyard/routeros");
+    $db = store.setYanked($db, "@zeta/ansi", "2.0.0", true);
+    $db = store.putVersion($db, "@acme/net", "", ver("1.1.0"));
+    $db = store.setYanked($db, "@acme/net", "1.1.0", true);
+    def all as json.Value init index($db);
+    def got as list of string init [];
+    for (def i in active($all, select($all, ""))) {
+        $got[] = json.asString($all, "/" + convert.toString($i) + "/name");
+    }
+    testing.assertEqual(strings.join($got, ","), "@acme/net,@deckyard/routeros");
+    testing.assertFalse(isActive($all, 0));
+}
+
 func testNoMatchIsEmpty() {
     testing.assertEqual(len(find(seeded(), "nothing-matches-this")), 0);
 }

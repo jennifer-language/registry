@@ -456,14 +456,28 @@ func testSearchInMatchesSearch() {
     def all as json.Value init search.index(seeded());
     def low as json.Value init search.lowered($all);
     testing.assertEqual(
-        json.encode(searchIn($all, $low, "ANSI").body),
+        json.encode(searchIn($all, $low, "ANSI", false).body),
         json.encode(search($all, "ANSI").body));
     testing.assertEqual(
-        json.encode(searchIn($all, $low, "").body),
+        json.encode(searchIn($all, $low, "", false).body),
         json.encode(search($all, "").body));
     testing.assertEqual(
-        searchIn($all, $low, strings.replicate("x", search.MAX_QUERY + 1)).status,
+        searchIn($all, $low, strings.replicate("x", search.MAX_QUERY + 1), false).status,
         400);
+}
+
+func testSearchListsActiveDecksUnlessAskedForAll() {
+    def all as json.Value init search.index(movedStore());
+    def low as json.Value init search.lowered($all);
+    # @acme/slack moved: gone from the default answer, there with all
+    def active as Reply init searchIn($all, $low, "", false);
+    testing.assertEqual(json.asInt($active.body, "/count"), 2);
+    testing.assertFalse(strings.contains(json.encode($active.body), '"@acme/slack"'));
+    def every as Reply init searchIn($all, $low, "", true);
+    testing.assertEqual(json.asInt($every.body, "/count"), 3);
+    testing.assertEqual(json.length($every.body, "/results"), 3);
+    testing.assertEqual(json.asInt(searchIn($all, $low, "chat", false).body, "/count"), 1);
+    testing.assertEqual(json.asInt(searchIn($all, $low, "chat", true).body, "/count"), 2);
 }
 
 # --- a moved deck ---------------------------------------------------------------

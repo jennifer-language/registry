@@ -319,7 +319,7 @@ Read-only: no form that writes anything, no session, no account UI.
 | Route | Is |
 | ----- | -- |
 | `/` | search, links to `/browse` and `/tags`, and the deck count (HTML), or the service index (JSON) |
-| `/search?q=` | results (HTML), or the JSON result set |
+| `/search?q=` | active decks matching `q`, or every match with `&all=1` (HTML, or the JSON result set) |
 | `/browse` | every deck by deck name then scope, 25 to a page (`?page=`, `?size=10\|25\|50\|100`) |
 | `/tags`, `/tag/<keyword>` | the keywords in use, and the decks carrying one |
 | `/scope/<name>` | the decks under one scope |

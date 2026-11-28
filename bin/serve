@@ -490,18 +490,20 @@ func apiIndex(ctx as web.Context) {
 
 /**
  * GET /search?q=: deck search, as a paged HTML page or as JSON. Both read the
- * same shared index.
+ * same shared index, and list only active decks unless `?all=1`.
  * @param ctx {web.Context} the request context
  */
 func apiSearch(ctx as web.Context) {
     def query as string init web.query($ctx, "q");
+    def all as bool init webview.allDecks(web.query($ctx, "all"));
     if (webapi.wants($ctx) == "html") {
         def page as webview.Page init webview.resultsIn(
             sharedIndex(),
             sharedLowered(),
             $query,
             pageOf($ctx),
-            sizeOf($ctx));
+            sizeOf($ctx),
+            $all);
         web.html($ctx, $page.status, $page.body);
         return;
     }
@@ -509,7 +511,7 @@ func apiSearch(ctx as web.Context) {
     if (strings.trim($query) == "" and readThrottled($ctx)) {
         return;
     }
-    def reply as view.Reply init view.searchIn(sharedIndex(), sharedLowered(), $query);
+    def reply as view.Reply init view.searchIn(sharedIndex(), sharedLowered(), $query, $all);
     webapi.sendJson($ctx, $reply.status, $reply.body);
 }
 

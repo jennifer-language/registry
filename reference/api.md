@@ -159,7 +159,7 @@ unversioned.
 | `GET /decks/:name/:version` | one version's record |
 | `GET /resolve?name=&constraint=` | the best matching version and its pin |
 | `GET /resolve-graph?roots=<json>` | the whole transitive graph, flattened and locked |
-| `GET /search?q=<query>` | decks matching a query, best first |
+| `GET /search?q=<query>[&all=1]` | active decks matching a query, best first; `all=1` includes yanked and moved ones |
 | `GET /scopes` | every registered scope and who holds it |
 | `POST /publish` | publish a version from a repository and a tag |
 | `POST /yank`, `POST /unyank` | withdraw a version, or restore it (logins only) |
@@ -343,10 +343,12 @@ into `catalog`, and calls `resolver` once. The resolver does not backtrack.
 
 ## GET /search
 
-Decks whose name or description contains `q`, case-insensitively, with name
-matches ranked above description-only matches. An empty query returns every
-deck, so this is also the machine-readable deck listing. A `q` longer than 200
-characters is `400`.
+Active decks whose name or description contains `q`, case-insensitively,
+with name matches ranked above description-only matches. A deck is active when
+it has not moved and at least one version is not yanked; `all=1` includes the
+others (any other value lists only the active ones). An empty query with
+`all=1` returns every deck, so this is also the machine-readable deck listing.
+A `q` longer than 200 characters is `400`.
 
 ```json
 {
@@ -369,7 +371,9 @@ matched it.
 
 The JSON result set is unpaged. The HTML results page, like `/browse`, shows
 25 decks at a time with `?page=`, or 10, 50 or 100 with `?size=` (any other
-value reads as 25). Listings are ordered by deck name, then scope.
+value reads as 25). Its "Include yanked and moved decks" box sets `all=1`, and
+without it the page links to the matches it left out. `/browse` always lists
+every deck. Listings are ordered by deck name, then scope.
 
 The contract leaves the ranking unspecified: display the order you are given
 rather than depending on a particular one. Matching is a substring scan over one

@@ -209,7 +209,8 @@ a:hover { text-decoration-thickness: 2px; }
 .readme h1, .readme h2, .readme h3 { font-size: 1.05rem; margin: 1.25rem 0 0.5rem; }
 .readme img { max-width: 100%; }
 .readme pre { overflow-x: auto; }
-form.search { display: flex; gap: 0.6rem; margin: 0 0 2rem; }
+form.search { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 0 0 2rem; }
+form.search label.toggle { flex-basis: 100%; color: var(--muted); font-size: 0.9rem; }
 input[type=search] {
   flex: 1; padding: 0.7rem 0.9rem; border: 1px solid var(--line);
   border-radius: 9px; background: var(--card); color: var(--fg);
@@ -451,21 +452,44 @@ repository, pinned to the commit it was published from.</footer>
 
 # searchForm renders the search box, pre-filled with the current query.
 func searchForm(query as string) {
-    return searchFormSized($query, DEFAULT_PAGE_SIZE);
+    return searchFormFor($query, DEFAULT_PAGE_SIZE, false);
 }
 
 # searchFormSized is the search form for a listing read at `size` per page, which
 # a new search keeps.
 func searchFormSized(query as string, size as int) {
+    return searchFormFor($query, $size, false);
+}
+
+# searchFormFor is the search form with its "all decks" toggle: unticked, a
+# search lists only active decks (`search.isActive`).
+func searchFormFor(query as string, size as int, all as bool) {
     def keep as string init "";
     if (not ($size == DEFAULT_PAGE_SIZE)) {
         $keep = '<input type="hidden" name="size" value="' + convert.toString($size) + '">';
     }
+    def checked as string init "";
+    if ($all) {
+        $checked = " checked";
+    }
     return '<form class="search" action="/search" method="get">
 <input type="search" name="q" placeholder="Search decks" aria-label="Search decks"
- value="' + esc($query) + '">' + $keep + '
+ value="' + esc($query) + '">' + $keep +
+        '
 <button type="submit">Search</button>
+<label class="toggle"><input type="checkbox" name="all" value="1"' + $checked +
+        '> Include yanked and moved decks</label>
 </form>';
+}
+
+/**
+ * Read a search's `?all=` parameter: `1` lists every deck, anything else only
+ * the active ones.
+ * @param raw {string} the parameter as given, "" when absent
+ * @return {bool} true for every deck
+ */
+export func allDecks(raw as string) {
+    return $raw == "1";
 }
 
 # deckUrl is the page URL for a deck, or "" for a bare name (which has no page:
@@ -770,7 +794,7 @@ export func browse(index as json.Value, page as int, size as int) {
  * @return {Page} a 200 page, or a 400 for a query over `search.MAX_QUERY`
  */
 export func results(index as json.Value, query as string, page as int, size as int) {
-    return resultsIn($index, search.lowered($index), $query, $page, $size);
+    return resultsIn($index, search.lowered($index), $query, $page, $size, false);
 }
 
 /**
@@ -781,6 +805,8 @@ export func results(index as json.Value, query as string, page as int, size as i
  * @param query {string} the search query ("" for everything)
  * @param page {int} which page of results, 1-based
  * @param size {int} results per page, one of `PAGE_SIZES`
+ * @param all {bool} every matching deck; false lists only the active ones
+ *     (`search.isActive`) and links to the rest
  * @return {Page} a 200 page, or a 400 for a query over `search.MAX_QUERY`
  */
 export func resultsIn(
@@ -788,17 +814,25 @@ export func resultsIn(
     lowered as json.Value,
     query as string,
     page as int,
-    size as int) {
+    size as int,
+    all as bool) {
     if (len($query) > search.MAX_QUERY) {
         def body as string init '<h1>Search</h1>' + searchForm("") +
             '<p class="lede">A search can be at most ' +
             convert.toString(search.MAX_QUERY) + ' characters long.</p>';
         return Page{status: 400, body: layout("Search decks", $body)};
     }
-    def found as list of int init search.selectIn($lowered, $query);
+    def matched as list of int init search.selectIn($lowered, $query);
+    def found as list of int init $matched;
+    if (not $all) {
+        $found = search.active($index, $matched);
+    }
     def count as int init len($found);
     def q as string init strings.trim($query);
-    def heading as string init "All decks";
+    def heading as string init "Active decks";
+    if ($all) {
+        $heading = "All decks";
+    }
     if (not ($q == "")) {
         $heading = convert.toString($count) + " result";
         if (not ($count == 1)) {
@@ -806,10 +840,26 @@ export func resultsIn(
         }
         $heading = $heading + ' for <code>' + esc($q) + '</code>';
     }
-    def base as string init "/search?q=" + esc(uri.encodeForm($q)) + "&amp;";
+    def url as string init "/search?q=" + esc(uri.encodeForm($q));
+    def base as string init $url + "&amp;";
+    if ($all) {
+        $base = $url + "&amp;all=1&amp;";
+    }
     def none as string init 'Nothing matched <code>' + esc($q) + '</code>.';
-    def body as string init '<h1>Search</h1>' + searchFormSized($q, $size) +
-        '<h2>' + $heading + '</h2>' + pageOf($index, $found, $page, $size, $base, $none);
+    # Say what the toggle hid, with a link to it, so an empty page is no dead end.
+    def hidden as int init len($matched) - $count;
+    def more as string init "";
+    if ($hidden > 0) {
+        def what as string init " yanked or moved deck";
+        if ($hidden > 1) {
+            $what = $what + "s";
+        }
+        def link as string init $url + "&amp;" + sizeParam($size) + "all=1";
+        $more = '<p class="muted"><a href="' + $link + '">' + convert.toString($hidden) +
+            $what + '</a> not shown.</p>';
+    }
+    def body as string init '<h1>Search</h1>' + searchFormFor($q, $size, $all) +
+        '<h2>' + $heading + '</h2>' + pageOf($index, $found, $page, $size, $base, $none) + $more;
     return Page{status: 200, body: layout("Search decks", $body)};
 }
 
