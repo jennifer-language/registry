@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.27.0
+# pragma-jennifer-version: >=0.28.0
 #
 # White-box tests for trustpub.j. Run with:
 #
@@ -301,7 +301,7 @@ func signedBy(privatePem as bytes, claims as string) {
     def body as string init segment(encoding.encode("utf-8", $claims));
     def input as string init $head + "." + $body;
     def signed as bytes init encoding.encode("utf-8", $input);
-    def sig as bytes init crypto.sign("rsa-sha256", $signed, $privatePem);
+    def sig as bytes init crypto.sign("rsa-pkcs1-sha256", $signed, $privatePem);
     return $input + "." + segment($sig);
 }
 

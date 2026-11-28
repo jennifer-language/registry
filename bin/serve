@@ -1,7 +1,7 @@
 #!/usr/bin/env -S jennifer serve
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.27.0
+# pragma-jennifer-version: >=0.28.0
 #
 # serve: the deck registry's HTTP API and website. A thin `webapi` app; each
 # handler reads the store and delegates status and body to the view modules
@@ -1295,7 +1295,7 @@ func publishSummary(
             $repository,
             $outcome,
             $status,
-            time.unixMillis(time.now()) - $startedMs,
+            time.unixMilliseconds(time.now()) - $startedMs,
             outbound.calls($trace)));
     outbound.forget($trace);
 }
@@ -1526,7 +1526,7 @@ func apiPublish(ctx as web.Context) {
     def repository as string init fieldOf($body, "/repository");
     def tag as string init fieldOf($body, "/tag");
     # Arguments are evaluated here, so the duration counts from the body read.
-    defer publishSummary(traceOf($ctx), $tag, $repository, time.unixMillis(time.now()));
+    defer publishSummary(traceOf($ctx), $tag, $repository, time.unixMilliseconds(time.now()));
     def db as flatdb.DB init sharedStore();
 
     # The credential is checked from local state before any forge call, so an
@@ -2333,9 +2333,9 @@ io.printf(
     config.displayUrl("https", $cfg.tls.addr),
     strings.join($cfg.tls.domains, ", "));
 
-def tlsServer as httpd.Server init httpd.listenTLSWith(
-    $cfg.tls.addr,
-    encoding.encode("utf-8", $bundle.cert),
-    encoding.encode("utf-8", $bundle.key),
-    $limits);
+# The TLS listener takes the plain one's limits, plus the certificate.
+def tlsLimits as httpd.Options init $limits;
+$tlsLimits.certPem = encoding.encode("utf-8", $bundle.cert);
+$tlsLimits.keyPem = encoding.encode("utf-8", $bundle.key);
+def tlsServer as httpd.Server init httpd.listenWith($cfg.tls.addr, $tlsLimits);
 web.serveOn($app, $tlsServer);

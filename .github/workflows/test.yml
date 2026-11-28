@@ -37,7 +37,7 @@ jobs:
         interpreter: [release, tip]
     env:
       # Bump together with `[engines]`.
-      JENNIFER_RELEASE: 0.27.0
+      JENNIFER_RELEASE: 0.28.0
     steps:
       - name: Checkout the registry
         uses: actions/checkout@v7

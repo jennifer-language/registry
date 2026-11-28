@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.27.0
+# pragma-jennifer-version: >=0.28.0
 # pragma-jennifer-capability: net
 
 /**
@@ -126,7 +126,7 @@ export func request(
     body as string,
     timeoutMs as int,
     maxBytes as int) {
-    def started as int init time.unixMillis(time.now());
+    def started as int init time.unixMilliseconds(time.now());
     def res as http.Response;
     try {
         $res = http.send(
@@ -168,7 +168,7 @@ export func request(
 }
 
 func elapsed(started as int) {
-    return time.unixMillis(time.now()) - $started;
+    return time.unixMilliseconds(time.now()) - $started;
 }
 
 /**

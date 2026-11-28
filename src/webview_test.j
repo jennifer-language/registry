@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 # SPDX-FileCopyrightText: Copyright (C) 2026 mplx <jennifer@mplx.dev>
-# pragma-jennifer-version: >=0.27.0
+# pragma-jennifer-version: >=0.28.0
 #
 # White-box tests for webview.j. Run with:
 #
@@ -812,9 +812,9 @@ func testAHugeTagIndexRendersInLinearTime() {
     for (def i in 0..2000) {
         $groups = json.set($groups, "/tag" + convert.toString($i), json.list([$i]));
     }
-    def t0 as int init time.unixMillis(time.now());
+    def t0 as int init time.unixMilliseconds(time.now());
     def page as Page init tagsFrom($groups);
-    def took as int init time.unixMillis(time.now()) - $t0;
+    def took as int init time.unixMilliseconds(time.now()) - $t0;
     testing.assertEqual($page.status, 200);
     testing.assertContains($page.body, "/tag/tag1999");
     testing.assertContains($page.body, "2000 tags");
